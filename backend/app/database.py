@@ -87,6 +87,7 @@ requests = Table(
     Column("unit_id", PgUUID(as_uuid=True), ForeignKey("units.id", ondelete="RESTRICT"), nullable=False),
     Column("sum", Numeric(14, 2), nullable=False, server_default=text("0")),
     Column("status", Text, nullable=False, server_default=text("'draft'")),
+    Column("budget_frozen", Boolean, nullable=False, server_default=text("false")),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
     CheckConstraint("sum >= 0", name="requests_sum_chk"),

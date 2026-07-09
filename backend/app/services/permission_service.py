@@ -51,25 +51,52 @@ class PermissionService:
         if not self.can_view_request(user, request):
             raise HTTPException(status_code=403, detail="No access to request")
 
+    @staticmethod
+    def require_request_unfrozen(request: dict) -> None:
+        if request.get("budget_frozen"):
+            raise HTTPException(status_code=400, detail="Budget is frozen")
+
     def require_employee_edit_request(self, user: dict, request: dict) -> None:
+        self.require_request_unfrozen(request)
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
             raise HTTPException(status_code=403, detail="Only responsible employee can edit request")
         if request.get("status") != RequestStatus.draft:
             raise HTTPException(status_code=400, detail="Request is not editable")
 
     def require_request_delete_request(self, user: dict, request: dict) -> None:
+        self.require_request_unfrozen(request)
         if request.get("status") != RequestStatus.draft:
             raise HTTPException(status_code=400, detail="Request can be deleted only in draft")
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
             raise HTTPException(status_code=403, detail="Only responsible employee can delete request")
 
+    def require_employee_cancel_request(self, user: dict, request: dict) -> None:
+        self.require_request_unfrozen(request)
+        if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
+            raise HTTPException(status_code=403, detail="Only responsible employee can cancel request")
+        if request.get("status") not in {RequestStatus.draft, RequestStatus.on_review}:
+            raise HTTPException(status_code=400, detail="Request can be cancelled only in draft or on_review")
+
+    def require_employee_withdraw_request(self, user: dict, request: dict) -> None:
+        self.require_request_unfrozen(request)
+        if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
+            raise HTTPException(status_code=403, detail="Only responsible employee can withdraw request")
+        if request.get("status") != RequestStatus.on_review:
+            raise HTTPException(status_code=400, detail="Request can be withdrawn only from review")
+
     def require_employee_upload_file(self, user: dict, request: dict) -> None:
-        if user["role"] == "admin":
-            return
+        self.require_request_unfrozen(request)
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
             raise HTTPException(status_code=403, detail="Only responsible employee can upload files")
-        if request.get("status") not in {RequestStatus.draft, RequestStatus.on_review}:
-            raise HTTPException(status_code=400, detail="Files can be uploaded only for draft or on_review requests")
+        if request.get("status") != RequestStatus.draft:
+            raise HTTPException(status_code=400, detail="Files can be uploaded only for draft requests")
+
+    def require_economist_edit_request(self, user: dict, request: dict) -> None:
+        self.require_request_unfrozen(request)
+        self.require_economist_review_request(user, request)
+
+    def require_budget_control_access(self, user: dict, request: dict) -> None:
+        self.require_economist_review_request(user, request)
 
     def require_economist_review_request(self, user: dict, request: dict) -> None:
         if user["role"] != "economist":

@@ -37,6 +37,7 @@ CLOSED_REQUEST_STATUSES = {
     RequestStatus.approved_with_changes,
     RequestStatus.partially_approved,
     RequestStatus.rejected,
+    RequestStatus.cancelled,
 }
 EDITABLE_REQUEST_STATUSES = {RequestStatus.draft}
 APPROVED_ITEM_STATUSES = {ItemStatus.approved, ItemStatus.approved_with_changes}

@@ -125,6 +125,8 @@ class UnitService:
             unit_ids = [unit["id"] for unit in self.repo.load_all("units") if unit.get("parent_id") == payload["unit_id"]]
         for request in self.repo.load_all("requests"):
             if request.get("unit_id") in unit_ids:
+                if request.get("budget_frozen"):
+                    raise HTTPException(status_code=400, detail="Budget is frozen")
                 self.repo.update("requests", request["id"], {"economist_id": payload["economist_id"]})
         responsibles = {(item["unit_id"], item["user_id"]): item for item in self.repo.load_all("units_responsibles")}
         for unit_id in unit_ids:

@@ -2,9 +2,13 @@ import AttachFileIcon from '@mui/icons-material/AttachFile';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import SendIcon from '@mui/icons-material/Send';
 import UndoIcon from '@mui/icons-material/Undo';
+import Alert from '@mui/material/Alert';
+import Chip from '@mui/material/Chip';
 import Autocomplete from '@mui/material/Autocomplete';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
@@ -59,17 +63,11 @@ function getErrorMessage(error: unknown, fallback: string) {
 function ItemFilesCell({
   kind,
   itemId,
-  canUpload,
   canDelete,
-  uploadPending,
-  onUpload,
 }: {
   kind: 'dds' | 'invest';
   itemId: string;
-  canUpload: boolean;
   canDelete: boolean;
-  uploadPending: boolean;
-  onUpload: (file: File) => void;
 }) {
   const queryClient = useQueryClient();
   const toast = useAppToast();
@@ -118,20 +116,6 @@ function ItemFilesCell({
           )}
         </Stack>
       ))}
-      {canUpload && (
-        <Button component="label" size="small" startIcon={<AttachFileIcon />} disabled={uploadPending}>
-          Прикрепить
-          <input
-            hidden
-            type="file"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = '';
-              if (file) onUpload(file);
-            }}
-          />
-        </Button>
-      )}
       <ConfirmDialog
         open={!!deleteTarget}
         title="Удалить файл?"
@@ -143,6 +127,31 @@ function ItemFilesCell({
         onConfirm={() => deleteTarget && deleteFile.mutate(deleteTarget.id)}
       />
     </Stack>
+  );
+}
+
+function FileAttachAction({
+  disabled,
+  onUpload,
+}: {
+  disabled: boolean;
+  onUpload: (file: File) => void;
+}) {
+  return (
+    <Tooltip title="Прикрепить файл">
+      <IconButton component="label" size="small" color="primary" disabled={disabled} aria-label="Прикрепить файл">
+        <AttachFileIcon fontSize="small" />
+        <input
+          hidden
+          type="file"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (file) onUpload(file);
+          }}
+        />
+      </IconButton>
+    </Tooltip>
   );
 }
 
@@ -227,12 +236,13 @@ function ItemsTable({
   const toast = useAppToast();
   const [drafts, setDrafts] = useState<Record<string, Partial<BudgetItem>>>({});
   const [deleteTarget, setDeleteTarget] = useState<BudgetItem | null>(null);
-  const disabledForEmployee = user.role !== 'employee' || request.status !== 'draft';
-  const employeeCanEdit = user.role === 'employee' && request.status === 'draft';
-  const canEmployeeUpload = user.role === 'employee' && ['draft', 'on_review'].includes(request.status);
-  const canEconomist = user.role === 'economist' && request.status === 'on_review';
-  const canDeleteItem = user.role === 'admin' || (user.role === 'employee' && request.status === 'draft');
-  const canDeleteFiles = user.role === 'admin' || (user.role === 'employee' && ['draft', 'on_review'].includes(request.status));
+  const canEmployeeChange = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
+  const disabledForEmployee = !canEmployeeChange;
+  const employeeCanEdit = canEmployeeChange;
+  const canEmployeeUpload = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
+  const canEconomist = user.role === 'economist' && request.status === 'on_review' && !request.budget_frozen;
+  const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
+  const canDeleteFiles = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
 
   const patch = useMutation({
@@ -283,7 +293,7 @@ function ItemsTable({
             ? 'Проверьте строки, укажите статус, утверждённую сумму и комментарий.'
             : employeeCanEdit
               ? 'Выберите категорию НСИ подразделения: статья ДДС или инвест-проект внутри категории.'
-              : 'Строки заявки показаны в режиме просмотра. Редактирование доступно только до отправки на проверку.'}
+              : 'Строки заявки показаны в режиме просмотра. Редактирование и работа с файлами доступны только сотруднику в черновике.'}
         </Typography>
       </Stack>
       {employeeCanEdit && <AddItemForm kind={kind} requestId={request.id} catalog={catalog} disabled={disabledForEmployee} />}
@@ -303,6 +313,7 @@ function ItemsTable({
         <TableBody>
           {items.map((item) => {
             const local = drafts[item.id] || {};
+            const hasDraftChanges = Object.keys(local).length > 0;
             const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
             return (
               <TableRow key={item.id}>
@@ -356,39 +367,41 @@ function ItemsTable({
                   )}
                 </TableCell>
                 <TableCell>
-                  <ItemFilesCell
-                    kind={kind}
-                    itemId={item.id}
-                    canUpload={canEmployeeUpload}
-                    canDelete={canDeleteFiles}
-                    uploadPending={upload.isPending}
-                    onUpload={(file) => upload.mutate({ itemId: item.id, file })}
-                  />
+                  <ItemFilesCell kind={kind} itemId={item.id} canDelete={canDeleteFiles} />
                 </TableCell>
                 <TableCell align="right">
-                  {canEconomist ? (
-                    <Tooltip title="Сохранить">
-                      <IconButton
-                        size="small"
-                        color="primary"
-                        onClick={() => patch.mutate({ id: item.id, body: drafts[item.id] || {} })}
-                        aria-label="Сохранить"
-                      >
-                        <SaveOutlinedIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  ) : canDeleteItem ? (
-                    <Tooltip title="Удалить строку">
-                      <IconButton
-                        size="small"
-                        color="error"
-                        onClick={() => setDeleteTarget(item)}
-                        aria-label="Удалить строку"
-                      >
-                        <DeleteOutlineIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  ) : null}
+                  <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
+                    {canEconomist ? (
+                      <Tooltip title="Сохранить">
+                        <IconButton
+                          size="small"
+                          color="primary"
+                          onClick={() => patch.mutate({ id: item.id, body: drafts[item.id] || {} })}
+                          disabled={!hasDraftChanges || patch.isPending}
+                          aria-label="Сохранить"
+                        >
+                          <SaveOutlinedIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    ) : canDeleteItem ? (
+                      <Tooltip title="Удалить строку">
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => setDeleteTarget(item)}
+                          aria-label="Удалить строку"
+                        >
+                          <DeleteOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    ) : null}
+                    {canEmployeeUpload && (
+                      <FileAttachAction
+                        disabled={upload.isPending}
+                        onUpload={(file) => upload.mutate({ itemId: item.id, file })}
+                      />
+                    )}
+                  </Stack>
                 </TableCell>
               </TableRow>
             );
@@ -479,10 +492,21 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     ];
     return rows.slice(0, 5);
   }, [dds, ddsCatalog, invest, investCatalog]);
-  const canSubmit = user.role === 'employee' && request && request.status === 'draft' && allItems.length > 0;
-  const canFinalize = user.role === 'economist' && request && request.status === 'on_review' && allItems.length > 0 && allItems.every((item) => item.status !== 'on_review');
+  const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.budget_frozen && allItems.length > 0;
+  const canWithdraw = user.role === 'employee' && request && request.status === 'on_review' && !request.budget_frozen;
+  const canCancel = user.role === 'employee' && request && request.status === 'on_review' && !request.budget_frozen;
+  const canFinalize = user.role === 'economist' && request && request.status === 'on_review' && !request.budget_frozen && allItems.length > 0 && allItems.every((item) => item.status !== 'on_review');
+  const canApproveAllItems = user.role === 'economist' && request && request.status === 'on_review' && !request.budget_frozen && allItems.some((item) => item.status === 'on_review');
+  const canFreezeBudget = user.role === 'economist' && request && !request.budget_frozen && ['approved', 'approved_with_changes'].includes(request.status);
+  const canUnfreezeBudget = user.role === 'economist' && request && request.budget_frozen;
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
-  const canDelete = !!request && request.status === 'draft' && user.role === 'employee';
+  const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
+  const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.budget_frozen;
+  const canReopen =
+    user.role === 'economist' &&
+    !!request &&
+    !request.budget_frozen &&
+    ['approved', 'approved_with_changes', 'partially_approved', 'rejected'].includes(request.status);
 
   const exportRequest = async () => {
     const response = await api.get(`/requests/${id}/export`, { responseType: 'blob' });
@@ -494,28 +518,60 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   return (
     <Stack spacing={3}>
       <Stack spacing={3}>
-        <Card className={`metric-card ${isClosed ? 'fixed-request' : ''}`} elevation={0}>
+        <Card className={`metric-card ${isHighlightedClosed ? 'fixed-request' : ''} ${request.budget_frozen ? 'budget-frozen-card' : ''}`} elevation={0}>
           <CardContent>
             <Stack spacing={3}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'flex-start' }} justifyContent="space-between">
-                <Stack direction="row" spacing={1.25} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Stack spacing={1.25}>
                   <Typography variant="h6">Сводка заявки</Typography>
-                  <RequestStatusBadge status={request.status} />
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <RequestStatusBadge status={request.status} />
+                    {request.budget_frozen && <Chip label="Бюджет зафиксирован" size="small" color="warning" variant="outlined" />}
+                  </Stack>
                 </Stack>
-                <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }}>
+                <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ width: { xs: '100%', sm: 'auto' } }}>
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
+                    {canFreezeBudget && (
+                      <Button startIcon={<LockOutlinedIcon />} variant="outlined" onClick={() => lifecycle.mutate('freeze-budget')}>
+                        Зафиксировать бюджет
+                      </Button>
+                    )}
+                    {canUnfreezeBudget && (
+                      <Button startIcon={<LockOpenOutlinedIcon />} variant="outlined" onClick={() => lifecycle.mutate('unfreeze-budget')}>
+                        Разморозить бюджет
+                      </Button>
+                    )}
+                    {canApproveAllItems && (
+                      <Button startIcon={<DoneAllIcon />} variant="contained" onClick={() => lifecycle.mutate('approve-all-items')}>
+                        Зафиксировать все строки
+                      </Button>
+                    )}
+                    {canWithdraw && (
+                      <Button startIcon={<UndoIcon />} variant="outlined" onClick={() => lifecycle.mutate('withdraw')}>
+                        Отозвать в черновик
+                      </Button>
+                    )}
+                    {canCancel && (
+                      <Button
+                        startIcon={<DeleteOutlineIcon />}
+                        variant="outlined"
+                        color="error"
+                        onClick={() => lifecycle.mutate('cancel')}
+                      >
+                        Отменить заявку
+                      </Button>
+                    )}
                     {canDelete && (
                       <Button
                         startIcon={<DeleteOutlineIcon />}
-                        variant="contained"
-                        disableElevation
+                        variant="outlined"
                         onClick={() => setDeleteOpen(true)}
                         sx={{
-                          bgcolor: 'action.hover',
                           color: 'text.secondary',
+                          borderColor: 'divider',
                           '&:hover': {
-                            bgcolor: 'action.selected',
-                            boxShadow: 'none',
+                            borderColor: 'text.secondary',
+                            bgcolor: 'action.hover',
                           },
                         }}
                       >
@@ -537,14 +593,19 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                         Экспорт Excel
                       </Button>
                     )}
-                    {user.role === 'economist' && isClosed && (
+                    {canReopen && (
                       <Button startIcon={<UndoIcon />} variant="outlined" onClick={() => lifecycle.mutate('reopen')}>
-                        Вернуть в черновик
+                        Вернуть на рассмотрение
                       </Button>
                     )}
                   </Stack>
                 </Stack>
               </Stack>
+              {request.budget_frozen && (
+                <Alert severity="warning" variant="outlined">
+                  Бюджет зафиксирован. Пока он не разморожен, редактирование заявки, строк и файлов недоступно.
+                </Alert>
+              )}
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={4} flexWrap="wrap">
                 <Typography>План: <b>{money(request.summary?.planned_sum)}</b></Typography>
                 <Typography>Утверждено: <b>{money(request.summary?.approved_sum)}</b></Typography>
@@ -557,11 +618,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           </CardContent>
         </Card>
 
-        <Paper className="surface-pad" elevation={0}>
+        <Paper className={`surface-pad ${request.budget_frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
           <ItemsTable title="Строки ДДС" kind="dds" request={request} user={user} items={dds} catalog={ddsCatalog} />
         </Paper>
 
-        <Paper className="surface-pad" elevation={0}>
+        <Paper className={`surface-pad ${request.budget_frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
           <ItemsTable title="Строки инвест-проектов" kind="invest" request={request} user={user} items={invest} catalog={investCatalog} />
         </Paper>
       </Stack>

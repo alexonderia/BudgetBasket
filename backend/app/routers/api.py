@@ -282,6 +282,26 @@ def submit_request(request: Request, request_id: str, user: User):
     return request.app.state.request_service.submit(user, request_id)
 
 
+@router.post("/requests/{request_id}/freeze-budget")
+def freeze_request_budget(request: Request, request_id: str, user: User):
+    return request.app.state.request_service.freeze_budget(user, request_id)
+
+
+@router.post("/requests/{request_id}/unfreeze-budget")
+def unfreeze_request_budget(request: Request, request_id: str, user: User):
+    return request.app.state.request_service.unfreeze_budget(user, request_id)
+
+
+@router.post("/requests/{request_id}/withdraw")
+def withdraw_request(request: Request, request_id: str, user: User):
+    return request.app.state.request_service.withdraw(user, request_id)
+
+
+@router.post("/requests/{request_id}/cancel")
+def cancel_request(request: Request, request_id: str, user: User):
+    return request.app.state.request_service.cancel(user, request_id)
+
+
 @router.post("/requests/{request_id}/start-review")
 def start_review(request: Request, request_id: str, user: User):
     return request.app.state.request_service.start_review(user, request_id)
@@ -291,6 +311,11 @@ def start_review(request: Request, request_id: str, user: User):
 @router.post("/requests/{request_id}/fix")
 def finalize_request(request: Request, request_id: str, user: User):
     return request.app.state.request_service.finalize(user, request_id)
+
+
+@router.post("/requests/{request_id}/approve-all-items")
+def approve_all_request_items(request: Request, request_id: str, user: User):
+    return request.app.state.request_service.approve_all_items(user, request_id)
 
 
 @router.post("/requests/{request_id}/reopen")

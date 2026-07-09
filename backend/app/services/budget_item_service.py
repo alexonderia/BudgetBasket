@@ -34,10 +34,8 @@ class BudgetItemService:
 
     def create_item(self, user: dict, request_id: str, kind: str, payload: dict) -> dict:
         budget_request = get_required(self.repo, "requests", request_id)
-        if user["role"] != "admin":
-            self.permissions.require_employee_edit_request(user, budget_request)
-        elif budget_request.get("status") != RequestStatus.draft:
-            raise HTTPException(status_code=400, detail="Items can be created only in draft requests")
+        self.permissions.require_request_unfrozen(budget_request)
+        self.permissions.require_employee_edit_request(user, budget_request)
 
         field = "dds_id" if kind == "dds" else "invest_id"
         article_id = payload.get(field)
@@ -78,8 +76,6 @@ class BudgetItemService:
             if status == ItemStatus.rejected and allowed.get("sum_fact", item.get("sum_fact")) not in (None, 0):
                 raise HTTPException(status_code=400, detail="sum_fact must be empty or 0 for rejected items")
             return allowed
-        if role == "admin":
-            return {key: patch[key] for key in ("dds_id", "invest_id", "sum_plan", "sum_fact", "status", "comment") if key in patch}
         forbidden = set(patch) - {"dds_id", "invest_id", "sum_plan"}
         if forbidden:
             raise HTTPException(status_code=403, detail="Employee cannot change review fields")
@@ -88,6 +84,7 @@ class BudgetItemService:
     def patch_item(self, user: dict, item_id: str, patch: dict) -> dict:
         collection, item = self._find_item(item_id)
         budget_request = get_required(self.repo, "requests", item["request_id"])
+        self.permissions.require_request_unfrozen(budget_request)
         if budget_request["status"] in {
             RequestStatus.approved,
             RequestStatus.approved_with_changes,
@@ -100,11 +97,12 @@ class BudgetItemService:
         if user["role"] == "economist":
             self.permissions.require_economist_review_request(user, budget_request)
             normalized = self._normalize_patch(item, patch, "economist")
-        elif user["role"] == "admin":
-            normalized = self._normalize_patch(item, patch, "admin")
         else:
             self.permissions.require_employee_edit_request(user, budget_request)
             normalized = self._normalize_patch(item, patch, "employee")
+
+        if not normalized:
+            return item
 
         kind = "dds" if collection == "dds_items" else "invest"
         article_field = "dds_id" if kind == "dds" else "invest_id"
@@ -120,10 +118,8 @@ class BudgetItemService:
     def delete_item(self, user: dict, item_id: str) -> None:
         collection, item = self._find_item(item_id)
         budget_request = get_required(self.repo, "requests", item["request_id"])
-        if user["role"] != "admin":
-            self.permissions.require_employee_edit_request(user, budget_request)
-        elif budget_request.get("status") != RequestStatus.draft:
-            raise HTTPException(status_code=400, detail="Items can be deleted only from draft requests")
+        self.permissions.require_request_unfrozen(budget_request)
+        self.permissions.require_employee_edit_request(user, budget_request)
         links_collection = "dds_item_files" if collection == "dds_items" else "invest_item_files"
         key = "dds_item_id" if collection == "dds_items" else "invest_item_id"
         self.repo.delete_where(links_collection, {key: item_id})

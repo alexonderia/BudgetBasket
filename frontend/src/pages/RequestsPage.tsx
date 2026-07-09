@@ -319,19 +319,19 @@ export default function RequestsPage({ user }: { user: User }) {
               const canDelete = item.status === 'draft' && user.role === 'employee';
               const unitName = units.find((unit) => unit.id === item.unit_id)?.name || item.unit_id;
               return (
-                <TableRow
+              <TableRow
                   key={item.id}
                   hover
                   onClick={() => navigate(`/requests/${item.id}`)}
                   sx={{ cursor: 'pointer' }}
-                  className={CLOSED_REQUEST_STATUSES.includes(item.status) ? 'fixed-request' : ''}
+                  className={CLOSED_REQUEST_STATUSES.includes(item.status) && item.status !== 'cancelled' ? 'fixed-request' : ''}
                 >
                   <TableCell>{unitName}</TableCell>
                   <TableCell>
                     <RequestStatusBadge status={item.status} />
                   </TableCell>
                   <TableCell>{money(item.summary?.planned_sum)}</TableCell>
-                  <TableCell>{money(item.summary?.approved_sum ?? item.sum)}</TableCell>
+                  <TableCell>{money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum))}</TableCell>
                   <TableCell>{item.summary?.items_count || 0}</TableCell>
                   <TableCell align="right">
                     {canDelete && (

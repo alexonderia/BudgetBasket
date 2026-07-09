@@ -42,6 +42,7 @@ export interface BudgetRequest {
   unit_id: string;
   sum: number;
   status: RequestStatus;
+  budget_frozen: boolean;
   total_approved_sum?: number;
   summary?: RequestSummary;
 }
@@ -74,4 +75,4 @@ export interface FileAttachment {
   original_name: string;
 }
 
-export const CLOSED_REQUEST_STATUSES: RequestStatus[] = ['approved', 'approved_with_changes', 'partially_approved', 'rejected'];
+export const CLOSED_REQUEST_STATUSES: RequestStatus[] = ['approved', 'approved_with_changes', 'partially_approved', 'rejected', 'cancelled'];

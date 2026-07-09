@@ -34,7 +34,10 @@ export default function DashboardPage({ user }: { user: User }) {
   const { data = [] } = useQuery({ queryKey: ['requests'], queryFn: async () => (await api.get<BudgetRequest[]>('/requests')).data });
   const review = data.filter((item) => item.status === 'on_review').length;
   const closed = data.filter((item) => CLOSED_REQUEST_STATUSES.includes(item.status)).length;
-  const approved = data.reduce((sum, item) => sum + (item.summary?.approved_sum || item.sum || 0), 0);
+  const approved = data.reduce((sum, item) => {
+    if (!['approved', 'approved_with_changes', 'partially_approved'].includes(item.status)) return sum;
+    return sum + (item.summary?.approved_sum ?? item.sum ?? 0);
+  }, 0);
 
   return (
     <Stack spacing={3}>

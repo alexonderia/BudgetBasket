@@ -96,6 +96,11 @@ class SqlRepository:
         payload = self._coerce_payload(table, patch)
         with self.session_factory() as session:
             try:
+                if not payload:
+                    row = session.execute(select(table).where(table.c.id == self._coerce_value(table.c.id, item_id))).first()
+                    if not row:
+                        raise HTTPException(status_code=404, detail="Запись не найдена")
+                    return self._row_to_dict(row)
                 row = session.execute(update(table).where(table.c.id == self._coerce_value(table.c.id, item_id)).values(**payload).returning(table)).first()
                 if not row:
                     raise HTTPException(status_code=404, detail="Запись не найдена")
@@ -118,6 +123,8 @@ class SqlRepository:
         payload = self._coerce_payload(table, patch)
         with self.session_factory() as session:
             try:
+                if not payload:
+                    return 0
                 result = session.execute(update(table).where(*self._where_clause(table, filters)).values(**payload))
                 session.commit()
             except IntegrityError as exc:

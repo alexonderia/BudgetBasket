@@ -71,9 +71,9 @@ class RequestService:
         return self.public_request(budget_request, self.summary(request_id))
 
     def create_request(self, user: dict, payload: dict) -> dict:
-        if user["role"] not in {"employee", "admin"}:
-            raise HTTPException(status_code=403, detail="Only employee or admin can create requests")
-        if user["role"] == "employee" and payload["unit_id"] not in self.permissions.employee_module_ids(user["id"]):
+        if user["role"] != "employee":
+            raise HTTPException(status_code=403, detail="Only employee can create requests")
+        if payload["unit_id"] not in self.permissions.employee_module_ids(user["id"]):
             raise HTTPException(status_code=403, detail="Employee is not responsible for this unit")
         item = {
             "economist_id": payload.get("economist_id"),
@@ -100,20 +100,13 @@ class RequestService:
 
     def patch_request(self, user: dict, request_id: str, patch: dict) -> dict:
         budget_request = get_required(self.repo, "requests", request_id)
-        if user["role"] == "admin":
-            return self.public_request(
-                self.repo.update(
-                    "requests",
-                    request_id,
-                    {key: value for key, value in patch.items() if key in {"economist_id", "unit_id", "sum", "status"}},
-                ),
-                self.summary(request_id),
-            )
+        self.permissions.require_request_unfrozen(budget_request)
         self.permissions.require_employee_edit_request(user, budget_request)
         return self.public_request(budget_request, self.summary(request_id))
 
     def submit(self, user: dict, request_id: str) -> dict:
         budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(budget_request)
         self.permissions.require_employee_edit_request(user, budget_request)
         if not self._items(request_id):
             raise HTTPException(status_code=400, detail="Cannot submit request without budget items")
@@ -123,8 +116,19 @@ class RequestService:
                     self.repo.update(collection, item["id"], {"status": ItemStatus.on_review})
         return self.public_request(self.repo.update("requests", request_id, {"status": RequestStatus.on_review}), self.summary(request_id))
 
+    def withdraw(self, user: dict, request_id: str) -> dict:
+        budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_employee_withdraw_request(user, budget_request)
+        return self.public_request(self.repo.update("requests", request_id, {"status": RequestStatus.draft}), self.summary(request_id))
+
+    def cancel(self, user: dict, request_id: str) -> dict:
+        budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_employee_cancel_request(user, budget_request)
+        return self.public_request(self.repo.update("requests", request_id, {"status": RequestStatus.cancelled}), self.summary(request_id))
+
     def start_review(self, user: dict, request_id: str) -> dict:
         budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(budget_request)
         self.permissions.require_economist_review_request(user, budget_request)
         if budget_request["status"] != RequestStatus.on_review:
             raise HTTPException(status_code=400, detail="Request cannot be taken into review")
@@ -156,6 +160,7 @@ class RequestService:
 
     def finalize(self, user: dict, request_id: str) -> dict:
         budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(budget_request)
         self.permissions.require_economist_review_request(user, budget_request)
         items = self._items(request_id)
         if not items:
@@ -174,6 +179,7 @@ class RequestService:
 
     def reopen(self, user: dict, request_id: str) -> dict:
         budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(budget_request)
         self.permissions.require_economist_review_request(user, budget_request)
         if budget_request["status"] not in {
             RequestStatus.approved,
@@ -182,7 +188,53 @@ class RequestService:
             RequestStatus.rejected,
         }:
             raise HTTPException(status_code=400, detail="Only completed request can be reopened")
-        return self.public_request(self.repo.update("requests", request_id, {"status": RequestStatus.draft}), self.summary(request_id))
+        return self.public_request(self.repo.update("requests", request_id, {"status": RequestStatus.on_review}), self.summary(request_id))
 
     def unfreeze(self, user: dict, request_id: str) -> dict:
         return self.reopen(user, request_id)
+
+    def freeze_budget(self, user: dict, request_id: str) -> dict:
+        budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_budget_control_access(user, budget_request)
+        if budget_request.get("budget_frozen"):
+            raise HTTPException(status_code=400, detail="Budget is already frozen")
+        if budget_request.get("status") not in {RequestStatus.approved, RequestStatus.approved_with_changes}:
+            raise HTTPException(status_code=400, detail="Budget can be frozen only for approved request")
+        return self.public_request(
+            self.repo.update("requests", request_id, {"budget_frozen": True}),
+            self.summary(request_id),
+        )
+
+    def unfreeze_budget(self, user: dict, request_id: str) -> dict:
+        budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_budget_control_access(user, budget_request)
+        if not budget_request.get("budget_frozen"):
+            raise HTTPException(status_code=400, detail="Budget is already unfrozen")
+        return self.public_request(
+            self.repo.update("requests", request_id, {"budget_frozen": False}),
+            self.summary(request_id),
+        )
+
+    def approve_all_items(self, user: dict, request_id: str) -> dict:
+        budget_request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(budget_request)
+        self.permissions.require_economist_review_request(user, budget_request)
+        if budget_request.get("status") != RequestStatus.on_review:
+            raise HTTPException(status_code=400, detail="Request is not on review")
+        items = self._items(request_id)
+        if not items:
+            raise HTTPException(status_code=400, detail="Cannot approve request without items")
+
+        for collection in ("dds_items", "invest_items"):
+            for item in self.repo.load_all(collection):
+                if item["request_id"] != request_id or item["status"] != ItemStatus.on_review:
+                    continue
+                sum_fact = item.get("sum_fact")
+                if sum_fact is None:
+                    self.repo.update(collection, item["id"], {"status": ItemStatus.approved, "sum_fact": item["sum_plan"]})
+                elif float(sum_fact) == float(item["sum_plan"]):
+                    self.repo.update(collection, item["id"], {"status": ItemStatus.approved})
+                else:
+                    self.repo.update(collection, item["id"], {"status": ItemStatus.approved_with_changes})
+
+        return self.finalize(user, request_id)

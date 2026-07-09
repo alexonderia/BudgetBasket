@@ -118,6 +118,7 @@ CREATE TABLE requests (
 
     sum NUMERIC(14, 2) NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'draft',
+    budget_frozen BOOLEAN NOT NULL DEFAULT false,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

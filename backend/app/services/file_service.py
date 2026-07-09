@@ -102,6 +102,7 @@ class FileService:
         collection = "dds_items" if kind == "dds" else "invest_items"
         item = get_required(self.repo, collection, item_id)
         budget_request = get_required(self.repo, "requests", item["request_id"])
+        self.permissions.require_request_unfrozen(budget_request)
         if allow_on_review:
             self.permissions.require_employee_upload_file(user, budget_request)
         else:
@@ -119,10 +120,8 @@ class FileService:
         collection = "dds_items" if kind == "dds" else "invest_items"
         item = get_required(self.repo, collection, item_id)
         budget_request = get_required(self.repo, "requests", item["request_id"])
-        if user["role"] == "admin":
-            pass
-        else:
-            self.permissions.require_employee_upload_file(user, budget_request)
+        self.permissions.require_request_unfrozen(budget_request)
+        self.permissions.require_employee_upload_file(user, budget_request)
 
         link_collection = "dds_item_files" if kind == "dds" else "invest_item_files"
         key = "dds_item_id" if kind == "dds" else "invest_item_id"

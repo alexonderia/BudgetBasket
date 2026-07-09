@@ -46,9 +46,26 @@ def test_employee_creates_adds_and_submits_request(tmp_path):
     assert submitted.json()["status"] == "on_review"
 
 
+def test_employee_cannot_create_request_for_foreign_unit(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    admin = auth(client, "admin", "admin")
+    unit = client.post(
+        "/units",
+        json={"parent_id": None, "name": "Foreign module", "type": "module", "is_active": True},
+        headers=admin,
+    )
+    assert unit.status_code == 200
+    denied = client.post("/requests", json={"unit_id": unit.json()["id"]}, headers=employee)
+    assert denied.status_code == 403
+    denied_admin = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=admin)
+    assert denied_admin.status_code == 403
+
+
 def test_employee_can_delete_draft_request_only(tmp_path):
     client = make_client(tmp_path)
     admin = auth(client, "admin", "admin")
+    economist = auth(client, "economist", "economist")
     headers = auth(client, "employee", "employee")
     created = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=headers)
     assert created.status_code == 200
@@ -56,6 +73,8 @@ def test_employee_can_delete_draft_request_only(tmp_path):
 
     denied_admin = client.delete(f"/requests/{request_id}", headers=admin)
     assert denied_admin.status_code == 403
+    denied_economist = client.delete(f"/requests/{request_id}", headers=economist)
+    assert denied_economist.status_code == 403
 
     deleted = client.delete(f"/requests/{request_id}", headers=headers)
     assert deleted.status_code == 200
@@ -69,6 +88,128 @@ def test_employee_can_delete_draft_request_only(tmp_path):
     assert submitted.status_code == 200
     denied = client.delete(f"/requests/{request_id}", headers=headers)
     assert denied.status_code == 400
+
+
+def test_employee_can_withdraw_edit_and_cancel_request(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+
+    created = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee)
+    assert created.status_code == 200
+    request_id = created.json()["id"]
+
+    item = client.post(
+        f"/requests/{request_id}/dds-items",
+        json={"dds_id": DDS_LICENSE_ID, "sum_plan": 1000},
+        headers=employee,
+    )
+    assert item.status_code == 200
+
+    submitted = client.post(f"/requests/{request_id}/submit", headers=employee)
+    assert submitted.status_code == 200
+    assert submitted.json()["status"] == "on_review"
+
+    withdrawn = client.post(f"/requests/{request_id}/withdraw", headers=employee)
+    assert withdrawn.status_code == 200
+    assert withdrawn.json()["status"] == "draft"
+
+    edited = client.patch(f"/dds-items/{item.json()['id']}", json={"sum_plan": 1500}, headers=employee)
+    assert edited.status_code == 200
+
+    resubmitted = client.post(f"/requests/{request_id}/submit", headers=employee)
+    assert resubmitted.status_code == 200
+    assert resubmitted.json()["status"] == "on_review"
+
+    cancelled = client.post(f"/requests/{request_id}/cancel", headers=employee)
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+
+
+def test_budget_freeze_requires_approved_status_and_blocks_reopen_until_unfrozen(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+
+    created = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee)
+    assert created.status_code == 200
+    request_id = created.json()["id"]
+
+    item = client.post(
+        f"/requests/{request_id}/dds-items",
+        json={"dds_id": DDS_LICENSE_ID, "sum_plan": 1000},
+        headers=employee,
+    )
+    assert item.status_code == 200
+
+    denied_early = client.post(f"/requests/{request_id}/freeze-budget", headers=economist)
+    assert denied_early.status_code == 400
+
+    assert client.post(f"/requests/{request_id}/submit", headers=employee).status_code == 200
+    approved = client.post(f"/requests/{request_id}/approve-all-items", headers=economist)
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved"
+
+    frozen = client.post(f"/requests/{request_id}/freeze-budget", headers=economist)
+    assert frozen.status_code == 200
+    assert frozen.json()["budget_frozen"] is True
+
+    denied_reopen = client.post(f"/requests/{request_id}/reopen", headers=economist)
+    assert denied_reopen.status_code == 400
+
+    denied_patch = client.patch(f"/dds-items/{item.json()['id']}", json={"sum_plan": 1500}, headers=employee)
+    assert denied_patch.status_code == 400
+
+    denied_upload = client.post(
+        f"/dds-items/{item.json()['id']}/files",
+        headers=employee,
+        files={"file": ("kp.pdf", b"demo pdf content", "application/pdf")},
+    )
+    assert denied_upload.status_code == 400
+
+    unfrozen = client.post(f"/requests/{request_id}/unfreeze-budget", headers=economist)
+    assert unfrozen.status_code == 200
+    assert unfrozen.json()["budget_frozen"] is False
+
+    reopened = client.post(f"/requests/{request_id}/reopen", headers=economist)
+    assert reopened.status_code == 200
+    assert reopened.json()["status"] == "on_review"
+
+    edited = client.patch(
+        f"/dds-items/{item.json()['id']}",
+        json={"status": "approved_with_changes", "sum_fact": 1500, "comment": "Пересмотрено"},
+        headers=economist,
+    )
+    assert edited.status_code == 200
+
+
+def test_files_allowed_only_in_draft_for_employee(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    dds_item = client.post(f"/requests/{request['id']}/dds-items", json={"dds_id": DDS_LICENSE_ID, "sum_plan": 1000}, headers=employee).json()
+
+    upload = client.post(
+        f"/dds-items/{dds_item['id']}/files",
+        headers=employee,
+        files={"file": ("kp.pdf", b"demo pdf content", "application/pdf")},
+    )
+    assert upload.status_code == 200
+
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    denied_upload = client.post(
+        f"/dds-items/{dds_item['id']}/files",
+        headers=employee,
+        files={"file": ("kp2.pdf", b"demo pdf content", "application/pdf")},
+    )
+    assert denied_upload.status_code == 400
+
+    denied_delete = client.delete(f"/dds-items/{dds_item['id']}/files/{upload.json()['id']}", headers=employee)
+    assert denied_delete.status_code == 400
+
+    denied_economist = client.delete(f"/dds-items/{dds_item['id']}/files/{upload.json()['id']}", headers=economist)
+    assert denied_economist.status_code == 403
 
 
 def test_economist_reviews_finalizes_and_employee_cannot_edit_closed(tmp_path):
@@ -109,10 +250,9 @@ def test_economist_sees_only_requests_sent_for_review(tmp_path):
     assert client.get(f"/requests/{submitted_request['id']}", headers=economist).status_code == 200
 
 
-def test_reopen_allows_employee_edit_again(tmp_path):
+def test_reopen_returns_request_to_review_for_economist_editing(tmp_path):
     client = make_client(tmp_path)
     economist = auth(client, "economist", "economist")
-    employee = auth(client, "employee", "employee")
     dds_item = client.get(f"/requests/{REQUEST_ID}/dds-items", headers=economist).json()[0]
     invest_item = client.get(f"/requests/{REQUEST_ID}/invest-items", headers=economist).json()[0]
     client.patch(f"/dds-items/{dds_item['id']}", json={"status": "approved"}, headers=economist)
@@ -120,9 +260,48 @@ def test_reopen_allows_employee_edit_again(tmp_path):
     client.post(f"/requests/{REQUEST_ID}/finalize", headers=economist)
     reopened = client.post(f"/requests/{REQUEST_ID}/reopen", headers=economist)
     assert reopened.status_code == 200
-    assert reopened.json()["status"] == "draft"
-    edited = client.patch(f"/dds-items/{dds_item['id']}", json={"sum_plan": 121000}, headers=employee)
+    assert reopened.json()["status"] == "on_review"
+    edited = client.patch(
+        f"/dds-items/{dds_item['id']}",
+        json={"comment": "Возврат к доработке"},
+        headers=economist,
+    )
     assert edited.status_code == 200
+
+
+def test_economist_can_approve_all_items_with_one_action(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    dds_item = client.post(f"/requests/{request['id']}/dds-items", json={"dds_id": DDS_LICENSE_ID, "sum_plan": 120000}, headers=employee).json()
+    invest_item = client.post(
+        f"/requests/{request['id']}/invest-items",
+        json={"invest_id": INVEST_PLATFORM_ID, "sum_plan": 350000},
+        headers=employee,
+    ).json()
+
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+    assert client.patch(
+        f"/invest-items/{invest_item['id']}",
+        json={"sum_fact": 300000, "comment": "Частично подтверждено"},
+        headers=economist,
+    ).status_code == 200
+
+    approved = client.post(f"/requests/{request['id']}/approve-all-items", headers=economist)
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "approved_with_changes"
+
+    frozen = client.post(f"/requests/{request['id']}/freeze-budget", headers=economist)
+    assert frozen.status_code == 200
+    assert frozen.json()["budget_frozen"] is True
+
+    dds_after = client.get(f"/requests/{request['id']}/dds-items", headers=economist).json()
+    invest_after = client.get(f"/requests/{request['id']}/invest-items", headers=economist).json()
+    assert dds_after[0]["status"] == "approved"
+    assert dds_after[0]["sum_fact"] == 120000
+    assert invest_after[0]["status"] == "approved_with_changes"
 
 
 def test_direct_upload_download_for_dds_and_invest_items(tmp_path):
