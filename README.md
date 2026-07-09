@@ -1,34 +1,19 @@
 # BudgetBasket
 
-BudgetBasket - это прототип системы сбора и утверждения бюджетирования для модулей компании.
-MVP собран без PostgreSQL: данные хранятся в JSON-файлах, а загруженные файлы лежат локально на диске.
+BudgetBasket - прототип системы сбора и утверждения бюджетных заявок по модулям/юнитам компании.
 
 ## Стек
 
-- Backend: FastAPI, Pydantic, JSON-репозитории
-- Frontend: React, TypeScript, Vite, Tailwind, MUI
-- Хранилище файлов: `backend/uploads/`
+- Backend: FastAPI, Pydantic, SQLAlchemy 2.x, Alembic
+- Database: PostgreSQL
+- Object storage: SeaweedFS через S3-compatible API
+- Frontend: React, TypeScript, Vite, MUI
 - Запуск: Docker Compose
 
-## Что уже есть
-
-- Авторизация для трёх ролей: администратор, экономист, сотрудник
-- Оргструктура, подразделения, ответственные и закрепление модулей
-- Заявки бюджетирования с wizard-потоком
-- Справочники ДДС и инвест-проектов со строками заявки
-- Загрузка, привязка, скачивание файлов и архивирование
-- Русский интерфейс с ограничением действий по ролям
-
-## Тестовые пользователи
-
-- Администратор: `admin` / `admin`
-- Экономист: `economist` / `economist`
-- Сотрудник: `employee` / `employee`
-
-## Запуск через Docker
+## Локальный запуск
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
 После запуска:
@@ -36,16 +21,83 @@ docker compose up --build
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:8000
 - Swagger: http://localhost:8000/docs
+- SeaweedFS S3 API: http://localhost:8333
+- PostgreSQL admin panel: http://localhost:5050
+- PostgreSQL с хоста: `localhost:5433`
 
-## Локальный запуск backend
+Backend внутри Docker подключается к PostgreSQL по `postgres:5432` и к SeaweedFS по `http://seaweedfs:8333`.
+
+## Проверки
+
+```bash
+docker compose ps
+docker compose exec postgres pg_isready -U budgetbasket -d budgetbasket
+curl http://localhost:8000/health
+curl http://localhost:8000/health/db
+curl http://localhost:8333
+```
+
+## Миграции
+
+Миграции применяются автоматически при старте backend-контейнера:
+
+```bash
+alembic upgrade head
+```
+
+Проверить текущую ревизию:
+
+```bash
+docker compose exec backend alembic current
+```
+
+## Тестовые пользователи
+
+- Администратор: `admin` / `admin`
+- Экономист: `economist` / `economist`
+- Сотрудник: `employee` / `employee`
+
+Пароли в БД хранятся в виде PBKDF2-хэшей.
+
+## Env
+
+Пример находится в `.env.example`.
+
+Ключевые переменные:
+
+```env
+DATABASE_URL=postgresql://budgetbasket:budgetbasket@postgres:5432/budgetbasket
+S3_ENDPOINT=http://seaweedfs:8333
+S3_REGION=us-east-1
+S3_ACCESS_KEY=budgetbasket
+S3_SECRET_KEY=budgetbasket_secret
+S3_BUCKET=budgetbasket-files
+S3_FORCE_PATH_STYLE=true
+S3_PUBLIC_URL=http://localhost:8333
+MAX_UPLOAD_FILE_SIZE_MB=25
+```
+
+## Файлы
+
+Пользовательские файлы загружаются напрямую к строкам заявки:
+
+- `POST /dds-items/{itemId}/files`
+- `POST /invest-items/{itemId}/files`
+
+Backend сохраняет бинарные данные в SeaweedFS через S3-compatible API, а метаданные - в PostgreSQL. Внутренний `storage_key` клиенту не раскрывается; скачивание идет через:
+
+- `GET /files/{fileId}/download`
+
+## Локальная разработка без Docker
 
 ```bash
 cd backend
 python -m pip install -r requirements.txt
+set DATABASE_URL=postgresql://budgetbasket:budgetbasket@localhost:5433/budgetbasket
+set S3_ENDPOINT=http://localhost:8333
+python -m alembic upgrade head
 uvicorn app.main:app --reload
 ```
-
-## Локальный запуск frontend
 
 ```bash
 cd frontend
@@ -53,31 +105,14 @@ npm install
 npm run dev
 ```
 
-## Проверки
+## Проверки кода
 
 ```bash
 cd backend
-pytest
+python -m pytest
+python -m compileall app
 
 cd ../frontend
-npm run build
 npm test
+npm run build
 ```
-
-## Структура данных
-
-- `backend/db/init.sql` — каноническая PostgreSQL-схема
-- `backend/data/current/` — активные JSON-коллекции MVP
-- `backend/data/archive/{year}/` — архив заявок по годам
-- `storage/` — локальные uploads/exports
-
-## Ограничения MVP
-
-- Пароли хранятся в открытом виде только для прототипа
-- Токены живут в памяти backend-процесса и сбрасываются после перезапуска
-- JSON-хранилище не рассчитано на высокую конкурентную запись
-- PostgreSQL и SeaweedFS пока не подключены; схема готова в `backend/db/init.sql`
-
-## Путь к будущей замене
-
-Архитектура уже разделена так, чтобы позже без большой переделки заменить JSON-репозитории на PostgreSQL, а локальное хранилище - на объектное хранилище.

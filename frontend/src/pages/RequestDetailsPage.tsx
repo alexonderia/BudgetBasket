@@ -28,9 +28,9 @@ import { useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { PageActions } from '../components/PageActions';
 import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
-import type { BudgetItem, BudgetRequest, CatalogItem, ItemStatus, User } from '../types';
+import type { BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, User } from '../types';
 import { CLOSED_REQUEST_STATUSES } from '../types';
-import { downloadBlob } from '../utils/download';
+import { downloadAuthorized, downloadBlob } from '../utils/download';
 import { itemStatusLabels, money } from '../utils/labels';
 
 const steps = ['Сводка', 'ДДС', 'Инвест-проекты', 'Проверка'];
@@ -54,6 +54,46 @@ function categoryName(catalog: CatalogItem[], itemId?: string | null) {
   const item = catalog.find((entry) => entry.id === itemId);
   if (!item?.parent_id) return '—';
   return catalog.find((entry) => entry.id === item.parent_id)?.name || '—';
+}
+
+function ItemFilesCell({
+  kind,
+  itemId,
+  canUpload,
+  uploadPending,
+  onUpload,
+}: {
+  kind: 'dds' | 'invest';
+  itemId: string;
+  canUpload: boolean;
+  uploadPending: boolean;
+  onUpload: (file: File) => void;
+}) {
+  const { data: files = [] } = useQuery({
+    queryKey: ['item-files', kind, itemId],
+    queryFn: async () => (await api.get<FileAttachment[]>(`/${kind}-items/${itemId}/files`)).data,
+  });
+
+  return (
+    <Stack spacing={1} alignItems="flex-start">
+      {files.map((file) => (
+        <Button
+          key={file.id}
+          size="small"
+          startIcon={<FileDownloadIcon />}
+          onClick={() => downloadAuthorized(`/files/${file.id}/download`, file.original_name)}
+        >
+          {file.original_name}
+        </Button>
+      ))}
+      {canUpload && (
+        <Button component="label" size="small" startIcon={<AttachFileIcon />} disabled={uploadPending}>
+          РџСЂРёРєСЂРµРїРёС‚СЊ
+          <input hidden type="file" onChange={(event) => event.target.files?.[0] && onUpload(event.target.files[0])} />
+        </Button>
+      )}
+    </Stack>
+  );
 }
 
 function AddItemForm({
@@ -128,6 +168,7 @@ function ItemsTable({
   const queryClient = useQueryClient();
   const [drafts, setDrafts] = useState<Record<string, Partial<BudgetItem>>>({});
   const disabledForEmployee = user.role !== 'employee' || request.status !== 'draft';
+  const canEmployeeUpload = user.role === 'employee' && ['draft', 'on_review'].includes(request.status);
   const canEconomist = user.role === 'economist' && request.status === 'on_review';
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
   const patch = useMutation({ mutationFn: ({ id, body }: { id: string; body: Partial<BudgetItem> }) => api.patch(`/${kind}-items/${id}`, body), onSuccess: refresh });
@@ -135,10 +176,12 @@ function ItemsTable({
     mutationFn: async ({ itemId, file }: { itemId: string; file: File }) => {
       const form = new FormData();
       form.append('file', file);
-      const uploaded = await api.post('/files/upload', form);
-      return api.post(`/${kind}-items/${itemId}/files`, { file_id: uploaded.data.id });
+      return api.post(`/${kind}-items/${itemId}/files`, form);
     },
-    onSuccess: refresh,
+    onSuccess: (_response, variables) => {
+      refresh();
+      queryClient.invalidateQueries({ queryKey: ['item-files', kind, variables.itemId] });
+    },
   });
 
   return (
@@ -190,12 +233,13 @@ function ItemsTable({
                   {canEconomist ? <TextField size="small" value={local.comment ?? item.comment ?? ''} onChange={(event) => setDrafts({ ...drafts, [item.id]: { ...local, comment: event.target.value } })} /> : item.comment || (item.status === 'rejected' ? 'Комментарий рекомендуется' : '—')}
                 </TableCell>
                 <TableCell>
-                  {user.role === 'employee' && !disabledForEmployee && (
-                    <Button component="label" size="small" startIcon={<AttachFileIcon />}>
-                      Прикрепить
-                      <input hidden type="file" onChange={(event) => event.target.files?.[0] && upload.mutate({ itemId: item.id, file: event.target.files[0] })} />
-                    </Button>
-                  )}
+                  <ItemFilesCell
+                    kind={kind}
+                    itemId={item.id}
+                    canUpload={canEmployeeUpload}
+                    uploadPending={upload.isPending}
+                    onUpload={(file) => upload.mutate({ itemId: item.id, file })}
+                  />
                 </TableCell>
                 <TableCell>
                   {canEconomist && <Button size="small" variant="outlined" onClick={() => patch.mutate({ id: item.id, body: drafts[item.id] || {} })}>Сохранить</Button>}

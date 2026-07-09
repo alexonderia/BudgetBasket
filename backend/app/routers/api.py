@@ -2,7 +2,7 @@ from typing import Annotated
 
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.dependencies import current_user
@@ -213,8 +213,15 @@ def update_invest_mapping(request: Request, item_id: str, payload: MappingPatch,
 
 
 @router.get("/requests")
-def list_requests(request: Request, user: User, status: str | None = None, unit_id: str | None = None):
-    return request.app.state.request_service.list_requests(user, status, unit_id)
+def list_requests(
+    request: Request,
+    user: User,
+    status: str | None = None,
+    unit_id: str | None = None,
+    created_from: str | None = None,
+    created_to: str | None = None,
+):
+    return request.app.state.request_service.list_requests(user, status, unit_id, created_from, created_to)
 
 
 @router.get("/requests/export/closed")
@@ -321,29 +328,56 @@ async def upload_file(request: Request, user: User, file: UploadFile = File(...)
 
 
 @router.post("/dds-items/{item_id}/files")
-def link_dds_file(request: Request, item_id: str, payload: FileLink, user: User):
+async def upload_or_link_dds_file(
+    request: Request,
+    item_id: str,
+    user: User,
+):
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        file = form.get("file")
+        if not hasattr(file, "read"):
+            raise HTTPException(status_code=400, detail="file is required")
+        return await request.app.state.file_service.upload_for_item(user, "dds", item_id, file)
+    payload = FileLink.model_validate(await request.json())
     return request.app.state.file_service.link(user, "dds", item_id, payload.file_id)
 
 
 @router.post("/invest-items/{item_id}/files")
-def link_invest_file(request: Request, item_id: str, payload: FileLink, user: User):
+async def upload_or_link_invest_file(
+    request: Request,
+    item_id: str,
+    user: User,
+):
+    content_type = request.headers.get("content-type", "")
+    if content_type.startswith("multipart/form-data"):
+        form = await request.form()
+        file = form.get("file")
+        if not hasattr(file, "read"):
+            raise HTTPException(status_code=400, detail="file is required")
+        return await request.app.state.file_service.upload_for_item(user, "invest", item_id, file)
+    payload = FileLink.model_validate(await request.json())
     return request.app.state.file_service.link(user, "invest", item_id, payload.file_id)
 
 
 @router.get("/dds-items/{item_id}/files")
 def dds_item_files(request: Request, item_id: str, user: User):
-    return request.app.state.file_service.files_for_item("dds", item_id)
+    return request.app.state.file_service.files_for_item(user, "dds", item_id)
 
 
 @router.get("/invest-items/{item_id}/files")
 def invest_item_files(request: Request, item_id: str, user: User):
-    return request.app.state.file_service.files_for_item("invest", item_id)
+    return request.app.state.file_service.files_for_item(user, "invest", item_id)
 
 
 @router.get("/files/{file_id}/download")
 def download_file(request: Request, file_id: str, user: User):
-    path, file = request.app.state.file_service.download_path(user, file_id)
-    return FileResponse(path, filename=file["original_name"])
+    body, file, _storage, size, content_type = request.app.state.file_service.download(user, file_id)
+    headers = {"Content-Disposition": f'attachment; filename="{file["original_name"]}"'}
+    if size is not None:
+        headers["Content-Length"] = str(size)
+    return StreamingResponse(body, media_type=content_type or "application/octet-stream", headers=headers)
 
 
 @router.post("/admin/archive-year/{year}")

@@ -1,5 +1,5 @@
 export type Role = 'admin' | 'economist' | 'employee';
-export type RequestStatus = 'draft' | 'on_review' | 'approved' | 'partially_approved' | 'rejected' | 'cancelled';
+export type RequestStatus = 'draft' | 'on_review' | 'approved' | 'approved_with_changes' | 'partially_approved' | 'rejected' | 'cancelled';
 export type ItemStatus = 'on_review' | 'rejected' | 'approved_with_changes' | 'approved';
 
 export interface User {
@@ -68,4 +68,10 @@ export interface BudgetItem {
   comment: string | null;
 }
 
-export const CLOSED_REQUEST_STATUSES: RequestStatus[] = ['approved', 'partially_approved', 'rejected'];
+export interface FileAttachment {
+  id: number;
+  id_storage_object: number;
+  original_name: string;
+}
+
+export const CLOSED_REQUEST_STATUSES: RequestStatus[] = ['approved', 'approved_with_changes', 'partially_approved', 'rejected'];

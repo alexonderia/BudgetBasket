@@ -2,7 +2,7 @@ import os
 
 from fastapi.testclient import TestClient
 
-from app.seed import DDS_LICENSE_ID, MODULE_ALPHA_ID, REQUEST_ID
+from app.seed import DDS_LICENSE_ID, INVEST_PLATFORM_ID, MODULE_ALPHA_ID, REQUEST_ID
 
 
 def make_client(tmp_path):
@@ -96,6 +96,74 @@ def test_file_upload_and_archive(tmp_path):
     assert archived.status_code == 200
     archive = client.get("/archive/2026/requests", headers=admin)
     assert len(archive.json()) >= 1
+
+
+def test_direct_upload_download_for_dds_and_invest_items(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    dds_item = client.post(f"/requests/{request['id']}/dds-items", json={"dds_id": DDS_LICENSE_ID, "sum_plan": 1000}, headers=employee).json()
+    invest_item = client.post(
+        f"/requests/{request['id']}/invest-items",
+        json={"invest_id": INVEST_PLATFORM_ID, "sum_plan": 2000},
+        headers=employee,
+    ).json()
+
+    dds_upload = client.post(
+        f"/dds-items/{dds_item['id']}/files",
+        headers=employee,
+        files={"file": ("kp.pdf", b"demo pdf content", "application/pdf")},
+    )
+    assert dds_upload.status_code == 200
+    downloaded = client.get(f"/files/{dds_upload.json()['id']}/download", headers=employee)
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"demo pdf content"
+
+    invest_upload = client.post(
+        f"/invest-items/{invest_item['id']}/files",
+        headers=employee,
+        files={"file": ("plan.png", b"not really png", "image/png")},
+    )
+    assert invest_upload.status_code == 200
+    files = client.get(f"/invest-items/{invest_item['id']}/files", headers=employee)
+    assert files.status_code == 200
+    assert files.json()[0]["id"] == invest_upload.json()["id"]
+
+
+def test_foreign_request_and_role_field_restrictions(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+
+    created_user = client.post(
+        "/users",
+        json={"login": "other", "password": "other", "role": "employee", "name": "Other", "last_name": "Employee"},
+        headers=admin,
+    )
+    assert created_user.status_code == 200
+    unit = client.post(
+        "/units",
+        json={"parent_id": None, "name": "Other unit", "type": "department", "is_active": True},
+        headers=admin,
+    )
+    assert unit.status_code == 200
+    assert client.post(f"/units/{unit.json()['id']}/responsible", json={"user_id": created_user.json()["id"]}, headers=admin).status_code == 200
+    other = auth(client, "other", "other")
+    foreign = client.post("/requests", json={"unit_id": unit.json()["id"]}, headers=other)
+    assert foreign.status_code == 200
+    denied = client.get(f"/requests/{foreign.json()['id']}", headers=employee)
+    assert denied.status_code == 403
+
+    dds_item = client.get(f"/requests/{REQUEST_ID}/dds-items", headers=economist).json()[0]
+    economist_patch = client.patch(f"/dds-items/{dds_item['id']}", json={"sum_plan": 1}, headers=economist)
+    assert economist_patch.status_code == 403
+
+    employee_request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    item = client.post(f"/requests/{employee_request['id']}/dds-items", json={"dds_id": DDS_LICENSE_ID, "sum_plan": 1000}, headers=employee).json()
+    assert client.post(f"/requests/{employee_request['id']}/submit", headers=employee).status_code == 200
+    employee_patch = client.patch(f"/dds-items/{item['id']}", json={"sum_fact": 1, "status": "approved"}, headers=employee)
+    assert employee_patch.status_code == 400
 
 
 def test_catalog_scoped_by_module_and_excel_import_export(tmp_path):

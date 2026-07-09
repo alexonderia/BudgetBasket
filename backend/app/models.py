@@ -1,7 +1,7 @@
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Role(StrEnum):
@@ -19,6 +19,7 @@ class RequestStatus(StrEnum):
     draft = "draft"
     on_review = "on_review"
     approved = "approved"
+    approved_with_changes = "approved_with_changes"
     partially_approved = "partially_approved"
     rejected = "rejected"
     cancelled = "cancelled"
@@ -31,17 +32,26 @@ class ItemStatus(StrEnum):
     approved = "approved"
 
 
-CLOSED_REQUEST_STATUSES = {RequestStatus.approved, RequestStatus.partially_approved, RequestStatus.rejected}
+CLOSED_REQUEST_STATUSES = {
+    RequestStatus.approved,
+    RequestStatus.approved_with_changes,
+    RequestStatus.partially_approved,
+    RequestStatus.rejected,
+}
 EDITABLE_REQUEST_STATUSES = {RequestStatus.draft}
 APPROVED_ITEM_STATUSES = {ItemStatus.approved, ItemStatus.approved_with_changes}
 
 
-class LoginIn(BaseModel):
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class LoginIn(StrictModel):
     login: str
     password: str
 
 
-class UserCreate(BaseModel):
+class UserCreate(StrictModel):
     login: str
     password: str
     role: Role
@@ -53,12 +63,12 @@ class UserCreate(BaseModel):
     max_link: str | None = None
 
 
-class UserPatch(BaseModel):
+class UserPatch(StrictModel):
     password: str | None = None
     role: Role | None = None
 
 
-class ProfilePatch(BaseModel):
+class ProfilePatch(StrictModel):
     name: str | None = None
     second_name: str | None = None
     last_name: str | None = None
@@ -67,46 +77,46 @@ class ProfilePatch(BaseModel):
     max_link: str | None = None
 
 
-class UnitCreate(BaseModel):
+class UnitCreate(StrictModel):
     parent_id: str | None = None
     name: str
     type: UnitType
     is_active: bool = True
 
 
-class UnitPatch(BaseModel):
+class UnitPatch(StrictModel):
     parent_id: str | None = None
     name: str | None = None
     type: UnitType | None = None
     is_active: bool | None = None
 
 
-class ResponsibleIn(BaseModel):
+class ResponsibleIn(StrictModel):
     user_id: str
 
 
-class AssignmentCreate(BaseModel):
+class AssignmentCreate(StrictModel):
     economist_id: str
     unit_id: str
     assignment_type: UnitType
     is_active: bool = True
 
 
-class CatalogCreate(BaseModel):
+class CatalogCreate(StrictModel):
     parent_id: str | None = None
     unit_id: str | None = None
     name: str
     is_active: bool = True
 
 
-class CatalogPatch(BaseModel):
+class CatalogPatch(StrictModel):
     parent_id: str | None = None
     unit_id: str | None = None
     name: str | None = None
     is_active: bool | None = None
 
 
-class MappingCreate(BaseModel):
+class MappingCreate(StrictModel):
     unit_id: str
     local_name: str
     local_code: str | None = None
@@ -115,27 +125,28 @@ class MappingCreate(BaseModel):
     invest_id: str | None = None
 
 
-class MappingPatch(BaseModel):
+class MappingPatch(StrictModel):
     local_name: str | None = None
     local_code: str | None = None
     is_active: bool | None = None
 
 
-class RequestCreate(BaseModel):
+class RequestCreate(StrictModel):
     unit_id: str
+    economist_id: str | None = None
 
 
-class RequestPatch(BaseModel):
+class RequestPatch(StrictModel):
     status: RequestStatus | None = None
 
 
-class ItemCreate(BaseModel):
+class ItemCreate(StrictModel):
     dds_id: str | None = None
     invest_id: str | None = None
     sum_plan: float = Field(ge=0)
 
 
-class ItemPatch(BaseModel):
+class ItemPatch(StrictModel):
     dds_id: str | None = None
     invest_id: str | None = None
     sum_plan: float | None = Field(default=None, ge=0)
@@ -144,7 +155,7 @@ class ItemPatch(BaseModel):
     comment: str | None = None
 
 
-class FileLink(BaseModel):
+class FileLink(StrictModel):
     file_id: str | int
 
 

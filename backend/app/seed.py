@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.repositories.json_repository import JsonRepository
+from app.security import hash_password
 
 ADMIN_ID = "00000000-0000-0000-0000-000000000001"
 ECONOMIST_ID = "00000000-0000-0000-0000-000000000002"
@@ -95,7 +96,8 @@ def seed_data(repo: JsonRepository) -> None:
     for collection in collections:
         repo.load_all(collection)
 
-    _migrate_statuses(repo)
+    if not getattr(repo, "is_sql", False):
+        _migrate_statuses(repo)
 
     invests = repo.load_all("invests_catalog")
     if invests and not any(item.get("id") == INVEST_DEV_ID for item in invests):
@@ -119,9 +121,9 @@ def seed_data(repo: JsonRepository) -> None:
     repo.save_all(
         "users",
         [
-            {"id": ADMIN_ID, "login": "admin", "password": "admin", "role": "admin"},
-            {"id": ECONOMIST_ID, "login": "economist", "password": "economist", "role": "economist"},
-            {"id": EMPLOYEE_ID, "login": "employee", "password": "employee", "role": "employee"},
+            {"id": ADMIN_ID, "login": "admin", "password": hash_password("admin"), "role": "admin"},
+            {"id": ECONOMIST_ID, "login": "economist", "password": hash_password("economist"), "role": "economist"},
+            {"id": EMPLOYEE_ID, "login": "employee", "password": hash_password("employee"), "role": "employee"},
         ],
     )
     repo.save_all(

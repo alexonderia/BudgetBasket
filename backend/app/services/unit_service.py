@@ -61,6 +61,22 @@ class UnitService:
         require_role(user, "admin")
         seen: set[tuple[str, str]] = set()
         assignments = []
+        users = {item["id"]: item for item in self.repo.load_all("users")}
+        for item in self.repo.load_all("units_responsibles"):
+            target = users.get(item.get("user_id"))
+            if not target or target.get("role") != "economist" or not item.get("is_active"):
+                continue
+            key = (item["user_id"], item["unit_id"])
+            seen.add(key)
+            assignments.append(
+                {
+                    "id": f"{item['user_id']}:{item['unit_id']}",
+                    "economist_id": item["user_id"],
+                    "unit_id": item["unit_id"],
+                    "assignment_type": "module",
+                    "is_active": True,
+                }
+            )
         for request in self.repo.load_all("requests"):
             economist_id = request.get("economist_id")
             if not economist_id:
@@ -96,6 +112,11 @@ class UnitService:
                 changed = True
         if changed:
             self.repo.save_all("requests", requests)
+        responsibles = self.repo.load_all("units_responsibles")
+        for unit_id in unit_ids:
+            if not any(item.get("unit_id") == unit_id and item.get("user_id") == payload["economist_id"] for item in responsibles):
+                responsibles.append({"unit_id": unit_id, "user_id": payload["economist_id"], "is_active": True})
+        self.repo.save_all("units_responsibles", responsibles)
         return {
             "id": f"{payload['economist_id']}:{payload['unit_id']}",
             "economist_id": payload["economist_id"],

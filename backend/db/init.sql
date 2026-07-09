@@ -18,9 +18,6 @@ CREATE TABLE users (
     -- Можно заменить на FK roles, если роли будут отдельной таблицей
     role TEXT NOT NULL,
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
     CONSTRAINT users_role_chk CHECK (
         role IN ('admin', 'economist', 'employee')
     )
@@ -34,10 +31,7 @@ CREATE TABLE profiles (
     last_name TEXT NOT NULL,
     phone TEXT,
     email TEXT NOT NULL UNIQUE,
-    max_link TEXT,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    max_link TEXT
 );
 
 CREATE TABLE units (
@@ -48,9 +42,6 @@ CREATE TABLE units (
     name TEXT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
     CONSTRAINT units_name_unique_per_parent UNIQUE (parent_id, name)
 );
 
@@ -59,8 +50,6 @@ CREATE TABLE units_responsibles (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     PRIMARY KEY (unit_id, user_id)
 );
@@ -79,8 +68,6 @@ CREATE TABLE storage_objects (
     mime_type TEXT NOT NULL,
     size_bytes BIGINT NOT NULL,
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
     CONSTRAINT storage_objects_size_chk CHECK (size_bytes >= 0)
 );
 
@@ -88,9 +75,7 @@ CREATE TABLE files (
     id BIGSERIAL PRIMARY KEY,
 
     id_storage_object BIGINT NOT NULL REFERENCES storage_objects(id) ON DELETE RESTRICT,
-    original_name TEXT NOT NULL,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    original_name TEXT NOT NULL
 );
 
 -- =========================================================
@@ -106,9 +91,6 @@ CREATE TABLE dds_catalog (
     name TEXT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
     CONSTRAINT dds_catalog_name_unique_per_unit_parent UNIQUE (unit_id, parent_id, name)
 );
 
@@ -120,9 +102,6 @@ CREATE TABLE invests_catalog (
 
     name TEXT NOT NULL,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT invests_catalog_name_unique_per_unit_parent UNIQUE (unit_id, parent_id, name)
 );
@@ -150,6 +129,7 @@ CREATE TABLE requests (
             'draft',
             'on_review',
             'approved',
+            'approved_with_changes',
             'partially_approved',
             'rejected',
             'cancelled'
@@ -175,9 +155,6 @@ CREATE TABLE dds_items (
     status TEXT NOT NULL DEFAULT 'on_review',
     comment TEXT,
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
     CONSTRAINT dds_items_sum_plan_chk CHECK (sum_plan >= 0),
     CONSTRAINT dds_items_sum_fact_chk CHECK (sum_fact IS NULL OR sum_fact >= 0),
 
@@ -194,8 +171,6 @@ CREATE TABLE dds_items (
 CREATE TABLE dds_item_files (
     file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     dds_item_id UUID NOT NULL REFERENCES dds_items(id) ON DELETE CASCADE,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     PRIMARY KEY (file_id, dds_item_id)
 );
@@ -218,9 +193,6 @@ CREATE TABLE invest_items (
     status TEXT NOT NULL DEFAULT 'on_review',
     comment TEXT,
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-
     CONSTRAINT invest_items_sum_plan_chk CHECK (sum_plan >= 0),
     CONSTRAINT invest_items_sum_fact_chk CHECK (sum_fact IS NULL OR sum_fact >= 0),
 
@@ -237,8 +209,6 @@ CREATE TABLE invest_items (
 CREATE TABLE invest_item_files (
     file_id BIGINT NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     invest_item_id UUID NOT NULL REFERENCES invest_items(id) ON DELETE CASCADE,
-
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     PRIMARY KEY (file_id, invest_item_id)
 );
@@ -258,8 +228,6 @@ CREATE INDEX idx_units_responsibles_active ON units_responsibles(is_active);
 CREATE INDEX idx_requests_unit_id ON requests(unit_id);
 CREATE INDEX idx_requests_economist_id ON requests(economist_id);
 CREATE INDEX idx_requests_status ON requests(status);
-CREATE INDEX idx_requests_created_at ON requests(created_at DESC);
-
 CREATE INDEX idx_dds_catalog_unit_id ON dds_catalog(unit_id);
 CREATE INDEX idx_dds_catalog_parent_id ON dds_catalog(parent_id);
 CREATE INDEX idx_dds_catalog_active ON dds_catalog(is_active);
@@ -279,6 +247,8 @@ CREATE INDEX idx_invest_items_category_id ON invest_items(category_id);
 CREATE INDEX idx_invest_items_status ON invest_items(status);
 
 CREATE INDEX idx_files_storage_object ON files(id_storage_object);
+CREATE INDEX idx_storage_objects_storage_key ON storage_objects(storage_key);
+CREATE INDEX idx_storage_objects_content_sha256 ON storage_objects(content_sha256);
 
 -- =========================================================
 -- UPDATED_AT TRIGGER
@@ -292,51 +262,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_users_updated_at
-BEFORE UPDATE ON users
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
-CREATE TRIGGER trg_profiles_updated_at
-BEFORE UPDATE ON profiles
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
-CREATE TRIGGER trg_units_updated_at
-BEFORE UPDATE ON units
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
-CREATE TRIGGER trg_dds_catalog_updated_at
-BEFORE UPDATE ON dds_catalog
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
-CREATE TRIGGER trg_invests_catalog_updated_at
-BEFORE UPDATE ON invests_catalog
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
 CREATE TRIGGER trg_requests_updated_at
 BEFORE UPDATE ON requests
 FOR EACH ROW
 EXECUTE FUNCTION set_updated_at();
-
-CREATE TRIGGER trg_dds_items_updated_at
-BEFORE UPDATE ON dds_items
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
-CREATE TRIGGER trg_invest_items_updated_at
-BEFORE UPDATE ON invest_items
-FOR EACH ROW
-EXECUTE FUNCTION set_updated_at();
-
--- =========================================================
--- OPTIONAL SEED DATA
--- =========================================================
-
-INSERT INTO users (login, password, role)
-VALUES
-    ('admin', 'change_me', 'admin')
-ON CONFLICT (login) DO NOTHING;

@@ -11,6 +11,7 @@ import Typography from '@mui/material/Typography';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
 import type { BudgetRequest, User } from '../types';
+import { CLOSED_REQUEST_STATUSES } from '../types';
 import { money } from '../utils/labels';
 
 function Metric({ title, value, icon }: { title: string; value: string | number; icon: React.ReactNode }) {
@@ -32,7 +33,7 @@ function Metric({ title, value, icon }: { title: string; value: string | number;
 export default function DashboardPage({ user }: { user: User }) {
   const { data = [] } = useQuery({ queryKey: ['requests'], queryFn: async () => (await api.get<BudgetRequest[]>('/requests')).data });
   const review = data.filter((item) => item.status === 'on_review').length;
-  const closed = data.filter((item) => ['approved', 'partially_approved', 'rejected'].includes(item.status)).length;
+  const closed = data.filter((item) => CLOSED_REQUEST_STATUSES.includes(item.status)).length;
   const approved = data.reduce((sum, item) => sum + (item.summary?.approved_sum || item.sum || 0), 0);
 
   return (
