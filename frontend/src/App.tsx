@@ -34,7 +34,7 @@ export default function App() {
   function handleLogin(token: string, nextUser: User) {
     localStorage.setItem('budgetbasket_token', token);
     persistUser(nextUser);
-    navigate('/');
+    navigate(nextUser.role === 'employee' ? '/requests' : '/');
   }
 
   function logout() {
@@ -56,7 +56,7 @@ export default function App() {
   return (
     <Routes>
       <Route element={<Layout user={user} onLogout={logout} onUserChange={persistUser} />}>
-        <Route path="/" element={<DashboardPage user={user} />} />
+        <Route path="/" element={user.role === 'employee' ? <Navigate to="/requests" replace /> : <DashboardPage user={user} />} />
         <Route path="/requests" element={<RequestsPage user={user} />} />
         <Route path="/requests/:id" element={<RequestDetailsPage user={user} />} />
         <Route path="/users" element={user.role === 'admin' ? <UsersPage /> : <Navigate to="/" replace />} />

@@ -180,8 +180,8 @@ export function Layout({
     (!!profileForm.phone && !PHONE_RE.test(profileForm.phone));
 
   const items = [
-    { label: 'Сводка', to: '/', icon: <DashboardIcon /> },
     { label: 'Заявки', to: '/requests', icon: <FolderIcon /> },
+    ...(user.role !== 'employee' ? [{ label: 'Сводка', to: '/', icon: <DashboardIcon /> }] : []),
     ...(user.role === 'admin'
       ? [
           { label: 'Пользователи', to: '/users', icon: <PeopleIcon /> },
