@@ -1,4 +1,3 @@
-import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
@@ -15,6 +14,7 @@ import MenuItem from '@mui/material/MenuItem';
 import Skeleton from '@mui/material/Skeleton';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
@@ -65,7 +65,7 @@ function Metric({ title, value, hint, icon, tone = 'blue' }: { title: string; va
   );
 }
 
-function DonutChart({ rows, total }: { rows: Breakdown[]; total: number }) {
+function DonutChart({ rows, total, ariaLabel }: { rows: Breakdown[]; total: number; ariaLabel: string }) {
   const segments = useMemo(() => {
     const chartRows = rows.length > 6
       ? [
@@ -78,6 +78,7 @@ function DonutChart({ rows, total }: { rows: Breakdown[]; total: number }) {
           }), { id: 'other', name: 'Остальные категории', kind: 'dds', planned: 0, approved: 0, items_count: 0 }),
         ]
       : rows;
+
     let offset = 0;
     return chartRows.map((row, index) => {
       const percentage = total ? (row.planned / total) * 100 : 0;
@@ -87,30 +88,78 @@ function DonutChart({ rows, total }: { rows: Breakdown[]; total: number }) {
     });
   }, [rows, total]);
 
+  const pointOnCircle = (radius: number, angle: number) => {
+    const radians = (angle * Math.PI) / 180;
+    return {
+      x: 21 + radius * Math.cos(radians),
+      y: 21 + radius * Math.sin(radians),
+    };
+  };
+
+  const segmentPath = (startPercentage: number, percentage: number) => {
+    const startAngle = startPercentage * 3.6 - 90;
+    const endAngle = (startPercentage + percentage) * 3.6 - 90;
+    const outerStart = pointOnCircle(19, startAngle);
+    const outerEnd = pointOnCircle(19, endAngle);
+    const innerStart = pointOnCircle(11, startAngle);
+    const innerEnd = pointOnCircle(11, endAngle);
+    const largeArc = percentage > 50 ? 1 : 0;
+
+    return [
+      `M ${outerStart.x} ${outerStart.y}`,
+      `A 19 19 0 ${largeArc} 1 ${outerEnd.x} ${outerEnd.y}`,
+      `L ${innerEnd.x} ${innerEnd.y}`,
+      `A 11 11 0 ${largeArc} 0 ${innerStart.x} ${innerStart.y}`,
+      'Z',
+    ].join(' ');
+  };
+
   if (!rows.length) {
-    return <Box className="dashboard-empty-chart">Нет данных для распределения</Box>;
+    return <Box className="dashboard-empty-chart">Нет данных для расчета</Box>;
   }
 
   return (
     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2.5} alignItems="center">
-      <Box className="dashboard-donut" aria-label="Распределение бюджета по категориям">
+      <Box className="dashboard-donut" aria-label={ariaLabel}>
         <svg viewBox="0 0 42 42" role="img">
-          <circle className="dashboard-donut-track" cx="21" cy="21" r="15.9155" />
+          <circle className="dashboard-donut-track" cx="21" cy="21" r="15" />
           {segments.map((segment) => (
-            <circle
+            <Tooltip
               key={segment.id}
-              className="dashboard-donut-segment"
-              cx="21"
-              cy="21"
-              r="15.9155"
-              stroke={segment.color}
-              strokeDasharray={`${segment.percentage} ${100 - segment.percentage}`}
-              strokeDashoffset={-segment.offset}
-            />
+              arrow
+              placement="top"
+              classes={{ popper: 'dashboard-donut-tooltip' }}
+              title={(
+                <Box>
+                  <Typography variant="caption" component="div">{segment.name}</Typography>
+                  <Typography variant="body2" component="div" fontWeight={700}>{money(segment.planned)}</Typography>
+                </Box>
+              )}
+            >
+              {segment.percentage >= 99.999 ? (
+                <circle
+                  className="dashboard-donut-segment"
+                  cx="21"
+                  cy="21"
+                  r="15"
+                  fill="none"
+                  stroke={segment.color}
+                  strokeWidth="8"
+                  tabIndex={0}
+                />
+              ) : (
+                <path
+                  className="dashboard-donut-segment"
+                  d={segmentPath(segment.offset, segment.percentage)}
+                  fill={segment.color}
+                  tabIndex={0}
+                />
+              )}
+            </Tooltip>
           ))}
         </svg>
         <Box className="dashboard-donut-value">
-          <Typography variant="caption" color="text.secondary">План</Typography>
+          <Typography variant="caption" color="text.secondary">Расчет</Typography>
           <Typography variant="subtitle2">{money(total)}</Typography>
         </Box>
       </Box>
@@ -131,20 +180,22 @@ function DonutChart({ rows, total }: { rows: Breakdown[]; total: number }) {
 
 function BudgetBars({ rows, title, emptyText, showType, showAmounts }: { rows: Breakdown[]; title: string; emptyText: string; showType?: boolean; showAmounts?: boolean }) {
   const visibleRows = rows.slice(0, 5);
-  const max = Math.max(...visibleRows.map((item) => item.planned), 0);
+  const scaleMax = Math.max(...visibleRows.map((item) => Math.max(item.planned, item.approved)), 0);
+
   return (
     <Card className="surface dashboard-panel" elevation={0}>
       <Box className="dashboard-panel-heading">
         <Typography variant="h6">{title}</Typography>
-        <Typography variant="body2" color="text.secondary">План / утверждено</Typography>
+        <Typography variant="body2" color="text.secondary">Расчет / утверждено</Typography>
       </Box>
       {!visibleRows.length ? (
         <Box className="dashboard-empty-chart">{emptyText}</Box>
       ) : (
         <Stack spacing={2.1}>
           {visibleRows.map((row) => {
-            const planned = max ? (row.planned / max) * 100 : 0;
-            const approved = row.planned ? (row.approved / row.planned) * 100 : 0;
+            const planned = scaleMax ? (row.planned / scaleMax) * 100 : 0;
+            const approved = scaleMax ? (row.approved / scaleMax) * 100 : 0;
+            const delta = row.approved - row.planned;
             return (
               <Box key={row.id}>
                 <Stack direction="row" justifyContent="space-between" spacing={1.5} alignItems="baseline">
@@ -160,17 +211,19 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts }: { rows: B
                   </Stack>
                   {showAmounts ? (
                     <Stack className="dashboard-article-amounts" spacing={0.15} alignItems="flex-end">
-                      <Typography variant="caption" color="text.secondary">План: {money(row.planned)}</Typography>
+                      <Typography variant="caption" color="text.secondary">Расчет: {money(row.planned)}</Typography>
                       <Typography variant="caption" color="primary.main" fontWeight={700}>Утверждено: {money(row.approved)}</Typography>
+                      <Typography variant="caption" color={delta >= 0 ? 'success.main' : 'error.main'} fontWeight={700}>
+                        Корректировка: {delta >= 0 ? `+${money(delta)}` : money(delta)}
+                      </Typography>
                     </Stack>
                   ) : (
                     <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>{money(row.planned)}</Typography>
                   )}
                 </Stack>
                 <Box className="dashboard-bar-track" sx={{ mt: 0.9 }}>
-                  <Box className="dashboard-bar-planned" sx={{ width: `${planned}%` }}>
-                    <Box className="dashboard-bar-approved" sx={{ width: `${approved}%` }} />
-                  </Box>
+                  <Box className="dashboard-bar-planned" sx={{ width: `${planned}%` }} />
+                  <Box className="dashboard-bar-approved" sx={{ width: `${approved}%` }} />
                 </Box>
               </Box>
             );
@@ -189,8 +242,8 @@ export default function DashboardPage({ user }: { user: User }) {
   });
 
   const approvalRate = data?.totals.planned ? Math.round((data.totals.approved / data.totals.planned) * 100) : 0;
-  const hasSelectedUnit = Boolean(unitId);
-  const scopeLabel = user.role === 'admin' ? 'Вся организация' : 'Только ваша зона ответственности';
+  const correction = data ? data.totals.approved - data.totals.planned : 0;
+  const correctionLabel = correction === 0 ? 'Без корректировки' : correction > 0 ? 'Сумма увеличена' : 'Сумма уменьшена';
 
   if (isLoading || !data) {
     return <Skeleton variant="rounded" height={420} sx={{ borderRadius: 4 }} />;
@@ -200,14 +253,7 @@ export default function DashboardPage({ user }: { user: User }) {
     <Stack spacing={2.5} className="dashboard-page">
       <Card className="dashboard-hero" elevation={0}>
         <Box>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Chip size="small" icon={<AccountTreeOutlinedIcon />} label={scopeLabel} className="dashboard-scope-chip" />
-            {hasSelectedUnit && <Chip size="small" label="Фокус на подразделении" variant="outlined" />}
-          </Stack>
-          <Typography variant="h5" sx={{ mt: 1.4 }}>Бюджет в одном взгляде</Typography>
-          <Typography color="text.secondary" sx={{ mt: 0.65, maxWidth: 620 }}>
-            Контролируйте план, согласования и распределение средств по подразделениям и статьям.
-          </Typography>
+          <Typography variant="h5">Сводка расчетов</Typography>
         </Box>
         <TextField select size="small" label="Подразделение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
           <MenuItem value="">Все доступные подразделения</MenuItem>
@@ -216,10 +262,10 @@ export default function DashboardPage({ user }: { user: User }) {
       </Card>
 
       <Grid container spacing={2}>
-        <Grid size={{ xs: 12, sm: 6, lg: 3 }}><Metric title="Плановый бюджет" value={money(data.totals.planned)} hint="По всем статьям" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 3 }}><Metric title="Утверждено" value={money(data.totals.approved)} hint={`${approvalRate}% от плана`} icon={<AssignmentTurnedInIcon fontSize="small" />} tone="green" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}><Metric title="Сумма расчета" value={money(data.totals.planned)} hint="Модуль сформировал" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}><Metric title="Утверждено экономистом" value={money(data.totals.approved)} hint={`${approvalRate}% от расчета`} icon={<AssignmentTurnedInIcon fontSize="small" />} tone="green" /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}><Metric title="На согласовании" value={data.totals.review_requests_count} hint={`из ${data.totals.requests_count} заявок`} icon={<FactCheckIcon fontSize="small" />} tone="amber" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 3 }}><Metric title="Остаток к решению" value={money(data.totals.remaining)} hint="Не утверждено" icon={<TrendingUpIcon fontSize="small" />} tone="purple" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 3 }}><Metric title="Корректировка" value={correction >= 0 ? `+${money(correction)}` : money(correction)} hint={correctionLabel} icon={<TrendingUpIcon fontSize="small" />} tone="purple" /></Grid>
       </Grid>
 
       <Grid container spacing={2.5}>
@@ -227,16 +273,25 @@ export default function DashboardPage({ user }: { user: User }) {
           <Card className="surface dashboard-panel dashboard-category-panel" elevation={0}>
             <Box className="dashboard-panel-heading">
               <Box>
-                <Typography variant="h6">Структура бюджета</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>По категориям расходов и инвестиций</Typography>
+                <Typography variant="h6">Структура расчета</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>По категориям модульных сумм и решений экономиста</Typography>
               </Box>
               <PieChartOutlineIcon color="primary" />
             </Box>
-            <DonutChart rows={data.by_category} total={data.totals.planned} />
+            <DonutChart rows={data.by_category} total={data.totals.planned} ariaLabel="Распределение расчетов по категориям" />
           </Card>
         </Grid>
         <Grid size={{ xs: 12, lg: 7 }}>
-          <BudgetBars rows={data.by_unit} title="Подразделения" emptyText="В выбранном подразделении пока нет заявок" />
+          <Card className="surface dashboard-panel" elevation={0}>
+            <Box className="dashboard-panel-heading">
+              <Box>
+                <Typography variant="h6">Подразделения</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>Распределение рассчитанных сумм по подразделениям</Typography>
+              </Box>
+              <PieChartOutlineIcon color="primary" />
+            </Box>
+            <DonutChart rows={data.by_unit} total={data.totals.planned} ariaLabel="Распределение расчетов по подразделениям" />
+          </Card>
         </Grid>
         <Grid size={{ xs: 12, lg: 7 }}>
           <BudgetBars rows={data.by_article} title="Ключевые статьи" emptyText="Добавьте статьи в заявки, чтобы увидеть распределение" showType showAmounts />
@@ -249,7 +304,7 @@ export default function DashboardPage({ user }: { user: User }) {
             </Box>
             <Stack spacing={2.25}>
               <Box>
-                <Stack direction="row" justifyContent="space-between"><Typography variant="body2" fontWeight={650}>Исполнение плана</Typography><Typography variant="body2" color="primary.main" fontWeight={700}>{approvalRate}%</Typography></Stack>
+                <Stack direction="row" justifyContent="space-between"><Typography variant="body2" fontWeight={650}>Исполнение расчета</Typography><Typography variant="body2" color="primary.main" fontWeight={700}>{approvalRate}%</Typography></Stack>
                 <LinearProgress variant="determinate" value={approvalRate} sx={{ mt: 1, height: 9, borderRadius: 9 }} />
               </Box>
               <Box className="dashboard-status-summary">

@@ -12,6 +12,8 @@ const labels: Record<string, string> = {
   catalogs: 'НСИ',
 };
 
+export const breadcrumblessPaths = new Set(['/', '/users', '/catalogs']);
+
 const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Crumb = { label: string; to?: string };
@@ -38,6 +40,11 @@ function buildCrumbs(pathname: string): Crumb[] {
 
 export function AppBreadcrumbs() {
   const location = useLocation();
+
+  if (breadcrumblessPaths.has(location.pathname)) {
+    return null;
+  }
+
   const crumbs = buildCrumbs(location.pathname);
 
   return (

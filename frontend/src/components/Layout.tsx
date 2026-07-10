@@ -36,12 +36,13 @@ import { api } from '../api/client';
 import type { Profile, User } from '../types';
 import { roleLabels } from '../utils/labels';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
-import { AppBreadcrumbs } from './AppBreadcrumbs';
+import { AppBreadcrumbs, breadcrumblessPaths } from './AppBreadcrumbs';
 
 const drawerWidth = 280;
 
 const PageActionsContext = createContext<{
   setActions: (node: ReactNode) => void;
+  setLeading: (node: ReactNode) => void;
 } | null>(null);
 
 type ToastSeverity = 'success' | 'info' | 'warning' | 'error';
@@ -76,6 +77,15 @@ export function usePageChromeActions(actions: ReactNode) {
   }, [ctx, actions]);
 }
 
+export function usePageChromeLeading(content: ReactNode) {
+  const ctx = useContext(PageActionsContext);
+  useEffect(() => {
+    if (!ctx) return undefined;
+    ctx.setLeading(content);
+    return () => ctx.setLeading(null);
+  }, [ctx, content]);
+}
+
 export function useAppToast() {
   const ctx = useContext(ToastContext);
   if (!ctx) {
@@ -99,11 +109,13 @@ export function Layout({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [actions, setActions] = useState<ReactNode>(null);
+  const [leading, setLeading] = useState<ReactNode>(null);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [toast, setToast] = useState<{ message: string; severity: ToastSeverity; key: number } | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileForm, setProfileForm] = useState<ProfileDraft>(emptyProfile);
-  const chrome = useMemo(() => ({ setActions }), []);
+  const showPageChrome = isMobile || !breadcrumblessPaths.has(location.pathname) || !!actions || !!leading;
+  const chrome = useMemo(() => ({ setActions, setLeading }), []);
   const showToast = useCallback((message: string, severity: ToastSeverity = 'success') => {
     setToast({ message, severity, key: Date.now() });
   }, []);
@@ -111,6 +123,7 @@ export function Layout({
 
   useEffect(() => {
     setActions(null);
+    setLeading(null);
   }, [location.pathname]);
 
   const { data: profile } = useQuery<Profile | null>({
@@ -353,31 +366,33 @@ export function Layout({
 
       <ToastContext.Provider value={toastCtx}>
         <Box component="main" className="app-main">
-          <Stack
-            className="page-chrome"
-            direction={{ xs: 'column', sm: 'row' }}
-            justifyContent="space-between"
-            alignItems={{ xs: 'stretch', sm: 'center' }}
-            spacing={2}
-          >
-            <Stack direction="row" spacing={0.75} alignItems="center" minWidth={0}>
-              {isMobile ? (
-                <IconButton
-                  aria-label="Открыть меню"
-                  onClick={() => setMobileDrawerOpen(true)}
-                  sx={{ color: 'text.primary', border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}
-                >
-                  <MenuIcon />
-                </IconButton>
-              ) : null}
-              <AppBreadcrumbs />
-            </Stack>
-            {actions ? (
-              <Stack direction="row" spacing={1.25} flexWrap="wrap" useFlexGap className="page-actions">
-                {actions}
+          {showPageChrome ? (
+            <Stack
+              className="page-chrome"
+              direction={{ xs: 'column', sm: 'row' }}
+              justifyContent="space-between"
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              spacing={2}
+            >
+              <Stack direction="row" spacing={0.75} alignItems="center" minWidth={0}>
+                {isMobile ? (
+                  <IconButton
+                    aria-label="Открыть меню"
+                    onClick={() => setMobileDrawerOpen(true)}
+                    sx={{ color: 'text.primary', border: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}
+                  >
+                    <MenuIcon />
+                  </IconButton>
+                ) : null}
+                {leading || <AppBreadcrumbs />}
               </Stack>
-            ) : null}
-          </Stack>
+              {actions ? (
+                <Stack direction="row" spacing={1.25} flexWrap="wrap" useFlexGap className="page-actions">
+                  {actions}
+                </Stack>
+              ) : null}
+            </Stack>
+          ) : null}
           <PageActionsContext.Provider value={chrome}>
             <Outlet />
           </PageActionsContext.Provider>

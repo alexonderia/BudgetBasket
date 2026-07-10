@@ -17,7 +17,24 @@ class UserService:
     def list_users(self, user: dict) -> list[dict]:
         require_role(user, "admin")
         profiles = {profile["user_id"]: profile for profile in self.repo.load_all("profiles")}
-        return [{**public_user(item), "profile": profiles.get(item["id"])} for item in self.repo.load_all("users")]
+        unit_parents = {unit["id"]: unit.get("parent_id") for unit in self.repo.load_all("units")}
+        unit_ids_by_user: dict[str, set[str]] = {}
+        for assignment in self.repo.load_all("units_responsibles"):
+            if not assignment.get("is_active"):
+                continue
+            unit_id = assignment["unit_id"]
+            user_units = unit_ids_by_user.setdefault(assignment["user_id"], set())
+            while unit_id and unit_id not in user_units:
+                user_units.add(unit_id)
+                unit_id = unit_parents.get(unit_id)
+        return [
+            {
+                **public_user(item),
+                "profile": profiles.get(item["id"]),
+                "unit_ids": sorted(unit_ids_by_user.get(item["id"], set())),
+            }
+            for item in self.repo.load_all("users")
+        ]
 
     def create_user(self, current_user: dict, payload: dict) -> dict:
         require_role(current_user, "admin")

@@ -344,13 +344,12 @@
     display: block;
     width: 100%;
     height: 100%;
-    transform: rotate(-90deg);
+    cursor: help;
   }
 
-  .dashboard-donut-track,
-  .dashboard-donut-segment {
+  .dashboard-donut-track {
     fill: none;
-    stroke-width: 5;
+    stroke-width: 8;
   }
 
   .dashboard-donut-track {
@@ -358,7 +357,26 @@
   }
 
   .dashboard-donut-segment {
-    stroke-linecap: butt;
+    cursor: pointer;
+    outline: none;
+    transition: opacity 120ms ease;
+  }
+
+  .dashboard-donut-segment:hover,
+  .dashboard-donut-segment:focus {
+    opacity: 0.78;
+  }
+
+  .dashboard-donut-tooltip .MuiTooltip-tooltip {
+    padding: 9px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px;
+    background: var(--bb-ink);
+    box-shadow: 0 8px 20px rgba(17, 24, 39, 0.2);
+  }
+
+  .dashboard-donut-tooltip .MuiTooltip-arrow {
+    color: var(--bb-ink);
   }
 
   .dashboard-donut-value {
@@ -369,6 +387,7 @@
     align-items: center;
     justify-content: center;
     text-align: center;
+    pointer-events: none;
   }
 
   .dashboard-donut-value .MuiTypography-subtitle2 {
@@ -389,6 +408,7 @@
   }
 
   .dashboard-bar-track {
+    position: relative;
     width: 100%;
     height: 8px;
     overflow: hidden;
@@ -397,16 +417,22 @@
   }
 
   .dashboard-bar-planned {
+    position: absolute;
+    inset: 0 auto 0 0;
     height: 100%;
     overflow: hidden;
     border-radius: inherit;
     background: #b8cdfa;
+    z-index: 1;
   }
 
   .dashboard-bar-approved {
+    position: absolute;
+    inset: 0 auto 0 0;
     height: 100%;
     border-radius: inherit;
     background: var(--bb-primary);
+    z-index: 2;
   }
 
   .dashboard-type-chip {
@@ -499,18 +525,20 @@
     border: 1px solid var(--bb-line);
     background: rgba(255, 255, 255, 0.95);
     box-shadow: var(--bb-shadow);
-    padding: 28px;
+    padding: 20px;
+  }
+
+  .org-page-filters .MuiTextField-root {
+    width: 220px;
   }
 
   .org-forest {
     display: flex;
-    flex-direction: row;
     flex-wrap: nowrap;
     align-items: flex-start;
-    justify-content: flex-start;
-    gap: 32px;
     width: max-content;
     min-width: 100%;
+    gap: 28px;
   }
 
   .org-chart {
@@ -521,6 +549,16 @@
     align-items: center;
   }
 
+  .org-chart > .org-node-root {
+    width: max-content;
+    align-items: flex-start;
+  }
+
+  .org-node-root > .org-unit-card,
+  .org-node-root > .org-connector {
+    align-self: center;
+  }
+
   .org-node {
     display: flex;
     flex-direction: column;
@@ -529,8 +567,8 @@
 
   .org-node-child {
     position: relative;
-    width: 300px;
-    flex: 0 0 300px;
+    width: 250px;
+    flex: 0 0 250px;
   }
 
   .org-unit-card,
@@ -544,12 +582,14 @@
   .org-unit-card {
     position: relative;
     z-index: 2;
-    width: 330px;
-    padding: 14px;
+    box-sizing: border-box;
+    width: 250px;
+    min-height: 156px;
+    padding: 12px;
   }
 
   .org-unit-card.is-child {
-    width: 300px;
+    width: 250px;
   }
 
   .org-unit-card.is-inactive {
@@ -557,10 +597,15 @@
     border-style: dashed;
   }
 
+  .org-unit-card.needs-attention {
+    border-color: rgba(245, 158, 11, 0.45);
+    box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.08), 0 1px 2px rgba(17, 24, 39, 0.03);
+  }
+
   .org-edit-btn {
     position: absolute !important;
-    top: 8px;
-    right: 8px;
+    top: 6px;
+    right: 6px;
     color: #9ca3af !important;
     background: #ffffff !important;
     border: 1px solid var(--bb-line);
@@ -577,13 +622,27 @@
     font-weight: 700;
     line-height: 1.3;
     color: var(--bb-ink);
-    font-size: 14px;
+    font-size: 13px;
     letter-spacing: -0.015em;
+  }
+
+  .org-unit-heading {
+    height: 48px;
+    padding-right: 32px;
+  }
+
+  .org-unit-title {
+    font-size: 12px;
+    line-height: 1.25;
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .org-unit-role,
   .org-person-role {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--bb-muted);
   }
 
@@ -593,7 +652,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 28px;
+    width: 24px;
   }
 
   .org-connector-line {
@@ -603,16 +662,16 @@
   }
 
   .org-connector-line-top {
-    height: 16px;
+    height: 12px;
   }
 
   .org-connector-line-bottom {
-    height: 16px;
+    height: 12px;
   }
 
   .org-add-on-line {
-    width: 26px !important;
-    height: 26px !important;
+    width: 24px !important;
+    height: 24px !important;
     border: 1px solid #c4cad4 !important;
     background: #ffffff !important;
     color: var(--bb-ink) !important;
@@ -626,8 +685,8 @@
   }
 
   .org-branches {
-    --org-leaf-width: 300px;
-    --org-leaf-gap: 28px;
+    --org-leaf-width: 250px;
+    --org-leaf-gap: 20px;
     position: relative;
     display: flex;
     width: max-content;
@@ -657,31 +716,58 @@
     top: 0;
     left: 50%;
     transform: translateX(-50%);
-    height: 16px;
+    height: 12px;
     width: 1px;
     background: #c4cad4;
   }
 
   .org-node-child > .org-unit-card {
-    margin-top: 16px;
+    margin-top: 12px;
   }
 
   .org-people-grid {
-    margin-top: 12px;
+    margin-top: 8px;
     display: flex;
     flex-direction: column;
     width: 100%;
-    gap: 8px;
+    gap: 6px;
+  }
+
+  .org-people-section {
+    margin-top: 10px;
+  }
+
+  .org-unit-status {
+    min-height: 24px;
+    height: auto;
+    margin-top: 2px;
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .org-people-toggle {
+    width: 100%;
+    justify-content: space-between !important;
+    min-width: 0 !important;
+    padding: 2px 0 !important;
+    color: var(--bb-muted) !important;
+    font-size: 0.72rem !important;
+    font-weight: 400 !important;
+    text-transform: none !important;
+  }
+
+  .org-people-toggle .MuiButton-endIcon {
+    margin-left: auto;
   }
 
   .org-people-grid.in-card {
-    padding-top: 10px;
+    padding-top: 8px;
     border-top: 1px solid var(--bb-line);
   }
 
   .org-person-card {
-    min-height: 52px;
-    padding: 10px;
+    min-height: 44px;
+    padding: 8px;
   }
 
   .org-person-card.vacancy {
@@ -693,11 +779,11 @@
   }
 
   .org-person-name {
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .org-person-role {
-    margin-top: 4px;
+    margin-top: 2px;
   }
 }
 
@@ -715,6 +801,15 @@
     flex-basis: auto;
     width: 100%;
   }
+
+  .org-page-filters {
+    width: 100%;
+  }
+
+  .org-page-filters .MuiTextField-root {
+    width: 100%;
+  }
+
 }
 
 @media (max-width: 500px) {

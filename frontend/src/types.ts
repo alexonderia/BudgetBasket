@@ -7,6 +7,7 @@ export interface User {
   login: string;
   role: Role;
   profile?: Profile;
+  unit_ids?: string[];
 }
 
 export interface Profile {

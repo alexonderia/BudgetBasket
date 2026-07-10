@@ -1,10 +1,13 @@
 import AddIcon from '@mui/icons-material/Add';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
+import Collapse from '@mui/material/Collapse';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -21,7 +24,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
-import { usePageChromeActions } from '../components/Layout';
+import { usePageChromeActions, usePageChromeLeading } from '../components/Layout';
 import { useAppToast } from '../components/Layout';
 import type { Unit, User } from '../types';
 
@@ -53,10 +56,6 @@ function fullName(user?: User): string {
 
 function dedupeUsers(users: User[]): User[] {
   return Array.from(new Map(users.map((user) => [user.id, user])).values());
-}
-
-function unitKindLabel(unit: Unit): string {
-  return 'Объединение';
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -132,8 +131,8 @@ function UnitFormDialog({
   const title = isEdit
     ? `Редактировать: ${mode.unit.name}`
     : mode.kind === 'create-child'
-    ? `Дочернее объединение для «${mode.parent.name}»`
-      : 'Новое объединение';
+    ? `Новый модуль в подразделении «${mode.parent.name}»`
+      : 'Новое подразделение';
 
   const parentId =
     mode.kind === 'create-child' ? mode.parent.id : mode.kind === 'edit' ? mode.unit.parent_id : null;
@@ -143,8 +142,8 @@ function UnitFormDialog({
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
-          {mode.kind === 'create-child' && <Alert severity="info">Будет создано объединение внутри выбранного узла.</Alert>}
-          {mode.kind === 'create-root' && <Alert severity="info">Корневое объединение без родителя.</Alert>}
+          {mode.kind === 'create-child' && <Alert severity="info">Будет создан модуль внутри выбранного подразделения.</Alert>}
+          {mode.kind === 'create-root' && <Alert severity="info">Подразделение верхнего уровня без родителя.</Alert>}
 
           <TextField label="Название" value={name} onChange={(event) => setName(event.target.value)} fullWidth autoFocus />
           {isEdit && (
@@ -273,42 +272,55 @@ function OrgUnitCard({
   const hasChildren = childCount > 0;
   const responsibleUser = users.find((user) => user.id === responsible?.user_id);
   const uniqueEconomists = dedupeUsers(linkedEconomists);
+  const missingResponsible = !isRoot && !responsibleUser;
+  const missingEconomists = !isRoot && uniqueEconomists.length === 0;
+  const hasMissingAssignments = missingResponsible || missingEconomists;
+  const [peopleExpanded, setPeopleExpanded] = useState(false);
+  const peopleCount = (responsibleUser ? 1 : 0) + uniqueEconomists.length;
 
   return (
     <Box className={`org-node ${depth === 0 ? 'org-node-root' : 'org-node-child'} ${hasChildren ? 'has-children' : ''}`}>
-      <Box className={`org-unit-card ${isRoot ? 'is-root' : 'is-child'} ${unit.is_active ? '' : 'is-inactive'}`}>
+      <Box className={`org-unit-card ${isRoot ? 'is-root' : 'is-child'} ${unit.is_active ? '' : 'is-inactive'} ${hasMissingAssignments ? 'needs-attention' : ''}`}>
         <Tooltip title="Редактировать">
-          <IconButton className="org-edit-btn" size="small" onClick={onEdit} aria-label="Редактировать объединение">
+          <IconButton className="org-edit-btn" size="small" onClick={onEdit} aria-label={isRoot ? 'Редактировать подразделение' : 'Редактировать модуль'}>
             <EditOutlinedIcon fontSize="small" />
           </IconButton>
         </Tooltip>
 
-        <Box sx={{ pr: 4.5 }}>
+        <Box className="org-unit-heading">
           <Typography className="org-unit-title">{unit.name}</Typography>
-          <Typography className="org-unit-role">{unitKindLabel(unit)}</Typography>
         </Box>
 
-        {unit.is_active && (
-          <Stack direction="row" spacing={0.75} sx={{ mt: 1.25 }}>
-            <Chip size="small" label="Активен" color="success" />
-          </Stack>
-        )}
+        <Stack direction="row" spacing={0.75} className="org-unit-status">
+          <Chip size="small" label={unit.is_active ? 'Активен' : 'Неактивен'} color={unit.is_active ? 'success' : 'default'} variant={unit.is_active ? 'filled' : 'outlined'} />
+        </Stack>
 
-        {!isRoot && (
-          <Box className="org-people-grid in-card">
-            {responsibleUser ? <PersonCard user={responsibleUser} role="Ответственный сотрудник" /> : <PersonCard role="Ответственный сотрудник" vacancy />}
-            {uniqueEconomists.map((user) => (
-              <PersonCard key={user.id} user={user} role="Экономист" />
-            ))}
-            {uniqueEconomists.length === 0 && <PersonCard role="Экономист" vacancy />}
-          </Box>
-        )}
+        <Box className="org-people-section">
+          <Button
+            className="org-people-toggle"
+            size="small"
+            onClick={() => setPeopleExpanded((expanded) => !expanded)}
+            endIcon={peopleExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+            aria-expanded={peopleExpanded}
+          >
+            Пользователи · {peopleCount}
+          </Button>
+          <Collapse in={peopleExpanded} timeout="auto">
+            <Box className="org-people-grid in-card">
+              {!isRoot && (responsibleUser ? <PersonCard user={responsibleUser} role="Ответственный сотрудник" /> : <PersonCard role="Ответственный сотрудник" vacancy />)}
+              {uniqueEconomists.map((user) => (
+                <PersonCard key={user.id} user={user} role="Экономист" />
+              ))}
+              {uniqueEconomists.length === 0 && <PersonCard role="Экономист" vacancy />}
+            </Box>
+          </Collapse>
+        </Box>
       </Box>
 
       <Box className={`org-connector ${hasChildren ? 'with-children' : 'leaf-end'}`}>
         <span className="org-connector-line org-connector-line-top" />
-        <Tooltip title="Добавить дочернее объединение">
-          <IconButton className="org-add-on-line" size="small" onClick={onCreateChild} aria-label="Добавить дочернее объединение">
+        <Tooltip title="Добавить модуль">
+          <IconButton className="org-add-on-line" size="small" onClick={onCreateChild} aria-label="Добавить модуль">
             <AddIcon fontSize="small" />
           </IconButton>
         </Tooltip>
@@ -336,6 +348,8 @@ export default function UnitsPage() {
 
   const [dialog, setDialog] = useState<UnitDialogMode | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Unit | null>(null);
+  const [orgSearch, setOrgSearch] = useState('');
+  const [rootUnitId, setRootUnitId] = useState('');
 
   const modules = units.filter((unit) => unit.parent_id);
   const employees = users.filter((user) => user.role === 'employee');
@@ -373,6 +387,22 @@ export default function UnitsPage() {
     return result;
   }, [units, assignments, users]);
 
+  const visibleTree = useMemo(() => {
+    const query = orgSearch.trim().toLocaleLowerCase('ru-RU');
+    const scopedTree = rootUnitId ? tree.filter((unit) => unit.id === rootUnitId) : tree;
+    if (!query) return scopedTree;
+
+    const filterNodes = (nodes: Unit[]): Unit[] => nodes.flatMap((unit) => {
+      const children = filterNodes(unit.children || []);
+      if (unit.name.toLocaleLowerCase('ru-RU').includes(query) || children.length > 0) {
+        return [{ ...unit, children }];
+      }
+      return [];
+    });
+
+    return filterNodes(scopedTree);
+  }, [tree, orgSearch, rootUnitId]);
+
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['units'] });
     queryClient.invalidateQueries({ queryKey: ['units-tree'] });
@@ -388,13 +418,13 @@ export default function UnitsPage() {
         type: payload.parent_id ? 'module' : 'department',
         is_active: payload.is_active,
       }),
-    onSuccess: () => {
+    onSuccess: (_data, payload) => {
       setDialog(null);
       refresh();
-      toast('Объединение создано', 'success');
+      toast(payload.parent_id ? 'Модуль создан' : 'Подразделение создано', 'success');
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось создать объединение'), 'error');
+      toast(getErrorMessage(error, 'Не удалось создать элемент оргструктуры'), 'error');
     },
   });
 
@@ -414,7 +444,7 @@ export default function UnitsPage() {
   const deleteUnit = useMutation({
     mutationFn: (id: string) => api.delete(`/units/${id}`),
     onSuccess: (_data, deletedId) => {
-      toast('Объединение удалено', 'success');
+      toast('Элемент оргструктуры удалён', 'success');
       if (dialog?.kind === 'edit' && dialog.unit.id === deletedId) {
         setDialog(null);
       }
@@ -465,12 +495,37 @@ export default function UnitsPage() {
   const addRootButton = useMemo(
     () => (
       <Button key="add-root" startIcon={<AddIcon />} variant="contained" onClick={() => setDialog({ kind: 'create-root' })}>
-        Объединение
+        Подразделение
       </Button>
     ),
     [],
   );
   usePageChromeActions(addRootButton);
+
+  const orgFilters = useMemo(
+    () => (
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} className="org-page-filters">
+        <TextField
+          select
+          size="small"
+          label="Подразделение"
+          value={rootUnitId}
+          onChange={(event) => setRootUnitId(event.target.value)}
+        >
+          <MenuItem value="">Все подразделения</MenuItem>
+          {tree.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
+        </TextField>
+        <TextField
+          size="small"
+          label="Поиск в оргструктуре"
+          value={orgSearch}
+          onChange={(event) => setOrgSearch(event.target.value)}
+        />
+      </Stack>
+    ),
+    [orgSearch, rootUnitId, tree],
+  );
+  usePageChromeLeading(orgFilters);
 
   const renderNode = (unit: Unit, depth: number): ReactNode => {
     const children = unit.children || [];
@@ -496,10 +551,10 @@ export default function UnitsPage() {
 
   return (
     <Stack spacing={3}>
-      <Paper className="org-chart-panel" elevation={0}>
-        {tree.length > 0 ? (
+      <Paper className={`org-chart-panel ${rootUnitId ? 'is-filtered' : ''}`} elevation={0}>
+        {visibleTree.length > 0 ? (
           <Box className="org-forest">
-            {tree.map((root) => (
+            {visibleTree.map((root) => (
               <Box key={root.id} className="org-chart">
                 {renderNode(root, 0)}
               </Box>
@@ -507,10 +562,12 @@ export default function UnitsPage() {
           </Box>
         ) : (
           <Stack spacing={2} alignItems="flex-start">
-            <Typography color="text.secondary">Пока нет объединений. Создайте корневое объединение.</Typography>
-            <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDialog({ kind: 'create-root' })}>
-              Создать объединение
-            </Button>
+            <Typography color="text.secondary">{orgSearch ? 'По запросу ничего не найдено.' : 'Пока нет подразделений. Создайте первое подразделение.'}</Typography>
+            {!orgSearch && (
+              <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDialog({ kind: 'create-root' })}>
+                Создать подразделение
+              </Button>
+            )}
           </Stack>
         )}
       </Paper>
@@ -544,8 +601,8 @@ export default function UnitsPage() {
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title="Удалить объединение?"
-        description={`Объединение «${deleteTarget?.name || ''}» будет удалено. Это действие нельзя отменить.`}
+        title={`Удалить ${deleteTarget?.parent_id ? 'модуль' : 'подразделение'}?`}
+        description={`${deleteTarget?.parent_id ? 'Модуль' : 'Подразделение'} «${deleteTarget?.name || ''}» будет удален${deleteTarget?.parent_id ? '' : 'о'}. Это действие нельзя отменить.`}
         pending={deleteUnit.isPending}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {
