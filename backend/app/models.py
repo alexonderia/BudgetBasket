@@ -168,9 +168,5 @@ class ItemPatch(StrictModel):
     comment: str | None = None
 
 
-class FileLink(StrictModel):
-    file_id: str | int
-
-
 def clean_patch(model: BaseModel) -> dict[str, Any]:
     return model.model_dump(exclude_unset=True)

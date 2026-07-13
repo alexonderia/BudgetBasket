@@ -1,9 +1,57 @@
 import os
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.seed import DEPARTMENT_ID, DDS_LICENSE_ID, ECONOMIST_ID, EMPLOYEE_ID, INVEST_PLATFORM_ID, MODULE_ALPHA_ID, MODULE_BETA_ID, REQUEST_ID
+
+
+class AllowingFileGuard:
+    async def validate(self, upload):
+        mime = upload.content_type or "application/octet-stream"
+        return SimpleNamespace(
+            valid=True,
+            detected_mime_type=mime,
+            size_bytes=0,
+            reason_code=None,
+            message=None,
+            warnings=[],
+        )
+
+
+class RecordingFileGuard(AllowingFileGuard):
+    def __init__(self):
+        self.calls = 0
+
+    async def validate(self, upload):
+        self.calls += 1
+        return await super().validate(upload)
+
+
+class RejectingFileGuard:
+    async def validate(self, upload):
+        return SimpleNamespace(
+            valid=False,
+            detected_mime_type="application/octet-stream",
+            size_bytes=10,
+            reason_code="MIME_MISMATCH",
+            message="Тип содержимого файла не соответствует его расширению.",
+            warnings=[],
+        )
+
+
+class UnavailableFileGuard:
+    async def validate(self, upload):
+        from app.services.file_guard_client import FileGuardUnavailableError
+
+        raise FileGuardUnavailableError
+
+
+def use_file_guard(client: TestClient, file_guard) -> None:
+    client.app.state.file_guard_client = file_guard
+    client.app.state.file_service.file_guard = file_guard
+    client.app.state.excel_service.file_guard = file_guard
 
 
 def make_client(tmp_path):
@@ -17,7 +65,12 @@ def make_client(tmp_path):
     os.environ["BUDGET_EXPORT_DIR"] = str(storage_root / "exports")
     from app.main import create_app
 
-    return TestClient(create_app())
+    app = create_app()
+    file_guard = AllowingFileGuard()
+    app.state.file_guard_client = file_guard
+    app.state.file_service.file_guard = file_guard
+    app.state.excel_service.file_guard = file_guard
+    return TestClient(app)
 
 
 def auth(client: TestClient, login: str, password: str) -> dict[str, str]:
@@ -214,6 +267,77 @@ def test_files_allowed_only_in_draft_for_employee(tmp_path):
     assert denied_economist.status_code == 403
 
 
+def test_rejected_file_is_not_saved_or_registered(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    item = client.post(
+        f"/requests/{request['id']}/dds-items",
+        json={"dds_id": DDS_LICENSE_ID, "sum_plan": 1000},
+        headers=employee,
+    ).json()
+    before_files = len(client.app.state.repo.load_all("files"))
+    before_objects = len(client.app.state.repo.load_all("storage_objects"))
+    use_file_guard(client, RejectingFileGuard())
+
+    response = client.post(
+        f"/dds-items/{item['id']}/files",
+        headers=employee,
+        files={"file": ("fake.pdf", b"not a pdf", "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Тип содержимого файла не соответствует его расширению."
+    assert len(client.app.state.repo.load_all("files")) == before_files
+    assert len(client.app.state.repo.load_all("storage_objects")) == before_objects
+
+
+def test_unavailable_file_guard_fails_closed(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    item = client.post(
+        f"/requests/{request['id']}/invest-items",
+        json={"invest_id": INVEST_PLATFORM_ID, "sum_plan": 1000},
+        headers=employee,
+    ).json()
+    before_files = len(client.app.state.repo.load_all("files"))
+    use_file_guard(client, UnavailableFileGuard())
+
+    response = client.post(
+        f"/invest-items/{item['id']}/files",
+        headers=employee,
+        files={"file": ("offer.pdf", b"content", "application/pdf")},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Проверка файлов временно недоступна. Повторите попытку позже."
+    assert len(client.app.state.repo.load_all("files")) == before_files
+
+
+def test_upload_permissions_are_checked_before_file_guard(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    admin = auth(client, "admin", "admin")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    item = client.post(
+        f"/requests/{request['id']}/dds-items",
+        json={"dds_id": DDS_LICENSE_ID, "sum_plan": 1000},
+        headers=employee,
+    ).json()
+    guard = RecordingFileGuard()
+    use_file_guard(client, guard)
+
+    response = client.post(
+        f"/dds-items/{item['id']}/files",
+        headers=admin,
+        files={"file": ("offer.pdf", b"content", "application/pdf")},
+    )
+
+    assert response.status_code == 403
+    assert guard.calls == 0
+
+
 def test_economist_reviews_finalizes_and_employee_cannot_edit_closed(tmp_path):
     client = make_client(tmp_path)
     economist = auth(client, "economist", "economist")
@@ -357,6 +481,8 @@ def test_economist_can_approve_all_items_with_one_action(tmp_path):
 
 def test_direct_upload_download_for_dds_and_invest_items(tmp_path):
     client = make_client(tmp_path)
+    guard = RecordingFileGuard()
+    use_file_guard(client, guard)
     employee = auth(client, "employee", "employee")
     request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
     dds_item = client.post(f"/requests/{request['id']}/dds-items", json={"dds_id": DDS_LICENSE_ID, "sum_plan": 1000}, headers=employee).json()
@@ -385,6 +511,7 @@ def test_direct_upload_download_for_dds_and_invest_items(tmp_path):
     files = client.get(f"/invest-items/{invest_item['id']}/files", headers=employee)
     assert files.status_code == 200
     assert files.json()[0]["id"] == invest_upload.json()["id"]
+    assert guard.calls == 2
 
 
 def test_unicode_filename_download(tmp_path):
@@ -469,6 +596,8 @@ def test_catalog_scoped_by_module_and_excel_import_export(tmp_path):
     from openpyxl import Workbook
 
     client = make_client(tmp_path)
+    guard = RecordingFileGuard()
+    use_file_guard(client, guard)
     admin = auth(client, "admin", "admin")
     economist = auth(client, "economist", "economist")
 
@@ -489,6 +618,7 @@ def test_catalog_scoped_by_module_and_excel_import_export(tmp_path):
     )
     assert imported.status_code == 200
     assert imported.json()["created"] == 1
+    assert guard.calls == 1
 
     dds_item = client.get(f"/requests/{REQUEST_ID}/dds-items", headers=economist).json()[0]
     invest_item = client.get(f"/requests/{REQUEST_ID}/invest-items", headers=economist).json()[0]

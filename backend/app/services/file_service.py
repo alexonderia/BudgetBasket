@@ -7,9 +7,9 @@ from uuid import uuid4
 from fastapi import HTTPException, UploadFile
 
 from app.config import Settings
-from app.models import RequestStatus
 from app.repositories.base import Repository
 from app.services.common import get_required
+from app.services.file_guard_client import FileGuardClient, require_valid_file
 from app.services.permission_service import PermissionService
 from app.storage import LocalObjectStorage, S3ObjectStorage
 
@@ -24,11 +24,13 @@ class FileService:
         permissions: PermissionService,
         upload_dir: str | Path,
         settings: Settings,
+        file_guard: FileGuardClient,
         object_storage: LocalObjectStorage | S3ObjectStorage | None = None,
     ):
         self.repo = repo
         self.permissions = permissions
         self.settings = settings
+        self.file_guard = file_guard
         self.object_storage = object_storage or (
             S3ObjectStorage(settings) if settings.use_s3 else LocalObjectStorage(upload_dir)
         )
@@ -41,24 +43,27 @@ class FileService:
         cleaned = SAFE_NAME_RE.sub("_", original_name.strip()).strip("._")
         return cleaned or "file"
 
-    def storage_key(self, request_id: str, item_type: str, item_id: str, original_name: str) -> str:
+    def storage_key(self, original_name: str) -> str:
         return f"budget-items/{uuid4()}-{self.safe_original_name(original_name)}"
 
     def _allowed_mime(self, original_name: str, content_type: str | None) -> str:
         expected_mime, _ = mimetypes.guess_type(original_name)
         actual_mime = (content_type or expected_mime or "application/octet-stream").split(";")[0]
         if actual_mime not in self.settings.allowed_upload_mime_types:
-            raise HTTPException(status_code=400, detail="File MIME type is not allowed")
+            raise HTTPException(status_code=400, detail="Тип файла не поддерживается")
         if expected_mime and actual_mime != expected_mime:
-            raise HTTPException(status_code=400, detail="MIME type does not match file extension")
+            raise HTTPException(status_code=400, detail="Тип содержимого файла не соответствует его расширению")
         return actual_mime
 
     def _validate_content(self, content: bytes) -> None:
         if not content:
-            raise HTTPException(status_code=400, detail="Empty files are not allowed")
+            raise HTTPException(status_code=400, detail="Пустые файлы не допускаются")
         max_size = self.settings.max_upload_file_size_mb * 1024 * 1024
         if len(content) > max_size:
-            raise HTTPException(status_code=400, detail=f"File is larger than {self.settings.max_upload_file_size_mb} MB")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Размер файла превышает {self.settings.max_upload_file_size_mb} МБ",
+            )
 
     def _create_storage_object(self, storage_payload: dict) -> dict:
         return self.repo.create("storage_objects", storage_payload)
@@ -67,16 +72,16 @@ class FileService:
         payload = {"id_storage_object": storage_id, "original_name": original_name}
         return self.repo.create("files", payload)
 
-    async def upload(self, upload: UploadFile, *, request_id: str | None = None, item_type: str = "detached", item_id: str = "detached") -> dict:
+    async def _upload(self, upload: UploadFile) -> dict:
+        validation = await require_valid_file(self.file_guard, upload)
         original_name = upload.filename or "file"
         content = await upload.read()
         self._validate_content(content)
-        mime_type = self._allowed_mime(original_name, upload.content_type)
+        mime_type = self._allowed_mime(original_name, validation.detected_mime_type)
         digest = hashlib.sha256(content).hexdigest()
         storage = next((item for item in self.repo.load_all("storage_objects") if item["content_sha256"] == digest), None)
         if not storage:
-            key_request_id = request_id or "detached"
-            storage_key = self.storage_key(key_request_id, item_type, item_id, original_name)
+            storage_key = self.storage_key(original_name)
             self.object_storage.put_object(storage_key, content, mime_type)
             storage = self._create_storage_object(
                 {
@@ -94,25 +99,21 @@ class FileService:
         item = get_required(self.repo, collection, item_id)
         budget_request = get_required(self.repo, "requests", item["request_id"])
         self.permissions.require_employee_upload_file(user, budget_request)
-        file = await self.upload(upload, request_id=item["request_id"], item_type=kind, item_id=item_id)
-        self.link(user, kind, item_id, file["id"], allow_on_review=True)
+        file = await self._upload(upload)
+        self._link_uploaded_file(user, kind, item_id, file["id"])
         return file
 
-    def link(self, user: dict, kind: str, item_id: str, file_id: str | int, allow_on_review: bool = False) -> dict:
+    def _link_uploaded_file(self, user: dict, kind: str, item_id: str, file_id: str | int) -> dict:
         collection = "dds_items" if kind == "dds" else "invest_items"
         item = get_required(self.repo, collection, item_id)
         budget_request = get_required(self.repo, "requests", item["request_id"])
-        self.permissions.require_request_unfrozen(budget_request)
-        if allow_on_review:
-            self.permissions.require_employee_upload_file(user, budget_request)
-        else:
-            self.permissions.require_employee_edit_request(user, budget_request)
+        self.permissions.require_employee_upload_file(user, budget_request)
         get_required(self.repo, "files", file_id)
         link_collection = "dds_item_files" if kind == "dds" else "invest_item_files"
         key = "dds_item_id" if kind == "dds" else "invest_item_id"
         file_id = int(file_id) if str(file_id).isdigit() else file_id
         if any(link.get("file_id") == file_id and link.get(key) == item_id for link in self.repo.load_all(link_collection)):
-            raise HTTPException(status_code=400, detail="File is already attached to item")
+            raise HTTPException(status_code=400, detail="Файл уже прикреплён к позиции")
         link = {"file_id": file_id, key: item_id}
         return self.repo.insert(link_collection, link)
 
@@ -128,7 +129,7 @@ class FileService:
         file_id = int(file_id) if str(file_id).isdigit() else file_id
         deleted = self.repo.delete_where(link_collection, {key: item_id, "file_id": file_id})
         if not deleted:
-            raise HTTPException(status_code=404, detail="File link not found")
+            raise HTTPException(status_code=404, detail="Связь с файлом не найдена")
 
         remaining_links = [
             link
@@ -170,9 +171,9 @@ class FileService:
         if user["role"] == "admin":
             return
         if not linked_requests:
-            raise HTTPException(status_code=403, detail="No access to detached file")
+            raise HTTPException(status_code=403, detail="Нет доступа к непривязанному файлу")
         if not any(self.permissions.can_view_request(user, budget_request) for budget_request in linked_requests):
-            raise HTTPException(status_code=403, detail="No access to file")
+            raise HTTPException(status_code=403, detail="Нет доступа к файлу")
 
     def files_for_item(self, user: dict, kind: str, item_id: str) -> list[dict]:
         collection = "dds_items" if kind == "dds" else "invest_items"
@@ -195,5 +196,5 @@ class FileService:
         body, file, storage, _size, _content_type = self.download(user, file_id)
         path = getattr(body, "name", None)
         if not path:
-            raise HTTPException(status_code=400, detail="File is not stored on local filesystem")
+            raise HTTPException(status_code=400, detail="Файл не хранится в локальной файловой системе")
         return Path(path), file

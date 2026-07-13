@@ -21,6 +21,7 @@ from app.services import (
     UnitService,
     UserService,
 )
+from app.services.file_guard_client import FileGuardClient
 
 
 def create_app() -> FastAPI:
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
 
     permissions = PermissionService(repo)
     request_service = RequestService(repo, permissions)
+    file_guard = FileGuardClient(settings)
 
     app.state.repo = repo
     app.state.settings = settings
@@ -48,8 +50,11 @@ def create_app() -> FastAPI:
     app.state.catalog_service = CatalogService(repo)
     app.state.request_service = request_service
     app.state.budget_item_service = BudgetItemService(repo, permissions, request_service)
-    app.state.file_service = FileService(repo, permissions, upload_dir, settings)
-    app.state.excel_service = ExcelService(repo, permissions, request_service, app.state.file_service, export_dir)
+    app.state.file_guard_client = file_guard
+    app.state.file_service = FileService(repo, permissions, upload_dir, settings, file_guard)
+    app.state.excel_service = ExcelService(
+        repo, permissions, request_service, app.state.file_service, export_dir, file_guard
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

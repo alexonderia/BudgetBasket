@@ -54,7 +54,7 @@ class PermissionService:
     @staticmethod
     def require_request_unfrozen(request: dict) -> None:
         if request.get("budget_frozen"):
-            raise HTTPException(status_code=400, detail="Budget is frozen")
+            raise HTTPException(status_code=400, detail="Бюджет заявки зафиксирован")
 
     def require_employee_edit_request(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)
@@ -87,9 +87,9 @@ class PermissionService:
     def require_employee_upload_file(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
-            raise HTTPException(status_code=403, detail="Only responsible employee can upload files")
+            raise HTTPException(status_code=403, detail="Загружать файлы может только ответственный сотрудник")
         if request.get("status") != RequestStatus.draft:
-            raise HTTPException(status_code=400, detail="Files can be uploaded only for draft requests")
+            raise HTTPException(status_code=400, detail="Файлы можно загружать только в черновик заявки")
 
     def require_economist_edit_request(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)

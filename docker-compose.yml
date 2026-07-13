@@ -15,6 +15,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - data
 
   seaweedfs:
     image: chrislusf/seaweedfs:latest
@@ -34,6 +36,8 @@ services:
       - "9333:9333"
     volumes:
       - budgetbasket_seaweedfs_data:/data
+    networks:
+      - storage
 
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -46,6 +50,45 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - data
+
+  file_guard:
+    build:
+      context: .
+      dockerfile: file_guard/Dockerfile
+    container_name: bb-file-guard
+    environment:
+      FILE_GUARD_MAX_FILE_SIZE_BYTES: ${FILE_GUARD_MAX_FILE_SIZE_BYTES:-26214400}
+      FILE_GUARD_ALLOWED_EXTENSIONS: ${FILE_GUARD_ALLOWED_EXTENSIONS:-.pdf,.png,.jpg,.jpeg,.xlsx,.docx}
+      FILE_GUARD_ALLOWED_MIME_TYPES: ${FILE_GUARD_ALLOWED_MIME_TYPES:-application/pdf,image/png,image/jpeg,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document}
+      FILE_GUARD_STRUCTURAL_VALIDATION_ENABLED: ${FILE_GUARD_STRUCTURAL_VALIDATION_ENABLED:-true}
+      FILE_GUARD_ALLOW_LIBMAGIC_FALLBACK: ${FILE_GUARD_ALLOW_LIBMAGIC_FALLBACK:-true}
+      FILE_GUARD_ANTIVIRUS_ENABLED: ${FILE_GUARD_ANTIVIRUS_ENABLED:-true}
+      FILE_GUARD_REQUIRE_ANTIVIRUS: ${FILE_GUARD_REQUIRE_ANTIVIRUS:-true}
+      FILE_GUARD_ANTIVIRUS_TIMEOUT_SECONDS: ${FILE_GUARD_ANTIVIRUS_TIMEOUT_SECONDS:-10}
+      FILE_GUARD_SCAN_TIMEOUT_SECONDS: ${FILE_GUARD_SCAN_TIMEOUT_SECONDS:-30}
+      FILE_GUARD_CLAMD_STREAM_CHUNK_BYTES: ${FILE_GUARD_CLAMD_STREAM_CHUNK_BYTES:-65536}
+      FILE_GUARD_OFFICE_MAX_ENTRIES: ${FILE_GUARD_OFFICE_MAX_ENTRIES:-200}
+      FILE_GUARD_OFFICE_MAX_TOTAL_UNCOMPRESSED_BYTES: ${FILE_GUARD_OFFICE_MAX_TOTAL_UNCOMPRESSED_BYTES:-41943040}
+      FILE_GUARD_OFFICE_MAX_ENTRY_UNCOMPRESSED_BYTES: ${FILE_GUARD_OFFICE_MAX_ENTRY_UNCOMPRESSED_BYTES:-12582912}
+      FILE_GUARD_OFFICE_MAX_COMPRESSION_RATIO: ${FILE_GUARD_OFFICE_MAX_COMPRESSION_RATIO:-120}
+      FILE_GUARD_OFFICE_MAX_XML_SCAN_BYTES: ${FILE_GUARD_OFFICE_MAX_XML_SCAN_BYTES:-1048576}
+      FILE_GUARD_OFFICE_MAX_ENTRY_NAME_LENGTH: ${FILE_GUARD_OFFICE_MAX_ENTRY_NAME_LENGTH:-255}
+      FILE_GUARD_UPLOAD_READ_CHUNK_BYTES: ${FILE_GUARD_UPLOAD_READ_CHUNK_BYTES:-1048576}
+      FILE_GUARD_IMAGE_MAX_WIDTH: ${FILE_GUARD_IMAGE_MAX_WIDTH:-12000}
+      FILE_GUARD_IMAGE_MAX_HEIGHT: ${FILE_GUARD_IMAGE_MAX_HEIGHT:-12000}
+      FILE_GUARD_IMAGE_MAX_PIXELS: ${FILE_GUARD_IMAGE_MAX_PIXELS:-40000000}
+      FILE_GUARD_CLAMAV_UPDATE_ON_START: ${FILE_GUARD_CLAMAV_UPDATE_ON_START:-true}
+      FILE_GUARD_FRESHCLAM_ATTEMPTS: ${FILE_GUARD_FRESHCLAM_ATTEMPTS:-3}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - app
 
   backend:
     build:
@@ -70,12 +113,21 @@ services:
       S3_PUBLIC_URL: http://localhost:8333
       MAX_UPLOAD_FILE_SIZE_MB: "25"
       ALLOWED_UPLOAD_MIME_TYPES: application/pdf,image/png,image/jpeg,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document
+      FILE_GUARD_URL: http://file_guard:8080
+      FILE_GUARD_CONNECT_TIMEOUT_SECONDS: ${FILE_GUARD_CONNECT_TIMEOUT_SECONDS:-2}
+      FILE_GUARD_READ_TIMEOUT_SECONDS: ${FILE_GUARD_READ_TIMEOUT_SECONDS:-35}
       BUDGET_EXPORT_DIR: /tmp/budgetbasket/exports
     depends_on:
       postgres:
         condition: service_healthy
       seaweedfs:
         condition: service_started
+      file_guard:
+        condition: service_healthy
+    networks:
+      - app
+      - data
+      - storage
 
   frontend:
     build:
@@ -87,7 +139,16 @@ services:
       VITE_API_URL: http://localhost:8000
     depends_on:
       - backend
+    networks:
+      - app
 
 volumes:
   budgetbasket_postgres_data:
   budgetbasket_seaweedfs_data:
+
+networks:
+  app:
+  data:
+    internal: true
+  storage:
+    internal: true

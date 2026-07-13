@@ -1,13 +1,16 @@
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import SendIcon from '@mui/icons-material/Send';
 import UndoIcon from '@mui/icons-material/Undo';
+import CloseIcon from '@mui/icons-material/Close';
 import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Autocomplete from '@mui/material/Autocomplete';
 import Button from '@mui/material/Button';
@@ -22,11 +25,12 @@ import TableBody from '@mui/material/TableBody';
 import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
+import TableContainer from '@mui/material/TableContainer';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -37,6 +41,50 @@ import { CLOSED_REQUEST_STATUSES } from '../types';
 import { downloadAuthorized, downloadBlob } from '../utils/download';
 import { itemStatusLabels, money } from '../utils/labels';
 import { normalizePositiveAmount } from '../utils/validation';
+
+const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
+const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
+const UPLOAD_EXTENSIONS = new Set(UPLOAD_ACCEPT.split(','));
+
+type ItemTableColumn = 'category' | 'article' | 'plan' | 'status' | 'approved' | 'comment' | 'files' | 'actions';
+
+const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
+  category: 120,
+  article: 260,
+  plan: 120,
+  status: 150,
+  approved: 120,
+  comment: 180,
+  files: 230,
+  actions: 92,
+};
+
+const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
+  category: 90,
+  article: 180,
+  plan: 100,
+  status: 120,
+  approved: 100,
+  comment: 130,
+  files: 160,
+  actions: 72,
+};
+
+const ITEM_TABLE_COLUMNS = Object.keys(DEFAULT_ITEM_TABLE_COLUMN_WIDTHS) as ItemTableColumn[];
+
+function uploadValidationError(file: File) {
+  const extension = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
+  if (!UPLOAD_EXTENSIONS.has(extension)) {
+    return `Файл «${file.name}» имеет неподдерживаемый формат.`;
+  }
+  if (file.size === 0) {
+    return `Файл «${file.name}» пустой.`;
+  }
+  if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+    return `Файл «${file.name}» превышает лимит 25 МБ.`;
+  }
+  return null;
+}
 
 function catalogLabel(item: CatalogItem, catalog: CatalogItem[]) {
   const parent = catalog.find((entry) => entry.id === item.parent_id);
@@ -62,6 +110,7 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 type CounterpartyContact = { user_id: string; login: string; role: 'economist' | 'employee'; profile: Profile | null };
+type ItemCreatedWithAttachmentError = Error & { itemCreated: true };
 
 function contactName(contact: CounterpartyContact) {
   const profile = contact.profile;
@@ -71,52 +120,63 @@ function contactName(contact: CounterpartyContact) {
 function ItemFilesCell({
   kind,
   itemId,
-  canDelete,
+  editing,
+  stagedFiles,
+  pendingDeletedFileIds,
+  onStageFile,
+  onRemoveStagedFile,
+  onStageDelete,
+  onRestoreDelete,
+  disabled,
 }: {
   kind: 'dds' | 'invest';
   itemId: string;
-  canDelete: boolean;
+  editing: boolean;
+  stagedFiles: File[];
+  pendingDeletedFileIds: number[];
+  onStageFile: (file: File) => void;
+  onRemoveStagedFile: (file: File) => void;
+  onStageDelete: (file: FileAttachment) => void;
+  onRestoreDelete: (fileId: number) => void;
+  disabled: boolean;
 }) {
-  const queryClient = useQueryClient();
-  const toast = useAppToast();
-  const [deleteTarget, setDeleteTarget] = useState<FileAttachment | null>(null);
-
   const { data: files = [] } = useQuery({
     queryKey: ['item-files', kind, itemId],
     queryFn: async () => (await api.get<FileAttachment[]>(`/${kind}-items/${itemId}/files`)).data,
   });
-
-  const deleteFile = useMutation({
-    mutationFn: (fileId: string | number) => api.delete(`/${kind}-items/${itemId}/files/${fileId}`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['item-files', kind, itemId] });
-      toast('Файл удалён', 'success');
-      setDeleteTarget(null);
-    },
-    onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось удалить файл'), 'error');
-    },
-  });
+  const visibleFiles = files.filter((file) => !pendingDeletedFileIds.includes(file.id));
+  const pendingDeletion = files.filter((file) => pendingDeletedFileIds.includes(file.id));
 
   return (
-    <Stack spacing={1} alignItems="flex-start">
-      {files.map((file) => (
-        <Stack key={file.id} direction="row" spacing={0.5} alignItems="center">
+    <Stack spacing={0.5} alignItems="stretch" sx={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
+      {visibleFiles.map((file) => (
+        <Stack key={file.id} direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
+          <Tooltip title={file.original_name} disableInteractive>
           <Button
             size="small"
             startIcon={<FileDownloadIcon />}
             onClick={() => downloadAuthorized(`/files/${file.id}/download`, file.original_name)}
+            aria-label={`Скачать ${file.original_name}`}
+            sx={{
+              justifyContent: 'flex-start',
+              minWidth: 0,
+              maxWidth: '100%',
+              flex: 1,
+              '& .MuiButton-startIcon': { flexShrink: 0 },
+            }}
           >
-            {file.original_name}
+            <span className="item-file-name">{file.original_name}</span>
           </Button>
-          {canDelete && (
-            <Tooltip title="Удалить файл">
+          </Tooltip>
+          {editing && (
+            <Tooltip title="Удалить файл при сохранении">
               <IconButton
                 size="small"
                 color="default"
-                onClick={() => setDeleteTarget(file)}
+                onClick={() => onStageDelete(file)}
+                disabled={disabled}
                 aria-label="Удалить файл"
-                sx={{ color: 'text.secondary' }}
+                sx={{ color: 'text.secondary', flexShrink: 0 }}
               >
                 <DeleteOutlineIcon fontSize="small" />
               </IconButton>
@@ -124,25 +184,40 @@ function ItemFilesCell({
           )}
         </Stack>
       ))}
-      <ConfirmDialog
-        open={!!deleteTarget}
-        title="Удалить файл?"
-        description={`Файл «${deleteTarget?.original_name || ''}» будет отвязан от строки. Если это последний файл, он будет удалён окончательно.`}
-        confirmLabel="Удалить"
-        confirmColor="error"
-        pending={deleteFile.isPending}
-        onClose={() => setDeleteTarget(null)}
-        onConfirm={() => deleteTarget && deleteFile.mutate(deleteTarget.id)}
-      />
+      {editing && stagedFiles.map((file) => (
+        <Chip
+          key={`${file.name}-${file.lastModified}`}
+          label={`Добавится: ${file.name}`}
+          size="small"
+          color="primary"
+          variant="outlined"
+          onDelete={() => onRemoveStagedFile(file)}
+          disabled={disabled}
+          sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+        />
+      ))}
+      {editing && pendingDeletion.map((file) => (
+        <Chip
+          key={file.id}
+          label={`Удалится: ${file.original_name}`}
+          size="small"
+          color="warning"
+          variant="outlined"
+          onDelete={() => onRestoreDelete(file.id)}
+          disabled={disabled}
+          sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+        />
+      ))}
+      {editing && <FileAttachAction disabled={disabled} onUpload={onStageFile} />}
     </Stack>
   );
 }
 
 function FileAttachAction({
-  disabled,
+  disabled = false,
   onUpload,
 }: {
-  disabled: boolean;
+  disabled?: boolean;
   onUpload: (file: File) => void;
 }) {
   return (
@@ -152,6 +227,7 @@ function FileAttachAction({
         <input
           hidden
           type="file"
+          accept={UPLOAD_ACCEPT}
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
@@ -176,24 +252,69 @@ function AddItemForm({
 }) {
   const queryClient = useQueryClient();
   const options = useMemo(() => leafItems(catalog), [catalog]);
+  const toast = useAppToast();
   const [article, setArticle] = useState<CatalogItem | null>(null);
   const [sumPlan, setSumPlan] = useState('');
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   const create = useMutation({
-    mutationFn: () =>
-      api.post(`/requests/${requestId}/${kind}-items`, {
+    mutationFn: async () => {
+      const created = await api.post<BudgetItem>(`/requests/${requestId}/${kind}-items`, {
         [kind === 'dds' ? 'dds_id' : 'invest_id']: article?.id,
         sum_plan: Number(sumPlan),
-      }),
-    onSuccess: () => {
+      });
+      try {
+        for (const file of pendingFiles) {
+          const form = new FormData();
+          form.append('file', file);
+          await api.post(`/${kind}-items/${created.data.id}/files`, form);
+        }
+      } catch (error) {
+        const attachmentError = new Error(
+          getErrorMessage(error, 'Строка создана, но не все файлы удалось прикрепить. Добавьте их через кнопку скрепки.'),
+        ) as ItemCreatedWithAttachmentError;
+        attachmentError.itemCreated = true;
+        throw attachmentError;
+      }
+      return { filesCount: pendingFiles.length };
+    },
+    onSuccess: ({ filesCount }) => {
       setArticle(null);
       setSumPlan('');
+      setPendingFiles([]);
       queryClient.invalidateQueries({ queryKey: ['request-details', requestId] });
+      toast(filesCount ? 'Строка и файлы добавлены' : 'Строка добавлена', 'success');
+    },
+    onError: (error) => {
+      if ((error as Partial<ItemCreatedWithAttachmentError>).itemCreated) {
+        setArticle(null);
+        setSumPlan('');
+        setPendingFiles([]);
+      }
+      queryClient.invalidateQueries({ queryKey: ['request-details', requestId] });
+      toast(
+        getErrorMessage(error, 'Не удалось добавить строку'),
+        'error',
+      );
     },
   });
 
+  const addFiles = (files: FileList | null) => {
+    const next = Array.from(files || []);
+    const invalid = next.map(uploadValidationError).find(Boolean);
+    if (invalid) {
+      toast(invalid, 'error');
+      return;
+    }
+    setPendingFiles((current) => [
+      ...current,
+      ...next.filter((file) => !current.some((entry) => entry.name === file.name && entry.size === file.size && entry.lastModified === file.lastModified)),
+    ]);
+  };
+
   return (
-    <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} sx={{ my: 2 }} alignItems={{ lg: 'center' }}>
+    <Stack spacing={1.25} sx={{ my: 2 }}>
+      <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ lg: 'center' }}>
       <Autocomplete
         options={options}
         groupBy={(option) => catalog.find((entry) => entry.id === option.parent_id)?.name || 'Без категории'}
@@ -218,9 +339,35 @@ function AddItemForm({
         disabled={disabled}
         sx={{ minWidth: 160 }}
       />
-      <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || Number(sumPlan) <= 0 || create.isPending}>
-        Добавить строку
-      </Button>
+        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || Number(sumPlan) <= 0 || create.isPending}>
+          Добавить строку
+        </Button>
+      </Stack>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} flexWrap="wrap" useFlexGap>
+        <Button component="label" variant="outlined" startIcon={<AttachFileIcon />} disabled={disabled || create.isPending}>
+          Выбрать файлы{pendingFiles.length ? ` (${pendingFiles.length})` : ''}
+          <input hidden type="file" multiple accept={UPLOAD_ACCEPT} onChange={(event) => {
+            addFiles(event.target.files);
+            event.target.value = '';
+          }} />
+        </Button>
+        <Typography variant="body2" color="text.secondary">
+          PDF, PNG, JPG, XLSX, DOCX; до 25 МБ каждый.
+        </Typography>
+      </Stack>
+      {pendingFiles.length > 0 && (
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+          {pendingFiles.map((file) => (
+            <Tooltip key={`${file.name}-${file.lastModified}`} title={file.name} disableInteractive>
+              <Chip
+                label={file.name}
+                onDelete={() => setPendingFiles((current) => current.filter((entry) => entry !== file))}
+                sx={{ maxWidth: 280, '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
+              />
+            </Tooltip>
+          ))}
+        </Stack>
+      )}
     </Stack>
   );
 }
@@ -243,15 +390,75 @@ function ItemsTable({
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const [drafts, setDrafts] = useState<Record<string, Partial<BudgetItem>>>({});
+  const [isEmployeeEditing, setIsEmployeeEditing] = useState(false);
+  const [columnWidths, setColumnWidths] = useState<Record<ItemTableColumn, number>>(DEFAULT_ITEM_TABLE_COLUMN_WIDTHS);
+  const [stagedFilesByItem, setStagedFilesByItem] = useState<Record<string, File[]>>({});
+  const [pendingDeletedFileIdsByItem, setPendingDeletedFileIdsByItem] = useState<Record<string, number[]>>({});
   const [deleteTarget, setDeleteTarget] = useState<BudgetItem | null>(null);
   const canEmployeeChange = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
   const disabledForEmployee = !canEmployeeChange;
   const employeeCanEdit = canEmployeeChange;
-  const canEmployeeUpload = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
   const canEconomist = user.role === 'economist' && request.status === 'on_review' && !request.budget_frozen;
   const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
-  const canDeleteFiles = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
+  const tableWidth = ITEM_TABLE_COLUMNS.reduce((sum, column) => sum + columnWidths[column], 0);
+
+  const resizeColumn = (column: ItemTableColumn, event: ReactPointerEvent<HTMLSpanElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = columnWidths[column];
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextWidth = Math.max(ITEM_TABLE_COLUMN_MIN_WIDTHS[column], startWidth + moveEvent.clientX - startX);
+      setColumnWidths((current) => ({ ...current, [column]: nextWidth }));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const headerCell = (column: ItemTableColumn) => ({
+    width: columnWidths[column],
+    minWidth: columnWidths[column],
+    maxWidth: columnWidths[column],
+    px: 1,
+    py: 1,
+    position: 'relative' as const,
+  });
+
+  const resizeHandle = (column: ItemTableColumn) => (
+    <Tooltip title="Перетащите для изменения ширины колонки" placement="top">
+      <Box
+        component="span"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Изменить ширину колонки"
+        onPointerDown={(event) => resizeColumn(column, event)}
+        sx={{
+          position: 'absolute',
+          top: 0,
+          right: -4,
+          zIndex: 2,
+          width: 8,
+          height: '100%',
+          cursor: 'col-resize',
+          touchAction: 'none',
+          '&:hover::after': {
+            content: '""',
+            position: 'absolute',
+            top: 8,
+            bottom: 8,
+            left: 3,
+            width: 2,
+            borderRadius: 1,
+            bgcolor: 'primary.main',
+          },
+        }}
+      />
+    </Tooltip>
+  );
 
   const patch = useMutation({
     mutationFn: ({ id, body }: { id: string; body: Partial<BudgetItem> }) => api.patch(`/${kind}-items/${id}`, body),
@@ -276,21 +483,63 @@ function ItemsTable({
     },
   });
 
-  const upload = useMutation({
-    mutationFn: async ({ itemId, file }: { itemId: string; file: File }) => {
-      const form = new FormData();
-      form.append('file', file);
-      return api.post(`/${kind}-items/${itemId}/files`, form);
+  const saveEmployeeChanges = useMutation({
+    mutationFn: async () => {
+      const changedItemIds = new Set([
+        ...Object.keys(drafts),
+        ...Object.keys(stagedFilesByItem),
+        ...Object.keys(pendingDeletedFileIdsByItem),
+      ]);
+      for (const itemId of changedItemIds) {
+        const body = drafts[itemId] || {};
+        if (Object.keys(body).length > 0) {
+          await api.patch(`/${kind}-items/${itemId}`, body);
+        }
+        for (const file of stagedFilesByItem[itemId] || []) {
+          const form = new FormData();
+          form.append('file', file);
+          await api.post(`/${kind}-items/${itemId}/files`, form);
+        }
+        for (const fileId of pendingDeletedFileIdsByItem[itemId] || []) {
+          await api.delete(`/${kind}-items/${itemId}/files/${fileId}`);
+        }
+      }
     },
-    onSuccess: (_response, variables) => {
+    onSuccess: () => {
+      setIsEmployeeEditing(false);
+      setDrafts({});
+      setStagedFilesByItem({});
+      setPendingDeletedFileIdsByItem({});
       refresh();
-      queryClient.invalidateQueries({ queryKey: ['item-files', kind, variables.itemId] });
-      toast('Файл прикреплён', 'success');
+      queryClient.invalidateQueries({ queryKey: ['item-files', kind] });
+      toast('Все изменения сохранены', 'success');
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось прикрепить файл'), 'error');
+      toast(getErrorMessage(error, 'Не удалось сохранить все изменения'), 'error');
     },
   });
+
+  const cancelEmployeeEdit = () => {
+    setIsEmployeeEditing(false);
+    setDrafts({});
+    setStagedFilesByItem({});
+    setPendingDeletedFileIdsByItem({});
+  };
+
+  const stageFile = (itemId: string, file: File) => {
+    const validationError = uploadValidationError(file);
+    if (validationError) {
+      toast(validationError, 'error');
+      return;
+    }
+    setStagedFilesByItem((current) => {
+      const files = current[itemId] || [];
+      if (files.some((entry) => entry.name === file.name && entry.size === file.size && entry.lastModified === file.lastModified)) {
+        return current;
+      }
+      return { ...current, [itemId]: [...files, file] };
+    });
+  };
 
   return (
     <>
@@ -300,22 +549,64 @@ function ItemsTable({
           {canEconomist
             ? 'Проверьте строки, укажите статус, утверждённую сумму и комментарий.'
             : employeeCanEdit
-              ? 'Выберите категорию НСИ подразделения: статья ДДС или инвест-проект внутри категории.'
+              ? 'Нажмите «Редактировать все», чтобы изменить статьи, планы и файлы. Изменения применятся только после общего сохранения.'
               : 'Строки заявки показаны в режиме просмотра. Редактирование и работа с файлами доступны только сотруднику в черновике.'}
         </Typography>
+        {employeeCanEdit && (
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {isEmployeeEditing ? (
+              <>
+                <Button
+                  size="small"
+                  variant="contained"
+                  startIcon={<SaveOutlinedIcon />}
+                  onClick={() => saveEmployeeChanges.mutate()}
+                  disabled={saveEmployeeChanges.isPending}
+                >
+                  Сохранить все изменения
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<CloseIcon />}
+                  onClick={cancelEmployeeEdit}
+                  disabled={saveEmployeeChanges.isPending}
+                >
+                  Отменить
+                </Button>
+              </>
+            ) : (
+              <Button size="small" variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => setIsEmployeeEditing(true)}>
+                Редактировать все строки
+              </Button>
+            )}
+          </Stack>
+        )}
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          <Typography variant="caption" color="text.secondary">
+            Перетаскивайте границы заголовков, чтобы настроить ширину колонок.
+          </Typography>
+          <Button size="small" variant="text" onClick={() => setColumnWidths(DEFAULT_ITEM_TABLE_COLUMN_WIDTHS)}>
+            Сбросить ширину
+          </Button>
+        </Stack>
       </Stack>
-      {employeeCanEdit && <AddItemForm kind={kind} requestId={request.id} catalog={catalog} disabled={disabledForEmployee} />}
-      <Table size="small">
+      {employeeCanEdit && <AddItemForm kind={kind} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || isEmployeeEditing} />}
+      <TableContainer className="request-items-table">
+      <Table size="small" sx={{ width: tableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
+        <colgroup>
+          {ITEM_TABLE_COLUMNS.map((column) => <col key={column} style={{ width: columnWidths[column] }} />)}
+        </colgroup>
         <TableHead>
           <TableRow>
-            <TableCell>Категория</TableCell>
-            <TableCell>{kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект'}</TableCell>
-            <TableCell>План</TableCell>
-            <TableCell>Статус</TableCell>
-            <TableCell>Утверждено</TableCell>
-            <TableCell>Комментарий</TableCell>
-            <TableCell>Файл</TableCell>
-            <TableCell align="right">Действия</TableCell>
+            <TableCell sx={headerCell('category')}>Категория{resizeHandle('category')}</TableCell>
+            <TableCell sx={headerCell('article')}>{kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект'}{resizeHandle('article')}</TableCell>
+            <TableCell sx={headerCell('plan')}>План{resizeHandle('plan')}</TableCell>
+            <TableCell sx={headerCell('status')}>Статус{resizeHandle('status')}</TableCell>
+            <TableCell sx={headerCell('approved')}>Утверждено{resizeHandle('approved')}</TableCell>
+            <TableCell sx={headerCell('comment')}>Комментарий{resizeHandle('comment')}</TableCell>
+            <TableCell sx={headerCell('files')}>Файл{resizeHandle('files')}</TableCell>
+            <TableCell sx={headerCell('actions')} align="right">Действия</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -323,11 +614,13 @@ function ItemsTable({
             const local = drafts[item.id] || {};
             const hasDraftChanges = Object.keys(local).length > 0;
             const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
+            const stagedFiles = stagedFilesByItem[item.id] || [];
+            const pendingDeletedFileIds = pendingDeletedFileIdsByItem[item.id] || [];
             return (
               <TableRow key={item.id}>
-                <TableCell>{categoryName(catalog, catalogId)}</TableCell>
-                <TableCell>
-                  {employeeCanEdit ? (
+                <TableCell sx={{ px: 1, py: 1 }}>{categoryName(catalog, catalogId)}</TableCell>
+                <TableCell sx={{ px: 1, py: 1 }}>
+                  {isEmployeeEditing ? (
                     <TextField
                       select
                       size="small"
@@ -338,7 +631,7 @@ function ItemsTable({
                           [item.id]: { ...local, [kind === 'dds' ? 'dds_id' : 'invest_id']: event.target.value },
                         })
                       }
-                      sx={{ minWidth: 220 }}
+                      sx={{ width: '100%', minWidth: 0 }}
                     >
                       {leafItems(catalog).map((entry) => <MenuItem key={entry.id} value={entry.id}>{catalogLabel(entry, catalog)}</MenuItem>)}
                     </TextField>
@@ -346,8 +639,23 @@ function ItemsTable({
                     catalog.find((entry) => entry.id === catalogId)?.name || catalogId
                   )}
                 </TableCell>
-                <TableCell>{money(item.sum_plan)}</TableCell>
-                <TableCell>
+                <TableCell sx={{ px: 1, py: 1 }}>
+                  {isEmployeeEditing ? (
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={local.sum_plan ?? item.sum_plan}
+                      onChange={(event) =>
+                        setDrafts({ ...drafts, [item.id]: { ...local, sum_plan: Number(event.target.value) } })
+                      }
+                      inputProps={{ min: 0 }}
+                      sx={{ width: '100%', minWidth: 0 }}
+                    />
+                  ) : (
+                    money(item.sum_plan)
+                  )}
+                </TableCell>
+                <TableCell sx={{ px: 1, py: 1 }}>
                   {canEconomist ? (
                     <TextField
                       select
@@ -356,7 +664,7 @@ function ItemsTable({
                       onChange={(event) =>
                         setDrafts({ ...drafts, [item.id]: { ...local, status: event.target.value as ItemStatus } })
                       }
-                      sx={{ minWidth: 220 }}
+                      sx={{ width: '100%', minWidth: 0 }}
                     >
                       {Object.entries(itemStatusLabels).map(([value, label]) => (
                         <MenuItem key={value} value={value}>
@@ -368,7 +676,7 @@ function ItemsTable({
                     <ItemStatusBadge status={item.status} />
                   )}
                 </TableCell>
-                <TableCell>
+                <TableCell sx={{ px: 1, py: 1 }}>
                   {canEconomist ? (
                     <TextField
                       size="small"
@@ -377,28 +685,56 @@ function ItemsTable({
                       onChange={(event) =>
                         setDrafts({ ...drafts, [item.id]: { ...local, sum_fact: Number(event.target.value) } })
                       }
+                      sx={{ width: '100%', minWidth: 0 }}
                     />
                   ) : (
                     money(item.sum_fact)
                   )}
                 </TableCell>
-                <TableCell>
+                <TableCell sx={{ px: 1, py: 1 }}>
                   {canEconomist ? (
                     <TextField
                       size="small"
                       value={local.comment ?? item.comment ?? ''}
                       onChange={(event) => setDrafts({ ...drafts, [item.id]: { ...local, comment: event.target.value } })}
+                      sx={{ width: '100%', minWidth: 0 }}
                     />
                   ) : (
                     item.comment || (item.status === 'rejected' ? 'Комментарий рекомендуется' : '—')
                   )}
                 </TableCell>
-                <TableCell>
-                  <ItemFilesCell kind={kind} itemId={item.id} canDelete={canDeleteFiles} />
+                <TableCell sx={{ px: 1, py: 1 }}>
+                  <ItemFilesCell
+                    kind={kind}
+                    itemId={item.id}
+                    editing={isEmployeeEditing}
+                    stagedFiles={stagedFiles}
+                    pendingDeletedFileIds={pendingDeletedFileIds}
+                    onStageFile={(file) => stageFile(item.id, file)}
+                    onRemoveStagedFile={(file) =>
+                      setStagedFilesByItem((current) => ({
+                        ...current,
+                        [item.id]: (current[item.id] || []).filter((entry) => entry !== file),
+                      }))
+                    }
+                    onStageDelete={(file) =>
+                      setPendingDeletedFileIdsByItem((current) => ({
+                        ...current,
+                        [item.id]: [...new Set([...(current[item.id] || []), file.id])],
+                      }))
+                    }
+                    onRestoreDelete={(fileId) =>
+                      setPendingDeletedFileIdsByItem((current) => ({
+                        ...current,
+                        [item.id]: (current[item.id] || []).filter((id) => id !== fileId),
+                      }))
+                    }
+                    disabled={saveEmployeeChanges.isPending}
+                  />
                 </TableCell>
-                <TableCell align="right">
+                <TableCell align="right" sx={{ px: 1, py: 1 }}>
                   <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
-                    {canEconomist || employeeCanEdit ? (
+                    {canEconomist ? (
                       <Tooltip title="Сохранить изменения строки">
                         <IconButton
                           size="small"
@@ -410,7 +746,20 @@ function ItemsTable({
                           <SaveOutlinedIcon fontSize="small" />
                         </IconButton>
                       </Tooltip>
-                    ) : canDeleteItem ? (
+                    ) : employeeCanEdit && !isEmployeeEditing ? (
+                      <>
+                        <Tooltip title="Удалить строку">
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => setDeleteTarget(item)}
+                            aria-label="Удалить строку"
+                          >
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
+                      </>
+                    ) : canDeleteItem && !isEmployeeEditing ? (
                       <Tooltip title="Удалить строку">
                         <IconButton
                           size="small"
@@ -422,12 +771,6 @@ function ItemsTable({
                         </IconButton>
                       </Tooltip>
                     ) : null}
-                    {canEmployeeUpload && (
-                      <FileAttachAction
-                        disabled={upload.isPending}
-                        onUpload={(file) => upload.mutate({ itemId: item.id, file })}
-                      />
-                    )}
                   </Stack>
                 </TableCell>
               </TableRow>
@@ -435,6 +778,7 @@ function ItemsTable({
           })}
         </TableBody>
       </Table>
+      </TableContainer>
 
       <ConfirmDialog
         open={!!deleteTarget}

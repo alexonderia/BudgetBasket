@@ -14,6 +14,7 @@ from app.models import EXPORTABLE_REQUEST_STATUSES
 from app.repositories.base import Repository
 from app.services.common import get_required, require_role
 from app.services.file_service import FileService
+from app.services.file_guard_client import FileGuardClient, require_valid_file
 from app.services.permission_service import PermissionService
 from app.services.request_service import RequestService
 
@@ -48,12 +49,14 @@ class ExcelService:
         requests: RequestService,
         files: FileService,
         export_dir: Path,
+        file_guard: FileGuardClient,
     ):
         self.repo = repo
         self.permissions = permissions
         self.requests = requests
         self.files = files
         self.export_dir = export_dir
+        self.file_guard = file_guard
         self.export_dir.mkdir(parents=True, exist_ok=True)
 
     def department_id_for_unit(self, unit_id: str | None) -> str | None:
@@ -252,8 +255,9 @@ class ExcelService:
     async def import_catalog(self, user: dict, collection: str, upload: UploadFile) -> dict:
         require_role(user, "admin")
         filename = (upload.filename or "").lower()
-        if not filename.endswith((".xlsx", ".xlsm")):
+        if not filename.endswith(".xlsx"):
             raise HTTPException(status_code=400, detail="Ожидается файл Excel (.xlsx)")
+        await require_valid_file(self.file_guard, upload)
         raw = await upload.read()
         if not raw:
             raise HTTPException(status_code=400, detail="Пустой файл")

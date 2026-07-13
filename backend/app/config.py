@@ -29,6 +29,10 @@ class Settings:
         if item.strip()
     )
 
+    file_guard_url: str = os.getenv("FILE_GUARD_URL", "http://file_guard:8080").rstrip("/")
+    file_guard_connect_timeout_seconds: float = float(os.getenv("FILE_GUARD_CONNECT_TIMEOUT_SECONDS", "2"))
+    file_guard_read_timeout_seconds: float = float(os.getenv("FILE_GUARD_READ_TIMEOUT_SECONDS", "35"))
+
     @property
     def use_s3(self) -> bool:
         return bool(self.s3_endpoint)

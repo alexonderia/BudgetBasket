@@ -243,7 +243,7 @@ function CatalogManageDialog({
             <input
               hidden
               type="file"
-              accept=".xlsx,.xlsm"
+              accept=".xlsx"
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 if (file) importFile.mutate(file);

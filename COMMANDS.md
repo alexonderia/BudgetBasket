@@ -22,6 +22,7 @@ docker compose exec backend python -m pytest
 docker compose up -d
 docker compose ps
 docker compose logs -f backend
+docker compose logs -f file_guard
 ```
 
 ## Daily Backend Work
@@ -30,6 +31,7 @@ docker compose logs -f backend
 docker compose exec backend alembic upgrade head
 docker compose exec backend python -m pytest
 docker compose exec backend python -m compileall app
+python -m pytest file_guard/tests
 ```
 
 ## Daily Frontend Work
@@ -47,6 +49,8 @@ curl http://localhost:8000/health
 curl http://localhost:8000/health/db
 curl http://localhost:8333
 curl http://localhost:5050
+docker compose exec file_guard curl --fail http://localhost:8080/health
+docker compose exec file_guard curl --fail http://localhost:8080/ready
 ```
 
 ## Local Dev Without Docker
