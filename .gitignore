@@ -56,3 +56,5 @@ storage/
 # Docker / local tooling
 docker-data/
 
+# Locally generated database backups
+backups/
