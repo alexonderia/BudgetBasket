@@ -1,7 +1,11 @@
 import CloseIcon from '@mui/icons-material/Close';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { Role } from '../types';
 import { roleLabels } from '../utils/labels';
 import Button from '@mui/material/Button';
+import Accordion from '@mui/material/Accordion';
+import AccordionDetails from '@mui/material/AccordionDetails';
+import AccordionSummary from '@mui/material/AccordionSummary';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -164,9 +168,12 @@ export function UserGuideDialog({ role, open, onClose }: { role: Role; open: boo
           <Typography color="text.secondary">
             Для каждой операции указаны страница, кнопка и ожидаемый результат. Доступные данные определяются вашей ролью и назначенными подразделениями.
           </Typography>
-          {[...commonSections, ...userGuides[role]].map((section) => (
-            <Stack key={section.title} spacing={0.5}>
-              <Typography variant="h6">{section.title}</Typography>
+          {[...commonSections, ...userGuides[role]].map((section, index) => (
+            <Accordion key={section.title} defaultExpanded={index === 0} disableGutters elevation={0} sx={{ border: 1, borderColor: 'divider', borderRadius: '8px !important', '&:before': { display: 'none' } }}>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls={`guide-section-${index}-content`} id={`guide-section-${index}-header`}>
+                <Typography variant="h6">{section.title}</Typography>
+              </AccordionSummary>
+              <AccordionDetails id={`guide-section-${index}-content`} sx={{ pt: 0 }}>
               <List dense disablePadding>
                 {section.items.map((item) => (
                   <ListItem key={item} sx={{ display: 'list-item', ml: 2.5, pl: 0 }}>
@@ -174,7 +181,8 @@ export function UserGuideDialog({ role, open, onClose }: { role: Role; open: boo
                   </ListItem>
                 ))}
               </List>
-            </Stack>
+              </AccordionDetails>
+            </Accordion>
           ))}
         </Stack>
       </DialogContent>
