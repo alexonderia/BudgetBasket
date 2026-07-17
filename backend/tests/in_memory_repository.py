@@ -30,10 +30,10 @@ class InMemoryRepository:
             if collection in self._next_ids:
                 created["id"] = self._next_ids[collection]
                 self._next_ids[collection] += 1
-            elif collection not in {"profiles", "units_responsibles", "dds_item_files", "invest_item_files"}:
+            elif collection not in {"profiles", "units_responsibles", "req_item_files", "chats_participants"}:
                 created["id"] = str(uuid4())
         if collection == "requests":
-            created.setdefault("budget_frozen", False)
+            created.setdefault("frozen", False)
         self.rows.setdefault(collection, []).append(created)
         return deepcopy(created)
 

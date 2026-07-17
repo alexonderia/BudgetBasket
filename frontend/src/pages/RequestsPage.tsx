@@ -42,6 +42,8 @@ import { money, requestStatusLabels } from '../utils/labels';
 
 function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (detail) return detail;
+  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
   return detail || (error instanceof Error ? error.message : fallback);
 }
 
@@ -149,12 +151,12 @@ export default function RequestsPage({ user }: { user: User }) {
   });
   const { data: deleteTargetDds = [] } = useQuery({
     queryKey: ['request-delete-preview-dds', deleteTargetId],
-    queryFn: async () => (await api.get<BudgetItem[]>(`/requests/${deleteTargetId}/dds-items`)).data,
+    queryFn: async () => (await api.get<BudgetItem[]>(`/requests/${deleteTargetId}/items`)).data.filter((item) => !!item.dds_id && item.status !== 'deleted'),
     enabled: !!deleteTargetRequest,
   });
   const { data: deleteTargetInvest = [] } = useQuery({
     queryKey: ['request-delete-preview-invest', deleteTargetId],
-    queryFn: async () => (await api.get<BudgetItem[]>(`/requests/${deleteTargetId}/invest-items`)).data,
+    queryFn: async () => (await api.get<BudgetItem[]>(`/requests/${deleteTargetId}/items`)).data.filter((item) => !!item.invest_id && item.status !== 'deleted'),
     enabled: !!deleteTargetRequest,
   });
   const { data: deleteTargetDdsCatalog = [] } = useQuery({
@@ -443,7 +445,7 @@ export default function RequestsPage({ user }: { user: User }) {
                   <TableCell>
                     <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
                       <RequestStatusBadge status={item.status} />
-                      {item.budget_frozen && (
+                      {item.frozen && (
                         <Chip size="small" icon={<LockOutlinedIcon />} label="Зафиксирован" color="warning" variant="outlined" />
                       )}
                     </Stack>

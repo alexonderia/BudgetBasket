@@ -21,6 +21,7 @@ export const itemStatusLabels: Record<ItemStatus, string> = {
   rejected: 'Отказано',
   approved_with_changes: 'Утверждено с изменениями',
   approved: 'Утверждено',
+  deleted: 'Удалено',
 };
 
 export function money(value: number | null | undefined): string {

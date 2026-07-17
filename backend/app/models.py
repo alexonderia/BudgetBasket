@@ -30,6 +30,7 @@ class ItemStatus(StrEnum):
     rejected = "rejected"
     approved_with_changes = "approved_with_changes"
     approved = "approved"
+    deleted = "deleted"
 
 
 CLOSED_REQUEST_STATUSES = {
@@ -95,6 +96,8 @@ class UnitCreate(StrictModel):
     name: str
     type: UnitType
     is_active: bool = True
+    uses_invest_projects: bool = False
+    annual_budget: float = Field(default=0, ge=0)
 
 
 class UnitPatch(StrictModel):
@@ -102,6 +105,8 @@ class UnitPatch(StrictModel):
     name: str | None = None
     type: UnitType | None = None
     is_active: bool | None = None
+    uses_invest_projects: bool | None = None
+    annual_budget: float | None = Field(default=None, ge=0)
 
 
 class ResponsibleIn(StrictModel):
@@ -129,21 +134,6 @@ class CatalogPatch(StrictModel):
     is_active: bool | None = None
 
 
-class MappingCreate(StrictModel):
-    unit_id: str
-    local_name: str
-    local_code: str | None = None
-    is_active: bool = True
-    dds_id: str | None = None
-    invest_id: str | None = None
-
-
-class MappingPatch(StrictModel):
-    local_name: str | None = None
-    local_code: str | None = None
-    is_active: bool | None = None
-
-
 class RequestCreate(StrictModel):
     unit_id: str
     economist_id: str | None = None
@@ -157,6 +147,8 @@ class ItemCreate(StrictModel):
     dds_id: str | None = None
     invest_id: str | None = None
     sum_plan: float = Field(ge=0)
+    name: str = ""
+    justification: str = ""
 
 
 class ItemPatch(StrictModel):
@@ -166,6 +158,17 @@ class ItemPatch(StrictModel):
     sum_fact: float | None = Field(default=None, ge=0)
     status: ItemStatus | None = None
     comment: str | None = None
+    name: str | None = Field(default=None, min_length=1)
+    justification: str | None = None
+
+
+class ChatMessageCreate(StrictModel):
+    text: str = Field(min_length=1)
+    reply_to: str | None = None
+
+
+class ChatReadPatch(StrictModel):
+    last_read_message_id: str | None = None
 
 
 def clean_patch(model: BaseModel) -> dict[str, Any]:

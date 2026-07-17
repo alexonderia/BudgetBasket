@@ -80,6 +80,8 @@ function draftFromUser(user: User): UserDraft {
 
 function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (detail) return detail;
+  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
   return detail || (error instanceof Error ? error.message : fallback);
 }
 
@@ -155,7 +157,7 @@ function CreateUserDialog({
           <Divider sx={{ my: 2.5 }} />
 
           <ProfileSection title="Контакты">
-            <TextField label="Email" type="email" value={form.email} onChange={(e) => setField('email', e.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите email в формате name@example.ru' : undefined} fullWidth />
+            <TextField label="Электронная почта" type="email" value={form.email} onChange={(e) => setField('email', e.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите адрес в формате name@example.ru' : undefined} fullWidth />
             <TextField label="Телефон" value={form.phone} onChange={(e) => setField('phone', formatPhone(e.target.value))} error={!!form.phone && !PHONE_RE.test(form.phone)} helperText={form.phone && !PHONE_RE.test(form.phone) ? 'Формат: +7 (000) 000-00-00' : undefined} fullWidth />
             <TextField
               label="Ссылка Max"
@@ -257,7 +259,7 @@ function EditUserDialog({
           <Divider sx={{ my: 2.5 }} />
 
           <ProfileSection title="Контакты">
-            <TextField label="Email" type="email" value={form.email} onChange={(e) => setField('email', e.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите email в формате name@example.ru' : undefined} fullWidth />
+            <TextField label="Электронная почта" type="email" value={form.email} onChange={(e) => setField('email', e.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите адрес в формате name@example.ru' : undefined} fullWidth />
             <TextField label="Телефон" value={form.phone} onChange={(e) => setField('phone', formatPhone(e.target.value))} error={!!form.phone && !PHONE_RE.test(form.phone)} helperText={form.phone && !PHONE_RE.test(form.phone) ? 'Формат: +7 (000) 000-00-00' : undefined} fullWidth />
             <TextField label="Ссылка Max" value={form.max_link} onChange={(e) => setField('max_link', e.target.value)} fullWidth placeholder="https://max.ru/..." />
           </ProfileSection>
@@ -370,7 +372,7 @@ export default function UsersPage() {
               <TableCell>Имя</TableCell>
               <TableCell>Отчество</TableCell>
               <TableCell>Телефон</TableCell>
-              <TableCell>Email</TableCell>
+              <TableCell>Электронная почта</TableCell>
               <TableCell>Max</TableCell>
             </TableRow>
           </TableHead>

@@ -23,6 +23,23 @@ class UnitService:
     def update_unit(self, user: dict, unit_id: str, patch: dict) -> dict:
         require_role(user, "admin")
         patch = {key: value for key, value in patch.items() if key != "type"}
+        unit = self.repo.get_by_id("units", unit_id)
+        if not unit:
+            raise HTTPException(status_code=404, detail="Запись не найдена")
+        if "uses_invest_projects" in patch and patch["uses_invest_projects"] != unit.get("uses_invest_projects", False):
+            new_kind = "invest" if patch["uses_invest_projects"] else "dds"
+            for request in self.repo.load_all("requests"):
+                if request.get("unit_id") != unit_id:
+                    continue
+                for item in self.repo.load_all("req_items"):
+                    if item.get("request_id") != request["id"] or item.get("status") == "deleted":
+                        continue
+                    item_kind = "invest" if item.get("invest_id") else "dds"
+                    if item_kind != new_kind:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Нельзя изменить тип строк, пока у подразделения есть активные строки другого типа",
+                        )
         return self.enrich_unit(self.repo.update("units", unit_id, patch))
 
     def delete_unit(self, user: dict, unit_id: str) -> None:
@@ -41,8 +58,6 @@ class UnitService:
             if item.get("parent_id") == unit_id:
                 self.repo.update("units", item["id"], {"parent_id": None})
         self.repo.delete_where("units_responsibles", {"unit_id": unit_id})
-        self.repo.delete_where("unit_dds_mappings", {"unit_id": unit_id})
-        self.repo.delete_where("unit_invest_mappings", {"unit_id": unit_id})
         self.repo.delete("units", unit_id)
 
     def tree(self) -> list[dict]:
@@ -145,8 +160,8 @@ class UnitService:
             unit_ids = [unit["id"] for unit in self.repo.load_all("units") if unit.get("parent_id") == payload["unit_id"]]
         for request in self.repo.load_all("requests"):
             if request.get("unit_id") in unit_ids:
-                if request.get("budget_frozen"):
-                    raise HTTPException(status_code=400, detail="Budget is frozen")
+                if request.get("frozen"):
+                    raise HTTPException(status_code=400, detail="Бюджет зафиксирован")
                 self.repo.update("requests", request["id"], {"economist_id": payload["economist_id"]})
         responsibles = {(item["unit_id"], item["user_id"]): item for item in self.repo.load_all("units_responsibles")}
         for unit_id in unit_ids:
@@ -187,7 +202,7 @@ class UnitService:
         if not target or target.get("role") != "economist":
             raise HTTPException(status_code=404, detail="Назначение экономиста не найдено")
         if any(
-            request.get("unit_id") == unit_id and request.get("budget_frozen")
+            request.get("unit_id") == unit_id and request.get("frozen")
             for request in self.repo.load_all("requests")
         ):
             raise HTTPException(status_code=400, detail="Нельзя открепить экономиста, пока бюджет модуля зафиксирован")

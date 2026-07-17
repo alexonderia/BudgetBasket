@@ -10,6 +10,7 @@ const styles: Record<string, { bgcolor: string; color: string; border: string }>
   rejected: { bgcolor: '#FEF2F2', color: '#DC2626', border: '#FECACA' },
   cancelled: { bgcolor: '#FEF2F2', color: '#DC2626', border: '#FECACA' },
   approved_with_changes: { bgcolor: '#EFF6FF', color: '#2563EB', border: '#BFDBFE' },
+  deleted: { bgcolor: '#F3F4F6', color: '#6B7280', border: '#E5E7EB' },
 };
 
 function StatusChip({ status, label }: { status: string; label: string }) {

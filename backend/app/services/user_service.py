@@ -85,8 +85,8 @@ class UserService:
 
         for item in self.repo.load_all("requests"):
             if item.get("economist_id") == user_id:
-                if item.get("budget_frozen"):
-                    raise HTTPException(status_code=400, detail="Budget is frozen")
+                if item.get("frozen"):
+                    raise HTTPException(status_code=400, detail="Бюджет зафиксирован")
                 self.repo.update("requests", item["id"], {"economist_id": None})
         self.repo.delete_where("profiles", {"user_id": user_id})
         self.repo.delete_where("units_responsibles", {"user_id": user_id})

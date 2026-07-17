@@ -1,6 +1,6 @@
 export type Role = 'admin' | 'economist' | 'employee';
 export type RequestStatus = 'draft' | 'on_review' | 'approved' | 'approved_with_changes' | 'partially_approved' | 'rejected' | 'cancelled';
-export type ItemStatus = 'on_review' | 'rejected' | 'approved_with_changes' | 'approved';
+export type ItemStatus = 'on_review' | 'rejected' | 'approved_with_changes' | 'approved' | 'deleted';
 
 export interface User {
   id: string;
@@ -26,6 +26,8 @@ export interface Unit {
   name: string;
   type?: 'department' | 'module';
   is_active: boolean;
+  uses_invest_projects: boolean;
+  annual_budget: number;
   children?: Unit[];
 }
 
@@ -43,7 +45,7 @@ export interface BudgetRequest {
   unit_id: string;
   sum: number;
   status: RequestStatus;
-  budget_frozen: boolean;
+  frozen: boolean;
   total_approved_sum?: number;
   summary?: RequestSummary;
 }
@@ -63,9 +65,10 @@ export interface BudgetItem {
   request_id: string;
   dds_id?: string;
   invest_id?: string;
-  category_id?: string | null;
   sum_plan: number;
   sum_fact: number | null;
+  name: string;
+  justification: string;
   status: ItemStatus;
   comment: string | null;
 }

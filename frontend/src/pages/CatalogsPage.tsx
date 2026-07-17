@@ -125,6 +125,8 @@ function BoxList({ items }: { items: string[] }) {
 
 function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (detail) return detail;
+  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
   return detail || (error instanceof Error ? error.message : fallback);
 }
 

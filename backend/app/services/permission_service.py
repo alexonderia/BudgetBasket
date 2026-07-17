@@ -70,40 +70,40 @@ class PermissionService:
 
     def require_view_request(self, user: dict, request: dict) -> None:
         if not self.can_view_request(user, request):
-            raise HTTPException(status_code=403, detail="No access to request")
+            raise HTTPException(status_code=403, detail="Нет доступа к заявке")
 
     @staticmethod
     def require_request_unfrozen(request: dict) -> None:
-        if request.get("budget_frozen"):
+        if request.get("frozen"):
             raise HTTPException(status_code=400, detail="Бюджет заявки зафиксирован")
 
     def require_employee_edit_request(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
-            raise HTTPException(status_code=403, detail="Only responsible employee can edit request")
+            raise HTTPException(status_code=403, detail="Изменять заявку может только ответственный сотрудник")
         if request.get("status") != RequestStatus.draft:
-            raise HTTPException(status_code=400, detail="Request is not editable")
+            raise HTTPException(status_code=400, detail="Заявка недоступна для редактирования")
 
     def require_request_delete_request(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)
         if request.get("status") != RequestStatus.draft:
-            raise HTTPException(status_code=400, detail="Request can be deleted only in draft")
+            raise HTTPException(status_code=400, detail="Заявку можно удалить только в статусе черновика")
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
-            raise HTTPException(status_code=403, detail="Only responsible employee can delete request")
+            raise HTTPException(status_code=403, detail="Удалить заявку может только ответственный сотрудник")
 
     def require_employee_cancel_request(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
-            raise HTTPException(status_code=403, detail="Only responsible employee can cancel request")
+            raise HTTPException(status_code=403, detail="Отменить заявку может только ответственный сотрудник")
         if request.get("status") not in {RequestStatus.draft, RequestStatus.on_review}:
-            raise HTTPException(status_code=400, detail="Request can be cancelled only in draft or on_review")
+            raise HTTPException(status_code=400, detail="Заявку можно отменить только в черновике или на рассмотрении")
 
     def require_employee_withdraw_request(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
-            raise HTTPException(status_code=403, detail="Only responsible employee can withdraw request")
+            raise HTTPException(status_code=403, detail="Отозвать заявку может только ответственный сотрудник")
         if request.get("status") != RequestStatus.on_review:
-            raise HTTPException(status_code=400, detail="Request can be withdrawn only from review")
+            raise HTTPException(status_code=400, detail="Отозвать можно только заявку на рассмотрении")
 
     def require_employee_upload_file(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)
@@ -121,6 +121,6 @@ class PermissionService:
 
     def require_economist_review_request(self, user: dict, request: dict) -> None:
         if user["role"] != "economist":
-            raise HTTPException(status_code=403, detail="Only economist can review request")
+            raise HTTPException(status_code=403, detail="Рассматривать заявку может только экономист")
         if request.get("unit_id") not in self.economist_module_ids(user["id"]):
-            raise HTTPException(status_code=403, detail="Only assigned economist can review request")
+            raise HTTPException(status_code=403, detail="Рассматривать заявку может только назначенный экономист")

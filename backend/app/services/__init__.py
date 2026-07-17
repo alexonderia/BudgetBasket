@@ -1,6 +1,7 @@
 from app.services.auth_service import AuthService
 from app.services.budget_item_service import BudgetItemService
 from app.services.catalog_service import CatalogService
+from app.services.chat_service import ChatService
 from app.services.excel_service import ExcelService
 from app.services.file_service import FileService
 from app.services.permission_service import PermissionService
@@ -12,6 +13,7 @@ __all__ = [
     "AuthService",
     "BudgetItemService",
     "CatalogService",
+    "ChatService",
     "ExcelService",
     "FileService",
     "PermissionService",

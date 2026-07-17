@@ -3,6 +3,7 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
@@ -11,12 +12,14 @@ import SendIcon from '@mui/icons-material/Send';
 import UndoIcon from '@mui/icons-material/Undo';
 import CloseIcon from '@mui/icons-material/Close';
 import Alert from '@mui/material/Alert';
+import Avatar from '@mui/material/Avatar';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Autocomplete from '@mui/material/Autocomplete';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
+import Drawer from '@mui/material/Drawer';
 import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
@@ -31,7 +34,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -47,11 +50,12 @@ const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const UPLOAD_EXTENSIONS = new Set(UPLOAD_ACCEPT.split(','));
 
-type ItemTableColumn = 'category' | 'article' | 'plan' | 'status' | 'approved' | 'comment' | 'files' | 'actions';
+type ItemTableColumn = 'category' | 'article' | 'justification' | 'plan' | 'status' | 'approved' | 'comment' | 'files' | 'actions';
 
 const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
   category: 120,
   article: 260,
+  justification: 240,
   plan: 120,
   status: 150,
   approved: 120,
@@ -63,6 +67,7 @@ const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
 const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
   category: 90,
   article: 180,
+  justification: 180,
   plan: 100,
   status: 120,
   approved: 100,
@@ -150,15 +155,37 @@ function categoryName(catalog: CatalogItem[], articleId?: string | null) {
 
 function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (detail) return detail;
+  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
   return detail || (error instanceof Error ? error.message : fallback);
 }
 
 type CounterpartyContact = { user_id: string; login: string; role: 'economist' | 'employee'; profile: Profile | null };
 type ItemCreatedWithAttachmentError = Error & { itemCreated: true };
+type ChatMessage = {
+  id: string;
+  text: string;
+  created_at: string;
+  sender: { id: string; login: string; role: 'economist' | 'employee'; profile?: Profile | null };
+};
 
 function contactName(contact: CounterpartyContact) {
   const profile = contact.profile;
   return [profile?.last_name, profile?.name, profile?.second_name].filter(Boolean).join(' ') || contact.login;
+}
+
+function chatSenderName(sender: ChatMessage['sender']) {
+  const profile = sender.profile;
+  return [profile?.last_name, profile?.name].filter(Boolean).join(' ') || sender.login;
+}
+
+function chatSenderInitial(sender: ChatMessage['sender']) {
+  return chatSenderName(sender).trim().charAt(0).toUpperCase() || '?';
+}
+
+function chatTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
 function ItemFilesCell({
@@ -184,7 +211,7 @@ function ItemFilesCell({
 }) {
   const { data: files = [] } = useQuery({
     queryKey: ['item-files', kind, itemId],
-    queryFn: async () => (await api.get<FileAttachment[]>(`/${kind}-items/${itemId}/files`)).data,
+    queryFn: async () => (await api.get<FileAttachment[]>(`/items/${itemId}/files`)).data,
   });
   const visibleFiles = files.filter((file) => !pendingDeletedFileIds.includes(file.id));
   const pendingDeletion = files.filter((file) => pendingDeletedFileIds.includes(file.id));
@@ -295,20 +322,24 @@ function AddItemForm({
   const options = useMemo(() => selectableItems(catalog), [catalog]);
   const toast = useAppToast();
   const [article, setArticle] = useState<CatalogItem | null>(null);
+  const [name, setName] = useState('');
   const [sumPlan, setSumPlan] = useState('');
+  const [justification, setJustification] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   const create = useMutation({
     mutationFn: async () => {
-      const created = await api.post<BudgetItem>(`/requests/${requestId}/${kind}-items`, {
+      const created = await api.post<BudgetItem>(`/requests/${requestId}/items`, {
         [kind === 'dds' ? 'dds_id' : 'invest_id']: article?.id,
+        name,
         sum_plan: Number(sumPlan),
+        justification,
       });
       try {
         for (const file of pendingFiles) {
           const form = new FormData();
           form.append('file', file);
-          await api.post(`/${kind}-items/${created.data.id}/files`, form);
+          await api.post(`/items/${created.data.id}/files`, form);
         }
       } catch (error) {
         const attachmentError = new Error(
@@ -321,7 +352,9 @@ function AddItemForm({
     },
     onSuccess: ({ filesCount }) => {
       setArticle(null);
+      setName('');
       setSumPlan('');
+      setJustification('');
       setPendingFiles([]);
       queryClient.invalidateQueries({ queryKey: ['request-details', requestId] });
       toast(filesCount ? 'Строка и файлы добавлены' : 'Строка добавлена', 'success');
@@ -329,7 +362,9 @@ function AddItemForm({
     onError: (error) => {
       if ((error as Partial<ItemCreatedWithAttachmentError>).itemCreated) {
         setArticle(null);
+        setName('');
         setSumPlan('');
+        setJustification('');
         setPendingFiles([]);
       }
       queryClient.invalidateQueries({ queryKey: ['request-details', requestId] });
@@ -380,10 +415,25 @@ function AddItemForm({
         disabled={disabled}
         sx={{ minWidth: 160 }}
       />
-        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || Number(sumPlan) <= 0 || create.isPending}>
+      <TextField
+        label="Наименование"
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        disabled={disabled}
+        sx={{ minWidth: 220, flex: 1 }}
+      />
+        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || !name.trim() || Number(sumPlan) <= 0 || create.isPending}>
           Добавить строку
         </Button>
       </Stack>
+      <TextField
+        label="Обоснование"
+        value={justification}
+        onChange={(event) => setJustification(event.target.value)}
+        disabled={disabled}
+        multiline
+        minRows={2}
+      />
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} flexWrap="wrap" useFlexGap>
         <Button component="label" variant="outlined" startIcon={<AttachFileIcon />} disabled={disabled || create.isPending}>
           Выбрать файлы{pendingFiles.length ? ` (${pendingFiles.length})` : ''}
@@ -436,11 +486,11 @@ function ItemsTable({
   const [stagedFilesByItem, setStagedFilesByItem] = useState<Record<string, File[]>>({});
   const [pendingDeletedFileIdsByItem, setPendingDeletedFileIdsByItem] = useState<Record<string, number[]>>({});
   const [deleteTarget, setDeleteTarget] = useState<BudgetItem | null>(null);
-  const canEmployeeChange = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
+  const canEmployeeChange = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const disabledForEmployee = !canEmployeeChange;
   const employeeCanEdit = canEmployeeChange;
-  const canEconomist = user.role === 'economist' && request.status === 'on_review' && !request.budget_frozen;
-  const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.budget_frozen;
+  const canEconomist = user.role === 'economist' && request.status === 'on_review' && !request.frozen;
+  const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
   const tableWidth = ITEM_TABLE_COLUMNS.reduce((sum, column) => sum + columnWidths[column], 0);
 
@@ -502,7 +552,7 @@ function ItemsTable({
   );
 
   const patch = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Partial<BudgetItem> }) => api.patch(`/${kind}-items/${id}`, body),
+    mutationFn: ({ id, body }: { id: string; body: Partial<BudgetItem> }) => api.patch(`/items/${id}`, body),
     onSuccess: (_data, variables) => {
       setDrafts((current) => {
         const next = { ...current };
@@ -518,7 +568,7 @@ function ItemsTable({
   });
 
   const deleteItem = useMutation({
-    mutationFn: (itemId: string) => api.delete(`/${kind}-items/${itemId}`),
+    mutationFn: (itemId: string) => api.delete(`/items/${itemId}`),
     onSuccess: () => {
       refresh();
       toast('Строка удалена', 'success');
@@ -539,19 +589,19 @@ function ItemsTable({
       for (const itemId of changedItemIds) {
         const body = drafts[itemId] || {};
         if (Object.keys(body).length > 0) {
-          await api.patch(`/${kind}-items/${itemId}`, body);
+          await api.patch(`/items/${itemId}`, body);
         }
         for (const file of stagedFilesByItem[itemId] || []) {
           const form = new FormData();
           form.append('file', file);
-          await api.post(`/${kind}-items/${itemId}/files`, form);
+          await api.post(`/items/${itemId}/files`, form);
           setStagedFilesByItem((current) => ({
             ...current,
             [itemId]: (current[itemId] || []).filter((entry) => entry !== file),
           }));
         }
         for (const fileId of pendingDeletedFileIdsByItem[itemId] || []) {
-          await api.delete(`/${kind}-items/${itemId}/files/${fileId}`);
+          await api.delete(`/items/${itemId}/files/${fileId}`);
           setPendingDeletedFileIdsByItem((current) => ({
             ...current,
             [itemId]: (current[itemId] || []).filter((id) => id !== fileId),
@@ -662,6 +712,7 @@ function ItemsTable({
           <TableRow>
             <TableCell sx={headerCell('category')}>Категория{resizeHandle('category')}</TableCell>
             <TableCell sx={headerCell('article')}>{kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект'}{resizeHandle('article')}</TableCell>
+            <TableCell sx={headerCell('justification')}>Обоснование{resizeHandle('justification')}</TableCell>
             <TableCell sx={headerCell('plan')}>План{resizeHandle('plan')}</TableCell>
             <TableCell sx={headerCell('status')}>Статус{resizeHandle('status')}</TableCell>
             <TableCell sx={headerCell('approved')}>Утверждено{resizeHandle('approved')}</TableCell>
@@ -675,6 +726,7 @@ function ItemsTable({
             const local = drafts[item.id] || {};
             const hasDraftChanges = Object.keys(local).length > 0;
             const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
+            const catalogEntry = catalog.find((entry) => entry.id === catalogId);
             const inactiveCatalogSelection = isInactiveCatalogSelection(catalog, catalogId);
             const stagedFiles = stagedFilesByItem[item.id] || [];
             const pendingDeletedFileIds = pendingDeletedFileIdsByItem[item.id] || [];
@@ -709,10 +761,16 @@ function ItemsTable({
                     </TextField>
                   ) : (
                     <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                      <span>{catalog.find((entry) => entry.id === catalogId)?.name || catalogId}</span>
+                      <Stack spacing={0.25}>
+                        <span>{catalogEntry?.name || 'Статья НСИ недоступна'}</span>
+                        <Typography variant="caption" color="text.secondary">{item.name}</Typography>
+                      </Stack>
                       {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" />}
                     </Stack>
                   )}
+                </TableCell>
+                <TableCell sx={{ px: 1, py: 1 }}>
+                  {item.justification || '—'}
                 </TableCell>
                 <TableCell sx={{ px: 1, py: 1 }}>
                   {isEmployeeEditing ? (
@@ -886,6 +944,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const toast = useAppToast();
   const detailsKey = ['request-details', id];
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'withdraw' | 'approve-all-items' | null>(null);
 
   const { data: request } = useQuery({
@@ -901,14 +960,35 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     queryFn: async () => (await api.get<CounterpartyContact | null>(`/requests/${id}/counterparty-contact`)).data,
     enabled: !!request && (user.role === 'economist' || user.role === 'employee'),
   });
-  const { data: dds = [] } = useQuery({
-    queryKey: [...detailsKey, 'dds'],
-    queryFn: async () => (await api.get<BudgetItem[]>(`/requests/${id}/dds-items`)).data,
+  const { data: chat } = useQuery({
+    queryKey: [...detailsKey, 'chat'],
+    queryFn: async () => (await api.get(`/requests/${id}/chat`)).data as { messages: ChatMessage[] },
     enabled: !!request,
   });
-  const { data: invest = [] } = useQuery({
-    queryKey: [...detailsKey, 'invest'],
-    queryFn: async () => (await api.get<BudgetItem[]>(`/requests/${id}/invest-items`)).data,
+  const { data: logs = [] } = useQuery({
+    queryKey: [...detailsKey, 'logs'],
+    queryFn: async () => (await api.get<{ id: number; created_at: string; log: { action: string; changes: Record<string, unknown> } }[]>(`/requests/${id}/logs`)).data,
+    enabled: !!request && user.role === 'admin',
+  });
+  const [chatText, setChatText] = useState('');
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const chatMessages = chat?.messages || [];
+  useEffect(() => {
+    const container = chatMessagesRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [chatMessages.length]);
+  const sendChatMessage = useMutation({
+    mutationFn: () => api.post(`/requests/${id}/chat/messages`, { text: chatText }),
+    onSuccess: () => {
+      setChatText('');
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'chat'] });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'logs'] });
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось отправить сообщение'), 'error'),
+  });
+  const { data: requestItems = [] } = useQuery({
+    queryKey: [...detailsKey, 'items'],
+    queryFn: async () => (await api.get<BudgetItem[]>(`/requests/${id}/items`)).data,
     enabled: !!request,
   });
 
@@ -960,36 +1040,38 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     },
   });
 
-  const allItems = useMemo(() => [...dds, ...invest], [dds, invest]);
+  const usesInvestProjects = !!units.find((unit) => unit.id === request?.unit_id)?.uses_invest_projects;
+  const activeKind = usesInvestProjects ? 'invest' : 'dds';
+  const activeCatalog = usesInvestProjects ? investCatalog : ddsCatalog;
+  const visibleItems = useMemo(
+    () => requestItems.filter((item) => item.status !== 'deleted' && (usesInvestProjects ? !!item.invest_id : !!item.dds_id)),
+    [requestItems, usesInvestProjects],
+  );
+  const allItems = visibleItems;
   const deletePreviewRows = useMemo(() => {
     const rows = [
-      ...dds.map((item) => ({
-        kind: 'ДДС',
-        name: ddsCatalog.find((entry) => entry.id === item.dds_id)?.name || item.dds_id,
-        sum: item.sum_plan,
-      })),
-      ...invest.map((item) => ({
-        kind: 'Инвест',
-        name: investCatalog.find((entry) => entry.id === item.invest_id)?.name || item.invest_id,
+      ...visibleItems.map((item) => ({
+        kind: usesInvestProjects ? 'Инвест' : 'ДДС',
+        name: activeCatalog.find((entry) => entry.id === (usesInvestProjects ? item.invest_id : item.dds_id))?.name || item.name,
         sum: item.sum_plan,
       })),
     ];
     return rows.slice(0, 5);
-  }, [dds, ddsCatalog, invest, investCatalog]);
-  const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.budget_frozen && allItems.length > 0;
-  const canWithdraw = user.role === 'employee' && request && request.status === 'on_review' && !request.budget_frozen;
-  const canCancel = user.role === 'employee' && request && request.status === 'on_review' && !request.budget_frozen;
-  const canFinalize = user.role === 'economist' && request && request.status === 'on_review' && !request.budget_frozen && allItems.length > 0 && allItems.every((item) => item.status !== 'on_review');
-  const canApproveAllItems = user.role === 'economist' && request && request.status === 'on_review' && !request.budget_frozen && allItems.some((item) => item.status === 'on_review');
-  const canFreezeBudget = user.role === 'economist' && request && !request.budget_frozen && ['approved', 'approved_with_changes'].includes(request.status);
-  const canUnfreezeBudget = user.role === 'economist' && request && request.budget_frozen;
+  }, [activeCatalog, usesInvestProjects, visibleItems]);
+  const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.frozen && allItems.length > 0;
+  const canWithdraw = user.role === 'employee' && request && request.status === 'on_review' && !request.frozen;
+  const canCancel = user.role === 'employee' && request && request.status === 'on_review' && !request.frozen;
+  const canFinalize = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && allItems.length > 0 && allItems.every((item) => item.status !== 'on_review');
+  const canApproveAllItems = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && allItems.some((item) => item.status === 'on_review');
+  const canFreezeBudget = user.role === 'economist' && request && !request.frozen && ['approved', 'approved_with_changes'].includes(request.status);
+  const canUnfreezeBudget = user.role === 'economist' && request && request.frozen;
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
   const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
-  const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.budget_frozen;
+  const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.frozen;
   const canReopen =
     user.role === 'economist' &&
     !!request &&
-    !request.budget_frozen &&
+    !request.frozen &&
     ['approved', 'approved_with_changes', 'partially_approved', 'rejected'].includes(request.status);
 
   const exportRequest = async () => {
@@ -1002,7 +1084,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   return (
     <Stack spacing={3}>
       <Stack spacing={3}>
-        <Card className={`metric-card request-summary-card ${isHighlightedClosed ? 'fixed-request' : ''} ${request.budget_frozen ? 'budget-frozen-card' : ''}`} elevation={0}>
+        <Card className={`metric-card request-summary-card ${isHighlightedClosed ? 'fixed-request' : ''} ${request.frozen ? 'budget-frozen-card' : ''}`} elevation={0}>
           <CardContent className="request-summary-content">
             <Stack spacing={2}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'flex-start' }} justifyContent="space-between">
@@ -1010,11 +1092,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                   <Typography variant="h6">Сводка заявки</Typography>
                   <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                     <RequestStatusBadge status={request.status} />
-                    {request.budget_frozen && <Chip label="Бюджет зафиксирован" size="small" color="warning" variant="outlined" />}
+                    {request.frozen && <Chip label="Бюджет зафиксирован" size="small" color="warning" variant="outlined" />}
                   </Stack>
                 </Stack>
                 <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ width: { xs: '100%', sm: 'auto' } }}>
                   <Stack className="request-summary-actions" direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
+                    <Button startIcon={<ForumOutlinedIcon />} variant="outlined" onClick={() => setChatOpen(true)}>
+                      Чат ({chatMessages.length})
+                    </Button>
                     {canFreezeBudget && (
                       <Button startIcon={<LockOutlinedIcon />} variant="outlined" onClick={() => lifecycle.mutate('freeze-budget')}>
                         Зафиксировать бюджет
@@ -1085,7 +1170,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                   </Stack>
                 </Stack>
               </Stack>
-              {request.budget_frozen && (
+              {request.frozen && (
                 <Alert severity="warning" variant="outlined">
                   Бюджет зафиксирован. Пока он не разморожен, редактирование заявки, строк и файлов недоступно.
                 </Alert>
@@ -1137,19 +1222,99 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               <Typography fontWeight={700}>{contactName(counterparty)}</Typography>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.5, sm: 3 }} flexWrap="wrap" useFlexGap>
                 <Typography color="text.secondary">Телефон: {counterparty.profile?.phone || 'не указан'}</Typography>
-                <Typography color="text.secondary">Email: {counterparty.profile?.email || 'не указан'}</Typography>
+                <Typography color="text.secondary">Электронная почта: {counterparty.profile?.email || 'не указана'}</Typography>
                 {counterparty.profile?.max_link ? <Typography color="text.secondary">Max: {counterparty.profile.max_link}</Typography> : null}
               </Stack>
             </Stack>
           </Paper>
         ) : null}
 
-        <Paper className={`surface-pad ${request.budget_frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
-          <ItemsTable title="Строки ДДС" kind="dds" request={request} user={user} items={dds} catalog={ddsCatalog} />
-        </Paper>
+        <Drawer
+          anchor="right"
+          open={chatOpen}
+          onClose={() => setChatOpen(false)}
+          PaperProps={{ className: 'request-chat-drawer' }}
+        >
+          <Stack className="request-chat-header" direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
+            <Stack direction="row" spacing={1.25} alignItems="center" minWidth={0}>
+              <Avatar className="request-chat-header-avatar">{counterparty ? contactName(counterparty).charAt(0).toUpperCase() : 'Ч'}</Avatar>
+              <Box minWidth={0}>
+                <Typography variant="h6">Чат по заявке</Typography>
+                <Typography variant="body2" color="text.secondary" noWrap>
+                  {counterparty ? `Диалог с ${contactName(counterparty)}` : 'Диалог сотрудника и экономиста'}
+                </Typography>
+              </Box>
+            </Stack>
+            <IconButton onClick={() => setChatOpen(false)} aria-label="Закрыть чат"><CloseIcon /></IconButton>
+          </Stack>
 
-        <Paper className={`surface-pad ${request.budget_frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
-          <ItemsTable title="Строки инвест-проектов" kind="invest" request={request} user={user} items={invest} catalog={investCatalog} />
+          <Box ref={chatMessagesRef} className="request-chat-messages" aria-live="polite">
+            {!chatMessages.length && (
+              <Box className="request-chat-empty">
+                <Avatar className="request-chat-empty-avatar">✦</Avatar>
+                <Typography fontWeight={700}>Начните обсуждение</Typography>
+                <Typography variant="body2" color="text.secondary">Уточняйте детали заявки прямо здесь.</Typography>
+              </Box>
+            )}
+            {chatMessages.map((message) => {
+              const isOwn = message.sender.id === user.id;
+              return (
+                <Box key={message.id} className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''}`}>
+                  {!isOwn && <Avatar className="request-chat-avatar">{chatSenderInitial(message.sender)}</Avatar>}
+                  <Box className="request-chat-bubble">
+                    {!isOwn && <Typography className="request-chat-sender" variant="caption">{chatSenderName(message.sender)}</Typography>}
+                    <Typography className="request-chat-text">{message.text}</Typography>
+                    <Typography className="request-chat-time" variant="caption">{chatTime(message.created_at)}</Typography>
+                  </Box>
+                </Box>
+              );
+            })}
+          </Box>
+
+          {user.role !== 'admin' && (
+            <Box
+              component="form"
+              className="request-chat-composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (chatText.trim() && !sendChatMessage.isPending) sendChatMessage.mutate();
+              }}
+            >
+              <TextField
+                value={chatText}
+                onChange={(event) => setChatText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    if (chatText.trim() && !sendChatMessage.isPending) sendChatMessage.mutate();
+                  }
+                }}
+                placeholder="Напишите сообщение…"
+                aria-label="Сообщение в чате"
+                fullWidth
+                multiline
+                minRows={1}
+                maxRows={4}
+              />
+              <Button type="submit" className="request-chat-send" variant="contained" endIcon={<SendIcon />} disabled={!chatText.trim() || sendChatMessage.isPending}>
+                Отправить
+              </Button>
+            </Box>
+          )}
+        </Drawer>
+
+        {user.role === 'admin' && (
+          <Paper className="surface-pad" elevation={0}>
+            <Typography variant="h6" sx={{ mb: 1 }}>Журнал изменений</Typography>
+            <Stack spacing={0.75}>
+              {logs.map((entry) => <Typography key={entry.id} variant="body2">{new Date(entry.created_at).toLocaleString('ru-RU')} — {entry.log.action}</Typography>)}
+              {!logs.length && <Typography color="text.secondary">Изменений пока нет.</Typography>}
+            </Stack>
+          </Paper>
+        )}
+
+        <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
+          <ItemsTable title={usesInvestProjects ? 'Строки инвест-проектов' : 'Строки ДДС'} kind={activeKind} request={request} user={user} items={visibleItems} catalog={activeCatalog} />
         </Paper>
       </Stack>
 

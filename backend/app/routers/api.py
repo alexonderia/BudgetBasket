@@ -11,11 +11,11 @@ from app.models import (
     AssignmentCreate,
     CatalogCreate,
     CatalogPatch,
+    ChatMessageCreate,
+    ChatReadPatch,
     ItemCreate,
     ItemPatch,
     LoginIn,
-    MappingCreate,
-    MappingPatch,
     ProfilePatch,
     RequestCreate,
     RequestPatch,
@@ -211,36 +211,6 @@ async def catalog_import(request: Request, kind: str, user: User, file: UploadFi
     return await request.app.state.excel_service.import_catalog(user, collection, file, preview=preview)
 
 
-@router.get("/catalog/unit-dds-mappings")
-def list_dds_mappings(request: Request, user: User):
-    return request.app.state.catalog_service.list_mappings("unit_dds_mappings")
-
-
-@router.post("/catalog/unit-dds-mappings")
-def create_dds_mapping(request: Request, payload: MappingCreate, user: User):
-    return request.app.state.catalog_service.create_mapping(user, "unit_dds_mappings", payload.model_dump())
-
-
-@router.patch("/catalog/unit-dds-mappings/{item_id}")
-def update_dds_mapping(request: Request, item_id: str, payload: MappingPatch, user: User):
-    return request.app.state.catalog_service.update_mapping(user, "unit_dds_mappings", item_id, clean_patch(payload))
-
-
-@router.get("/catalog/unit-invest-mappings")
-def list_invest_mappings(request: Request, user: User):
-    return request.app.state.catalog_service.list_mappings("unit_invest_mappings")
-
-
-@router.post("/catalog/unit-invest-mappings")
-def create_invest_mapping(request: Request, payload: MappingCreate, user: User):
-    return request.app.state.catalog_service.create_mapping(user, "unit_invest_mappings", payload.model_dump())
-
-
-@router.patch("/catalog/unit-invest-mappings/{item_id}")
-def update_invest_mapping(request: Request, item_id: str, payload: MappingPatch, user: User):
-    return request.app.state.catalog_service.update_mapping(user, "unit_invest_mappings", item_id, clean_patch(payload))
-
-
 @router.get("/requests")
 def list_requests(
     request: Request,
@@ -358,88 +328,64 @@ def request_summary(request: Request, request_id: str, user: User):
     return request.app.state.request_service.summary(request_id)
 
 
-@router.get("/requests/{request_id}/dds-items")
-def list_dds_items(request: Request, request_id: str, user: User):
-    return request.app.state.budget_item_service.list_items(user, request_id, "dds")
+@router.get("/requests/{request_id}/items")
+def list_request_items(request: Request, request_id: str, user: User, include_deleted: bool = True):
+    return request.app.state.budget_item_service.list_items(user, request_id, include_deleted=include_deleted)
 
 
-@router.post("/requests/{request_id}/dds-items")
-def create_dds_item(request: Request, request_id: str, payload: ItemCreate, user: User):
-    return request.app.state.budget_item_service.create_item(user, request_id, "dds", payload.model_dump())
+@router.post("/requests/{request_id}/items")
+def create_request_item(request: Request, request_id: str, payload: ItemCreate, user: User):
+    return request.app.state.budget_item_service.create_item(user, request_id, payload.model_dump())
 
 
-@router.patch("/dds-items/{item_id}")
-def patch_dds_item(request: Request, item_id: str, payload: ItemPatch, user: User):
+@router.patch("/items/{item_id}")
+def patch_request_item(request: Request, item_id: str, payload: ItemPatch, user: User):
     return request.app.state.budget_item_service.patch_item(user, item_id, clean_patch(payload))
 
 
-@router.delete("/dds-items/{item_id}")
-def delete_dds_item(request: Request, item_id: str, user: User):
-    request.app.state.budget_item_service.delete_item(user, item_id)
+@router.delete("/items/{item_id}")
+def delete_request_item(request: Request, item_id: str, user: User):
+    return request.app.state.budget_item_service.delete_item(user, item_id)
+
+
+
+
+@router.post("/items/{item_id}/files")
+async def upload_request_item_file(request: Request, item_id: str, user: User, file: UploadFile = File(...)):
+    return await request.app.state.file_service.upload_for_item(user, item_id, file)
+
+
+@router.get("/items/{item_id}/files")
+def request_item_files(request: Request, item_id: str, user: User):
+    return request.app.state.file_service.files_for_item(user, item_id)
+
+
+@router.delete("/items/{item_id}/files/{file_id}")
+def delete_request_item_file(request: Request, item_id: str, file_id: str, user: User):
+    request.app.state.file_service.delete_link(user, item_id, file_id)
     return {"ok": True}
 
 
-@router.get("/requests/{request_id}/invest-items")
-def list_invest_items(request: Request, request_id: str, user: User):
-    return request.app.state.budget_item_service.list_items(user, request_id, "invest")
+@router.get("/requests/{request_id}/logs")
+def request_logs(request: Request, request_id: str, user: User):
+    budget_request = request.app.state.request_service.get_request(user, request_id)
+    logs = [item for item in request.app.state.repo.load_all("req_logs") if item.get("req_id") == budget_request["id"]]
+    return sorted(logs, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
-@router.post("/requests/{request_id}/invest-items")
-def create_invest_item(request: Request, request_id: str, payload: ItemCreate, user: User):
-    return request.app.state.budget_item_service.create_item(user, request_id, "invest", payload.model_dump())
+@router.get("/requests/{request_id}/chat")
+def request_chat(request: Request, request_id: str, user: User):
+    return request.app.state.chat_service.get_chat(user, request_id)
 
 
-@router.patch("/invest-items/{item_id}")
-def patch_invest_item(request: Request, item_id: str, payload: ItemPatch, user: User):
-    return request.app.state.budget_item_service.patch_item(user, item_id, clean_patch(payload))
+@router.post("/requests/{request_id}/chat/messages")
+def send_chat_message(request: Request, request_id: str, payload: ChatMessageCreate, user: User):
+    return request.app.state.chat_service.send(user, request_id, payload.model_dump())
 
 
-@router.delete("/invest-items/{item_id}")
-def delete_invest_item(request: Request, item_id: str, user: User):
-    request.app.state.budget_item_service.delete_item(user, item_id)
-    return {"ok": True}
-
-
-@router.post("/dds-items/{item_id}/files")
-async def upload_dds_file(
-    request: Request,
-    item_id: str,
-    user: User,
-    file: UploadFile = File(...),
-):
-    return await request.app.state.file_service.upload_for_item(user, "dds", item_id, file)
-
-
-@router.post("/invest-items/{item_id}/files")
-async def upload_invest_file(
-    request: Request,
-    item_id: str,
-    user: User,
-    file: UploadFile = File(...),
-):
-    return await request.app.state.file_service.upload_for_item(user, "invest", item_id, file)
-
-
-@router.get("/dds-items/{item_id}/files")
-def dds_item_files(request: Request, item_id: str, user: User):
-    return request.app.state.file_service.files_for_item(user, "dds", item_id)
-
-
-@router.get("/invest-items/{item_id}/files")
-def invest_item_files(request: Request, item_id: str, user: User):
-    return request.app.state.file_service.files_for_item(user, "invest", item_id)
-
-
-@router.delete("/dds-items/{item_id}/files/{file_id}")
-def delete_dds_item_file(request: Request, item_id: str, file_id: str, user: User):
-    request.app.state.file_service.delete_link(user, "dds", item_id, file_id)
-    return {"ok": True}
-
-
-@router.delete("/invest-items/{item_id}/files/{file_id}")
-def delete_invest_item_file(request: Request, item_id: str, file_id: str, user: User):
-    request.app.state.file_service.delete_link(user, "invest", item_id, file_id)
-    return {"ok": True}
+@router.patch("/requests/{request_id}/chat/read")
+def mark_chat_read(request: Request, request_id: str, payload: ChatReadPatch, user: User):
+    return request.app.state.chat_service.mark_read(user, request_id, payload.last_read_message_id)
 
 
 @router.get("/files/{file_id}/download")

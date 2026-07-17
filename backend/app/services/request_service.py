@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
 
 from app.models import APPROVED_ITEM_STATUSES, ItemStatus, RequestStatus
 from app.repositories.base import Repository
@@ -11,28 +14,64 @@ class RequestService:
         self.repo = repo
         self.permissions = permissions
 
-    def _items(self, request_id: str) -> list[dict]:
-        return [
-            *[item for item in self.repo.load_all("dds_items") if item["request_id"] == request_id],
-            *[item for item in self.repo.load_all("invest_items") if item["request_id"] == request_id],
-        ]
+    def _items(self, request_id: str, *, include_deleted: bool = False) -> list[dict]:
+        items = [item for item in self.repo.load_all("req_items") if item["request_id"] == request_id]
+        return items if include_deleted else [item for item in items if item.get("status") != ItemStatus.deleted]
+
+    def log(self, user: dict, request_id: str, action: str, *, entity: str = "request", entity_id: str | None = None, before: dict | None = None, after: dict | None = None) -> None:
+        before = before or {}
+        after = after or {}
+        changed = {
+            key: {"from": before.get(key), "to": after.get(key)}
+            for key in set(before) | set(after)
+            if before.get(key) != after.get(key)
+        }
+        self.repo.create(
+            "req_logs",
+            {
+                "req_id": request_id,
+                "user_id": user["id"],
+                "log": jsonable_encoder(
+                    {"action": action, "entity": entity, "entity_id": entity_id or request_id, "changes": changed}
+                ),
+            },
+        )
 
     def _assigned_economist_id(self, unit_id: str) -> str | None:
         users = {item["id"]: item for item in self.repo.load_all("users")}
         assignments = [
-            item
-            for item in self.repo.load_all("units_responsibles")
-            if item.get("unit_id") == unit_id
-            and item.get("is_active")
-            and users.get(item.get("user_id"), {}).get("role") == "economist"
+            item for item in self.repo.load_all("units_responsibles")
+            if item.get("unit_id") == unit_id and item.get("is_active") and users.get(item.get("user_id"), {}).get("role") == "economist"
         ]
         if len(assignments) > 1:
-            raise HTTPException(status_code=409, detail="Для модуля назначено несколько экономистов. Оставьте одного активного экономиста")
+            raise HTTPException(status_code=409, detail="К этому подразделению назначено несколько экономистов")
         return assignments[0]["user_id"] if assignments else None
 
-    @staticmethod
-    def public_request(request: dict, summary: dict | None = None) -> dict:
-        return {**request, "total_approved_sum": request.get("sum", 0), "summary": summary}
+    def unit_budget(self, unit_id: str, *, exclude_request_id: str | None = None) -> dict:
+        unit = get_required(self.repo, "units", unit_id)
+        used = 0.0
+        for request in self.repo.load_all("requests"):
+            if request.get("unit_id") != unit_id or request.get("id") == exclude_request_id:
+                continue
+            status = request.get("status")
+            if status in {RequestStatus.cancelled, RequestStatus.rejected}:
+                continue
+            used += float(request.get("sum_fact") or 0) if status in APPROVED_ITEM_STATUSES else float(request.get("sum_plan") or 0)
+        annual = float(unit.get("annual_budget") or 0)
+        return {"annual_budget": annual, "reserved": used, "available": max(annual - used, 0)}
+
+    def ensure_budget(self, request: dict, proposed_sum_plan: float) -> None:
+        snapshot = self.unit_budget(request["unit_id"], exclude_request_id=request["id"])
+        if snapshot["reserved"] + proposed_sum_plan > snapshot["annual_budget"]:
+            raise HTTPException(status_code=400, detail="Будет превышен годовой бюджет подразделения")
+
+    def public_request(self, request: dict, summary: dict | None = None) -> dict:
+        return {
+            **request,
+            "total_approved_sum": request.get("sum_fact", 0),
+            "summary": summary,
+            "unit_budget": self.unit_budget(request["unit_id"], exclude_request_id=request["id"]),
+        }
 
     def summary(self, request_id: str) -> dict:
         items = self._items(request_id)
@@ -47,20 +86,14 @@ class RequestService:
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
             "in_review_count": len(in_review),
+            "deleted_count": len(self._items(request_id, include_deleted=True)) - len(items),
         }
 
     def recalculate_total(self, request_id: str) -> dict:
         summary = self.summary(request_id)
-        return self.repo.update("requests", request_id, {"sum": summary["planned_sum"]})
+        return self.repo.update("requests", request_id, {"sum_plan": summary["planned_sum"], "sum_fact": summary["approved_sum"]})
 
-    def list_requests(
-        self,
-        user: dict,
-        status: str | None = None,
-        unit_id: str | None = None,
-        created_from: str | None = None,
-        created_to: str | None = None,
-    ) -> list[dict]:
+    def list_requests(self, user: dict, status: str | None = None, unit_id: str | None = None, created_from: str | None = None, created_to: str | None = None) -> list[dict]:
         visible = self.permissions.visible_request_ids(user)
         result = []
         for budget_request in self.repo.load_all("requests"):
@@ -79,226 +112,140 @@ class RequestService:
         return result
 
     def dashboard(self, user: dict, unit_id: str | None = None) -> dict:
-        """Return pre-aggregated budget data within the caller's permitted scope."""
         visible = self.permissions.visible_request_ids(user)
         units = {item["id"]: item for item in self.repo.load_all("units")}
 
-        def root_unit_id(value: str | None) -> str | None:
-            current_id = value
-            visited: set[str] = set()
-            while current_id and current_id not in visited:
-                visited.add(current_id)
-                current = units.get(current_id)
-                if not current or not current.get("parent_id"):
-                    return current_id
-                current_id = current["parent_id"]
+        def root(value: str | None) -> str | None:
+            current, seen = value, set()
+            while current and current not in seen:
+                seen.add(current)
+                item = units.get(current)
+                if not item or not item.get("parent_id"):
+                    return current
+                current = item["parent_id"]
             return value
 
-        allowed_module_ids = (
-            {item["id"] for item in units.values() if item.get("parent_id")}
-            if visible is None
-            else self.permissions.economist_module_ids(user["id"])
-            if user["role"] == "economist"
-            else self.permissions.employee_module_ids(user["id"])
-        )
-        available_root_ids = {root_unit_id(item_id) for item_id in allowed_module_ids}
-        available_units = [
-            {"id": item["id"], "name": item["name"], "parent_id": item.get("parent_id")}
-            for item in units.values()
-            if item["id"] in available_root_ids and not item.get("parent_id")
-        ]
-        available_units.sort(key=lambda item: item["name"])
-
         requests = [
-            item
-            for item in self.repo.load_all("requests")
-            if (
-                (visible is None or item["id"] in visible)
-                and item.get("status") not in {RequestStatus.draft, RequestStatus.cancelled}
-                and (not unit_id or root_unit_id(item.get("unit_id")) == unit_id)
-            )
+            item for item in self.repo.load_all("requests")
+            if (visible is None or item["id"] in visible)
+            and item.get("status") not in {RequestStatus.draft, RequestStatus.cancelled}
+            and (not unit_id or root(item.get("unit_id")) == unit_id)
         ]
         request_ids = {item["id"] for item in requests}
-        frozen_request_ids = {item["id"] for item in requests if item.get("budget_frozen")}
-        request_unit_ids = {item["id"]: root_unit_id(item["unit_id"]) for item in requests}
         dds_catalog = {item["id"]: item for item in self.repo.load_all("dds_catalog")}
         invest_catalog = {item["id"]: item for item in self.repo.load_all("invests_catalog")}
-
         by_unit: dict[str, dict] = {}
         by_category: dict[str, dict] = {}
         by_article: dict[str, dict] = {}
 
-        def add(target: dict, key: str, name: str, kind: str, planned: float, approved: float) -> None:
-            item = target.setdefault(key, {"id": key, "name": name, "kind": kind, "planned": 0.0, "approved": 0.0, "items_count": 0})
-            item["planned"] += planned
-            item["approved"] += approved
-            item["items_count"] += 1
+        def add(target: dict[str, dict], key: str, name: str, kind: str, planned: float, approved: float) -> None:
+            row = target.setdefault(key, {"id": key, "name": name, "kind": kind, "planned": 0.0, "approved": 0.0, "items_count": 0})
+            row["planned"] += planned
+            row["approved"] += approved
+            row["items_count"] += 1
 
-        planned_total = 0.0
-        approved_total = 0.0
-        frozen_total = 0.0
-        for kind, collection, article_field, catalog in (
-            ("dds", "dds_items", "dds_id", dds_catalog),
-            ("invest", "invest_items", "invest_id", invest_catalog),
-        ):
-            for item in self.repo.load_all(collection):
-                if item.get("request_id") not in request_ids:
-                    continue
-                planned = float(item.get("sum_plan") or 0)
-                approved = float(item.get("sum_fact") or 0) if item.get("status") in APPROVED_ITEM_STATUSES else 0.0
-                planned_total += planned
-                approved_total += approved
-                if approved and item.get("request_id") in frozen_request_ids:
-                    frozen_total += approved
-                article = catalog.get(item.get(article_field), {})
-                category = catalog.get(article.get("parent_id")) or article
-                add(by_category, f"{kind}:{category.get('id', 'unknown')}", category.get("name", "Без категории"), kind, planned, approved)
-                add(by_article, f"{kind}:{article.get('id', 'unknown')}", article.get("name", "Без статьи"), kind, planned, approved)
+        total_plan = total_fact = frozen_total = 0.0
+        request_by_id = {item["id"]: item for item in requests}
+        for item in self.repo.load_all("req_items"):
+            request = request_by_id.get(item.get("request_id"))
+            if not request or item.get("status") == ItemStatus.deleted:
+                continue
+            kind = "dds" if item.get("dds_id") else "invest"
+            catalog = dds_catalog if kind == "dds" else invest_catalog
+            article = catalog.get(item.get("dds_id") or item.get("invest_id"), {})
+            category = catalog.get(article.get("parent_id")) or article
+            planned = float(item.get("sum_plan") or 0)
+            approved = float(item.get("sum_fact") or 0) if item.get("status") in APPROVED_ITEM_STATUSES else 0.0
+            total_plan += planned
+            total_fact += approved
+            if approved and request.get("frozen"):
+                frozen_total += approved
+            add(by_category, f"{kind}:{category.get('id', 'unknown')}", category.get("name", "Uncategorized"), kind, planned, approved)
+            add(by_article, f"{kind}:{article.get('id', 'unknown')}", article.get("name", "Unknown"), kind, planned, approved)
+            unit_id_key = root(request.get("unit_id")) or "unknown"
+            add(by_unit, unit_id_key, units.get(unit_id_key, {}).get("name", "Unknown unit"), "unit", planned, approved)
 
-                request_unit_id = request_unit_ids.get(item.get("request_id"))
-                unit = units.get(request_unit_id, {})
-                add(by_unit, request_unit_id or "unknown", unit.get("name", "Неизвестное подразделение"), "unit", planned, approved)
+        def ordered(rows: dict[str, dict]) -> list[dict]:
+            return sorted(rows.values(), key=lambda item: (-item["planned"], item["name"]))
 
-        for request in ({**item, "unit_id": root_unit_id(item["unit_id"])} for item in requests):
-            if request["unit_id"] not in by_unit:
-                unit = units.get(request["unit_id"], {})
-                by_unit[request["unit_id"]] = {"id": request["unit_id"], "name": unit.get("name", "Неизвестное подразделение"), "kind": "unit", "planned": 0.0, "approved": 0.0, "items_count": 0}
-
-        def ordered(items: dict[str, dict]) -> list[dict]:
-            return sorted(items.values(), key=lambda item: (-item["planned"], item["name"]))
-
-        approved_requests = sum(1 for item in requests if item.get("status") in {RequestStatus.approved, RequestStatus.approved_with_changes, RequestStatus.partially_approved})
-        review_requests = sum(1 for item in requests if item.get("status") == RequestStatus.on_review)
-        frozen_requests = sum(1 for item in requests if item.get("budget_frozen"))
         return {
-            "scope": {"unit_id": unit_id, "available_units": available_units},
-            "totals": {
-                "planned": planned_total,
-                "approved": approved_total,
-                "frozen": frozen_total,
-                "remaining": max(planned_total - approved_total, 0),
-                "requests_count": len(requests),
-                "approved_requests_count": approved_requests,
-                "review_requests_count": review_requests,
-                "frozen_requests_count": frozen_requests,
-            },
-            "by_unit": ordered(by_unit),
-            "by_category": ordered(by_category),
-            "by_article": ordered(by_article),
+            "scope": {"unit_id": unit_id, "available_units": [{"id": item["id"], "name": item["name"], "parent_id": item.get("parent_id")} for item in units.values() if not item.get("parent_id")]},
+            "totals": {"planned": total_plan, "approved": total_fact, "frozen": frozen_total, "remaining": max(total_plan - total_fact, 0), "requests_count": len(requests), "approved_requests_count": sum(item.get("status") in APPROVED_ITEM_STATUSES for item in requests), "review_requests_count": sum(item.get("status") == RequestStatus.on_review for item in requests), "frozen_requests_count": sum(item.get("frozen") for item in requests)},
+            "by_unit": ordered(by_unit), "by_category": ordered(by_category), "by_article": ordered(by_article),
         }
 
     def get_request(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_view_request(user, budget_request)
-        return self.public_request(budget_request, self.summary(request_id))
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_view_request(user, request)
+        return self.public_request(request, self.summary(request_id))
 
     def counterparty_contact(self, user: dict, request_id: str) -> dict | None:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_view_request(user, budget_request)
-        target_id: str | None = None
-        target_role: str | None = None
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_view_request(user, request)
+        users = {item["id"]: item for item in self.repo.load_all("users")}
+        target_id = request.get("economist_id") if user["role"] == "employee" else None
+        target_role = "economist" if target_id else None
         if user["role"] == "economist":
-            users = {item["id"]: item for item in self.repo.load_all("users")}
-            responsible = next(
-                (
-                    item
-                    for item in self.repo.load_all("units_responsibles")
-                    if item.get("unit_id") == budget_request.get("unit_id")
-                    and item.get("is_active")
-                    and users.get(item.get("user_id"), {}).get("role") == "employee"
-                ),
-                None,
-            )
-            if responsible:
-                target_id = responsible["user_id"]
-                target_role = "employee"
-        elif user["role"] == "employee" and budget_request.get("economist_id"):
-            target_id = budget_request["economist_id"]
-            target_role = "economist"
-        if not target_id:
-            return None
-        target = self.repo.get_by_id("users", target_id)
-        if not target:
-            return None
+            employee = next((item for item in self.repo.load_all("units_responsibles") if item.get("unit_id") == request["unit_id"] and item.get("is_active") and users.get(item.get("user_id"), {}).get("role") == "employee"), None)
+            target_id, target_role = (employee["user_id"], "employee") if employee else (None, None)
+        target = users.get(target_id) if target_id else None
         profile = next((item for item in self.repo.load_all("profiles") if item.get("user_id") == target_id), None)
-        return {"user_id": target_id, "login": target["login"], "role": target_role, "profile": profile}
+        return {"user_id": target_id, "login": target["login"], "role": target_role, "profile": profile} if target else None
 
     def create_request(self, user: dict, payload: dict) -> dict:
-        if user["role"] != "employee":
-            raise HTTPException(status_code=403, detail="Only employee can create requests")
-        if payload["unit_id"] not in self.permissions.employee_module_ids(user["id"]):
-            raise HTTPException(status_code=403, detail="Employee is not responsible for this unit")
-        item = {
-            "economist_id": self._assigned_economist_id(payload["unit_id"]),
-            "unit_id": payload["unit_id"],
-            "sum": 0,
-            "status": RequestStatus.draft,
-        }
-        created = self.repo.create("requests", item)
+        if user["role"] != "employee" or payload["unit_id"] not in self.permissions.employee_module_ids(user["id"]):
+            raise HTTPException(status_code=403, detail="Создать заявку может только ответственный сотрудник")
+        created = self.repo.create("requests", {"economist_id": self._assigned_economist_id(payload["unit_id"]), "unit_id": payload["unit_id"], "sum_plan": 0, "sum_fact": 0, "status": RequestStatus.draft})
+        self.log(user, created["id"], "created", after=created)
         return self.public_request(created, self.summary(created["id"]))
 
     def delete_request(self, user: dict, request_id: str) -> None:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_delete_request(user, budget_request)
-
-        dds_item_ids = {item["id"] for item in self.repo.load_all("dds_items") if item["request_id"] == request_id}
-        invest_item_ids = {item["id"] for item in self.repo.load_all("invest_items") if item["request_id"] == request_id}
-        for item_id in dds_item_ids:
-            self.repo.delete_where("dds_item_files", {"dds_item_id": item_id})
-        for item_id in invest_item_ids:
-            self.repo.delete_where("invest_item_files", {"invest_item_id": item_id})
-        self.repo.delete_where("dds_items", {"request_id": request_id})
-        self.repo.delete_where("invest_items", {"request_id": request_id})
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_delete_request(user, request)
         self.repo.delete("requests", request_id)
 
     def patch_request(self, user: dict, request_id: str, patch: dict) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_unfrozen(budget_request)
-        self.permissions.require_employee_edit_request(user, budget_request)
-        return self.public_request(budget_request, self.summary(request_id))
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(request)
+        self.permissions.require_employee_edit_request(user, request)
+        return self.public_request(request, self.summary(request_id))
 
     def submit(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_unfrozen(budget_request)
-        self.permissions.require_employee_edit_request(user, budget_request)
-        if not self._items(request_id):
-            raise HTTPException(status_code=400, detail="Cannot submit request without budget items")
-        for collection in ("dds_items", "invest_items"):
-            for item in self.repo.load_all(collection):
-                if item["request_id"] == request_id:
-                    self.repo.update(collection, item["id"], {"status": ItemStatus.on_review})
-        economist_id = budget_request.get("economist_id") or self._assigned_economist_id(budget_request["unit_id"])
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(request)
+        self.permissions.require_employee_edit_request(user, request)
+        items = self._items(request_id)
+        if not items:
+            raise HTTPException(status_code=400, detail="Нельзя отправить заявку без строк")
+        self.ensure_budget(request, self.summary(request_id)["planned_sum"])
+        economist_id = request.get("economist_id") or self._assigned_economist_id(request["unit_id"])
         if not economist_id:
-            raise HTTPException(status_code=400, detail="Для модуля не назначен экономист")
-        return self.public_request(
-            self.repo.update(
-                "requests",
-                request_id,
-                {"status": RequestStatus.on_review, "economist_id": economist_id},
-            ),
-            self.summary(request_id),
-        )
+            raise HTTPException(status_code=400, detail="К подразделению не назначен экономист")
+        updated = self.repo.update("requests", request_id, {"status": RequestStatus.on_review, "economist_id": economist_id})
+        self.log(user, request_id, "submitted", before=request, after=updated)
+        return self.public_request(updated, self.summary(request_id))
 
     def withdraw(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_employee_withdraw_request(user, budget_request)
-        return self.public_request(self.repo.update("requests", request_id, {"status": RequestStatus.draft}), self.summary(request_id))
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_employee_withdraw_request(user, request)
+        updated = self.repo.update("requests", request_id, {"status": RequestStatus.draft})
+        self.log(user, request_id, "withdrawn", before=request, after=updated)
+        return self.public_request(updated, self.summary(request_id))
 
     def cancel(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_employee_cancel_request(user, budget_request)
-        return self.public_request(self.repo.update("requests", request_id, {"status": RequestStatus.cancelled}), self.summary(request_id))
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_employee_cancel_request(user, request)
+        updated = self.repo.update("requests", request_id, {"status": RequestStatus.cancelled})
+        self.log(user, request_id, "cancelled", before=request, after=updated)
+        return self.public_request(updated, self.summary(request_id))
 
     def start_review(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_unfrozen(budget_request)
-        self.permissions.require_economist_review_request(user, budget_request)
-        if budget_request["status"] != RequestStatus.on_review:
-            raise HTTPException(status_code=400, detail="Request cannot be taken into review")
-        return self.public_request(
-            self.repo.update("requests", request_id, {"status": RequestStatus.on_review, "economist_id": user["id"]}),
-            self.summary(request_id),
-        )
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(request)
+        self.permissions.require_economist_review_request(user, request)
+        updated = self.repo.update("requests", request_id, {"status": RequestStatus.on_review, "economist_id": user["id"]})
+        self.log(user, request_id, "review_started", before=request, after=updated)
+        return self.public_request(updated, self.summary(request_id))
 
     @staticmethod
     def status_from_items(items: list[dict]) -> RequestStatus:
@@ -311,93 +258,66 @@ class RequestService:
             return RequestStatus.approved_with_changes if changed else RequestStatus.approved
         return RequestStatus.rejected
 
-    def refresh_review_status(self, request_id: str) -> dict | None:
-        budget_request = get_required(self.repo, "requests", request_id)
-        if budget_request.get("status") != RequestStatus.on_review:
-            return None
+    def finalize(self, user: dict, request_id: str) -> dict:
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(request)
+        self.permissions.require_economist_review_request(user, request)
         items = self._items(request_id)
         if not items or any(item["status"] == ItemStatus.on_review for item in items):
-            return None
+            raise HTTPException(status_code=400, detail="Перед завершением необходимо рассмотреть все строки заявки")
         self.recalculate_total(request_id)
-        return self.repo.update("requests", request_id, {"status": self.status_from_items(items)})
-
-    def finalize(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_unfrozen(budget_request)
-        self.permissions.require_economist_review_request(user, budget_request)
-        items = self._items(request_id)
-        if not items:
-            raise HTTPException(status_code=400, detail="Cannot finalize request without items")
-        if any(item["status"] == ItemStatus.on_review for item in items):
-            raise HTTPException(status_code=400, detail="Cannot finalize request while items are on review")
-
-        self.recalculate_total(request_id)
-        return self.public_request(
-            self.repo.update("requests", request_id, {"status": self.status_from_items(items)}),
-            self.summary(request_id),
-        )
+        updated = self.repo.update("requests", request_id, {"status": self.status_from_items(items)})
+        self.log(user, request_id, "finalized", before=request, after=updated)
+        return self.public_request(updated, self.summary(request_id))
 
     def fix(self, user: dict, request_id: str) -> dict:
         return self.finalize(user, request_id)
 
     def reopen(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_unfrozen(budget_request)
-        self.permissions.require_economist_review_request(user, budget_request)
-        if budget_request["status"] not in {
-            RequestStatus.approved,
-            RequestStatus.approved_with_changes,
-            RequestStatus.partially_approved,
-            RequestStatus.rejected,
-        }:
-            raise HTTPException(status_code=400, detail="Only completed request can be reopened")
-        return self.public_request(self.repo.update("requests", request_id, {"status": RequestStatus.on_review}), self.summary(request_id))
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(request)
+        self.permissions.require_economist_review_request(user, request)
+        if request["status"] not in {RequestStatus.approved, RequestStatus.approved_with_changes, RequestStatus.partially_approved, RequestStatus.rejected}:
+            raise HTTPException(status_code=400, detail="Вернуть на рассмотрение можно только завершённую заявку")
+        updated = self.repo.update("requests", request_id, {"status": RequestStatus.on_review})
+        self.log(user, request_id, "reopened", before=request, after=updated)
+        return self.public_request(updated, self.summary(request_id))
 
     def unfreeze(self, user: dict, request_id: str) -> dict:
         return self.reopen(user, request_id)
 
     def freeze_budget(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_budget_control_access(user, budget_request)
-        if budget_request.get("budget_frozen"):
-            raise HTTPException(status_code=400, detail="Budget is already frozen")
-        if budget_request.get("status") not in {RequestStatus.approved, RequestStatus.approved_with_changes}:
-            raise HTTPException(status_code=400, detail="Budget can be frozen only for approved request")
-        return self.public_request(
-            self.repo.update("requests", request_id, {"budget_frozen": True}),
-            self.summary(request_id),
-        )
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_budget_control_access(user, request)
+        if request.get("frozen") or request.get("status") not in {RequestStatus.approved, RequestStatus.approved_with_changes}:
+            raise HTTPException(status_code=400, detail="Зафиксировать можно только незаблокированную утверждённую заявку")
+        updated = self.repo.update("requests", request_id, {"frozen": True})
+        self.log(user, request_id, "frozen", before=request, after=updated)
+        return self.public_request(updated, self.summary(request_id))
 
     def unfreeze_budget(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_budget_control_access(user, budget_request)
-        if not budget_request.get("budget_frozen"):
-            raise HTTPException(status_code=400, detail="Budget is already unfrozen")
-        return self.public_request(
-            self.repo.update("requests", request_id, {"budget_frozen": False}),
-            self.summary(request_id),
-        )
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_budget_control_access(user, request)
+        if not request.get("frozen"):
+            raise HTTPException(status_code=400, detail="Бюджет уже разморожен")
+        updated = self.repo.update("requests", request_id, {"frozen": False})
+        self.log(user, request_id, "unfrozen", before=request, after=updated)
+        return self.public_request(updated, self.summary(request_id))
 
     def approve_all_items(self, user: dict, request_id: str) -> dict:
-        budget_request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_unfrozen(budget_request)
-        self.permissions.require_economist_review_request(user, budget_request)
-        if budget_request.get("status") != RequestStatus.on_review:
-            raise HTTPException(status_code=400, detail="Request is not on review")
-        items = self._items(request_id)
-        if not items:
-            raise HTTPException(status_code=400, detail="Cannot approve request without items")
-
-        for collection in ("dds_items", "invest_items"):
-            for item in self.repo.load_all(collection):
-                if item["request_id"] != request_id or item["status"] != ItemStatus.on_review:
-                    continue
-                sum_fact = item.get("sum_fact")
-                if sum_fact is None:
-                    self.repo.update(collection, item["id"], {"status": ItemStatus.approved, "sum_fact": item["sum_plan"]})
-                elif float(sum_fact) == float(item["sum_plan"]):
-                    self.repo.update(collection, item["id"], {"status": ItemStatus.approved})
+        request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_request_unfrozen(request)
+        self.permissions.require_economist_review_request(user, request)
+        if request.get("status") != RequestStatus.on_review:
+            raise HTTPException(status_code=400, detail="Заявка не находится на рассмотрении")
+        for item in self._items(request_id):
+            if item["status"] == ItemStatus.on_review:
+                sum_fact = float(item.get("sum_fact") or 0)
+                if sum_fact == 0:
+                    patch = {"status": ItemStatus.approved, "sum_fact": item["sum_plan"]}
+                elif sum_fact == float(item["sum_plan"]):
+                    patch = {"status": ItemStatus.approved}
                 else:
-                    self.repo.update(collection, item["id"], {"status": ItemStatus.approved_with_changes})
-
+                    patch = {"status": ItemStatus.approved_with_changes}
+                self.repo.update("req_items", item["id"], patch)
         return self.finalize(user, request_id)

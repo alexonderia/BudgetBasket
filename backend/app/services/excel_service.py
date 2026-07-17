@@ -271,7 +271,7 @@ class ExcelService:
             raise HTTPException(status_code=400, detail="В файле нет строк")
         headers = [self._normalize_header(value) for value in rows[0]]
         if "name" not in headers:
-            raise HTTPException(status_code=400, detail="В первой строке должен быть столбец name / Название / Подкатегория")
+            raise HTTPException(status_code=400, detail="В первой строке должен быть столбец «Наименование», «Название» или «Подкатегория»")
 
         prepared: list[dict] = []
         errors: list[str] = []
@@ -419,7 +419,7 @@ class ExcelService:
             return item_id
         return item["name"]
 
-    def _category_name(self, collection: str, item_id: str | None, category_id: str | None = None) -> str:
+    def _category_name(self, collection: str, item_id: str | None) -> str:
         if not item_id:
             return ""
         item = self.repo.get_by_id(collection, item_id)
@@ -432,25 +432,25 @@ class ExcelService:
 
     def _request_items(self, request_id: str) -> list[dict]:
         rows: list[dict] = []
-        for kind, collection, catalog, field in (
-            ("ДДС", "dds_items", "dds_catalog", "dds_id"),
-            ("Инвест", "invest_items", "invests_catalog", "invest_id"),
-        ):
-            for item in self.repo.load_all(collection):
-                if item.get("request_id") != request_id:
-                    continue
-                rows.append(
-                    {
-                        "kind": kind,
-                        "item_id": item["id"],
-                        "article": self._catalog_name(catalog, item.get(field)),
-                        "category": self._category_name(catalog, item.get(field)),
-                        "sum_plan": float(item.get("sum_plan") or 0),
-                        "sum_fact": item.get("sum_fact"),
-                        "status": ITEM_STATUS_LABELS.get(item.get("status"), item.get("status") or ""),
-                        "comment": item.get("comment") or "",
-                    }
-                )
+        for item in self.repo.load_all("req_items"):
+            if item.get("request_id") != request_id or item.get("status") == "deleted":
+                continue
+            is_dds = bool(item.get("dds_id"))
+            catalog, field, kind = ("dds_catalog", "dds_id", "ДДС") if is_dds else ("invests_catalog", "invest_id", "Инвест")
+            rows.append(
+                {
+                    "kind": kind,
+                    "item_id": item["id"],
+                    "article": self._catalog_name(catalog, item.get(field)),
+                    "category": self._category_name(catalog, item.get(field)),
+                    "sum_plan": float(item.get("sum_plan") or 0),
+                    "sum_fact": item.get("sum_fact"),
+                    "status": ITEM_STATUS_LABELS.get(item.get("status"), item.get("status") or ""),
+                    "comment": item.get("comment") or "",
+                    "name": item.get("name") or "",
+                    "justification": item.get("justification") or "",
+                }
+            )
         return rows
 
     CLOSED_STATUSES = {status.value for status in EXPORTABLE_REQUEST_STATUSES} | {"rejected"}
@@ -497,14 +497,8 @@ class ExcelService:
     def _collect_export_attachments(self, requests: list[dict]) -> list[dict]:
         request_ids = {item["id"] for item in requests}
         requests_by_id = {item["id"]: item for item in requests}
-        items = {
-            "dds": {item["id"]: item for item in self.repo.load_all("dds_items") if item.get("request_id") in request_ids},
-            "invest": {item["id"]: item for item in self.repo.load_all("invest_items") if item.get("request_id") in request_ids},
-        }
-        links = {
-            "dds": self.repo.load_all("dds_item_files"),
-            "invest": self.repo.load_all("invest_item_files"),
-        }
+        items = {item["id"]: item for item in self.repo.load_all("req_items") if item.get("request_id") in request_ids}
+        links = self.repo.load_all("req_item_files")
         files = {item["id"]: item for item in self.repo.load_all("files")}
         catalogs = {
             "dds": {item["id"]: item for item in self.repo.load_all("dds_catalog")},
@@ -512,17 +506,15 @@ class ExcelService:
         }
         attachments = []
         written: set[str] = set()
-        for kind, item_map in items.items():
-            item_key = "dds_item_id" if kind == "dds" else "invest_item_id"
-            article_key = "dds_id" if kind == "dds" else "invest_id"
-            for link in links[kind]:
-                item = item_map.get(link.get(item_key))
+        for link in links:
+                item = items.get(link.get("req_item_id"))
                 file = files.get(link.get("file_id"))
                 if not item or not file:
                     continue
                 request = requests_by_id[item["request_id"]]
                 module_name = self._archive_name(self._unit_name(request.get("unit_id")), "Модуль")
-                article = catalogs[kind].get(item.get(article_key), {})
+                catalog = catalogs["dds"] if item.get("dds_id") else catalogs["invest"]
+                article = catalog.get(item.get("dds_id") or item.get("invest_id"), {})
                 article_name = self._archive_name(article.get("name"), "Статья")
                 original_name = self._archive_name(file["original_name"], "Файл")
                 archive_path = f"Приложения/{module_name}/{article_name}/{original_name}"
@@ -584,6 +576,8 @@ class ExcelService:
                 "Тип",
                 "Категория",
                 "Статья / проект",
+                "Наименование",
+                "Обоснование",
                 "ID заявки",
                 "План",
                 "Факт",
@@ -606,6 +600,8 @@ class ExcelService:
                         "",
                         "",
                         "Строки отсутствуют",
+                        "",
+                        "",
                         request["id"],
                         0,
                         None,
@@ -625,6 +621,8 @@ class ExcelService:
                         item["kind"],
                         item["category"],
                         item["article"],
+                        item["name"],
+                        item["justification"],
                         request["id"],
                         item["sum_plan"],
                         item["sum_fact"],
@@ -634,11 +632,11 @@ class ExcelService:
                         *([""] * (max_attachments - len(row_attachments))),
                     ]
                 )
-                for index, attachment in enumerate(row_attachments, start=12):
+                for index, attachment in enumerate(row_attachments, start=14):
                     file_cell = composition.cell(composition.max_row, index)
                     file_cell.hyperlink = attachment["archive_path"]
                     file_cell.style = "Hyperlink"
-        for col in (8, 9):
+        for col in (10, 11):
             for row in range(2, composition.max_row + 1):
                 composition.cell(row, col).number_format = MONEY_FORMAT
         self._autosize(composition)

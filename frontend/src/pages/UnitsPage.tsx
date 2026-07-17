@@ -63,6 +63,8 @@ function dedupeUsers(users: User[]): User[] {
 
 function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (detail) return detail;
+  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
   return detail || (error instanceof Error ? error.message : fallback);
 }
 
@@ -132,6 +134,8 @@ function UnitFormDialog({
     name: string;
     is_active: boolean;
     parent_id: string | null;
+    uses_invest_projects: boolean;
+    annual_budget: number;
     responsible_user_id?: string;
     economist_id?: string;
   }) => void;
@@ -150,6 +154,8 @@ function UnitFormDialog({
 }) {
   const [name, setName] = useState('');
   const [isActive, setIsActive] = useState(true);
+  const [usesInvestProjects, setUsesInvestProjects] = useState(false);
+  const [annualBudget, setAnnualBudget] = useState('0');
   const [employeeId, setEmployeeId] = useState('');
   const [economistId, setEconomistId] = useState('');
 
@@ -158,11 +164,15 @@ function UnitFormDialog({
     if (mode.kind === 'edit') {
       setName(mode.unit.name);
       setIsActive(mode.unit.is_active);
+      setUsesInvestProjects(mode.unit.uses_invest_projects);
+      setAnnualBudget(String(mode.unit.annual_budget));
       setEmployeeId(responsibleUserId || '');
       setEconomistId(linkedEconomists[0]?.id || '');
     } else {
       setName('');
       setIsActive(true);
+      setUsesInvestProjects(false);
+      setAnnualBudget('0');
       setEmployeeId('');
       setEconomistId('');
     }
@@ -206,6 +216,11 @@ function UnitFormDialog({
           {mode.kind === 'create-root' && <Alert severity="info">Подразделение верхнего уровня без родителя.</Alert>}
 
           <TextField label="Название" value={name} onChange={(event) => setName(event.target.value)} fullWidth autoFocus />
+          <TextField label="Годовой бюджет" type="number" inputProps={{ min: 0 }} value={annualBudget} onChange={(event) => setAnnualBudget(event.target.value)} fullWidth />
+          <TextField select label="Тип строк заявки" value={usesInvestProjects ? 'invest' : 'dds'} onChange={(event) => setUsesInvestProjects(event.target.value === 'invest')} fullWidth>
+            <MenuItem value="dds">Статьи ДДС</MenuItem>
+            <MenuItem value="invest">Инвестиционные проекты</MenuItem>
+          </TextField>
           {mode.kind === 'create-child' && (
             <>
               <Divider />
@@ -278,6 +293,8 @@ function UnitFormDialog({
             name: name.trim(),
             is_active: isActive,
             parent_id: parentId,
+            uses_invest_projects: usesInvestProjects,
+            annual_budget: Number(annualBudget),
             responsible_user_id: mode.kind === 'create-child' ? employeeId : undefined,
             economist_id: mode.kind === 'create-child' ? economistId : undefined,
           })}
@@ -456,6 +473,8 @@ export default function UnitsPage() {
       name: string;
       parent_id: string | null;
       is_active: boolean;
+      uses_invest_projects: boolean;
+      annual_budget: number;
       responsible_user_id?: string;
       economist_id?: string;
     }) => {
@@ -464,6 +483,8 @@ export default function UnitsPage() {
         parent_id: payload.parent_id,
         type: payload.parent_id ? 'module' : 'department',
         is_active: payload.is_active,
+        uses_invest_projects: payload.uses_invest_projects,
+        annual_budget: payload.annual_budget,
       })).data;
       if (payload.responsible_user_id) {
         await api.post(`/units/${unit.id}/responsible`, { user_id: payload.responsible_user_id });
@@ -489,8 +510,8 @@ export default function UnitsPage() {
   });
 
   const updateUnit = useMutation({
-    mutationFn: ({ id, ...body }: { id: string; name: string; is_active: boolean; parent_id: string | null }) =>
-      api.patch(`/units/${id}`, { name: body.name, is_active: body.is_active, parent_id: body.parent_id }),
+    mutationFn: ({ id, ...body }: { id: string; name: string; is_active: boolean; parent_id: string | null; uses_invest_projects: boolean; annual_budget: number }) =>
+      api.patch(`/units/${id}`, body),
     onSuccess: () => {
       setDialog(null);
       refresh();
@@ -562,6 +583,8 @@ export default function UnitsPage() {
     name: string;
     is_active: boolean;
     parent_id: string | null;
+    uses_invest_projects: boolean;
+    annual_budget: number;
     responsible_user_id?: string;
     economist_id?: string;
   }) => {

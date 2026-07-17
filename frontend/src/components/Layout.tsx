@@ -178,7 +178,10 @@ export function Layout({
     },
     onError: (error) => {
       const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      showToast(detail || (error instanceof Error ? error.message : 'Не удалось сохранить профиль'), 'error');
+      showToast(
+        detail || (error instanceof Error && error.message === 'Network Error' ? 'Не удалось подключиться к серверу' : error instanceof Error ? error.message : 'Не удалось сохранить профиль'),
+        'error',
+      );
     },
   });
 
@@ -393,12 +396,12 @@ export function Layout({
               </Typography>
               <Stack spacing={1.75}>
                 <TextField
-                  label="Email"
+                  label="Электронная почта"
                   type="email"
                   value={profileForm.email}
                   onChange={(event) => setProfileForm((prev) => ({ ...prev, email: event.target.value }))}
                   error={!!profileForm.email && !EMAIL_RE.test(profileForm.email)}
-                  helperText={profileForm.email && !EMAIL_RE.test(profileForm.email) ? 'Введите email в формате name@example.ru' : undefined}
+                  helperText={profileForm.email && !EMAIL_RE.test(profileForm.email) ? 'Введите адрес в формате name@example.ru' : undefined}
                   fullWidth
                 />
                 <TextField
