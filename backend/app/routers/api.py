@@ -228,6 +228,11 @@ def dashboard(request: Request, user: User, unit_id: str | None = None):
     return request.app.state.request_service.dashboard(user, unit_id)
 
 
+@router.get("/dashboard/income")
+def income_dashboard(request: Request, user: User, unit_id: str | None = None):
+    return request.app.state.request_service.dashboard(user, unit_id, is_income=True)
+
+
 @router.get("/requests/export/closed")
 @router.get("/requests/export/fixed")
 def export_closed_requests(

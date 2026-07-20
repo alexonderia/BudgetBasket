@@ -440,6 +440,7 @@ class ExcelService:
             rows.append(
                 {
                     "kind": kind,
+                    "purpose": "Доход" if item.get("is_income", False) else "Расход",
                     "item_id": item["id"],
                     "article": self._catalog_name(catalog, item.get(field)),
                     "category": self._category_name(catalog, item.get(field)),
@@ -574,6 +575,7 @@ class ExcelService:
                 "Модуль",
                 "Статус заявки",
                 "Тип",
+                "Назначение",
                 "Категория",
                 "Статья / проект",
                 "Наименование",
@@ -599,6 +601,7 @@ class ExcelService:
                         request_status,
                         "",
                         "",
+                        "",
                         "Строки отсутствуют",
                         "",
                         "",
@@ -619,6 +622,7 @@ class ExcelService:
                         module_name,
                         request_status,
                         item["kind"],
+                        item["purpose"],
                         item["category"],
                         item["article"],
                         item["name"],
@@ -632,15 +636,15 @@ class ExcelService:
                         *([""] * (max_attachments - len(row_attachments))),
                     ]
                 )
-                for index, attachment in enumerate(row_attachments, start=14):
+                for index, attachment in enumerate(row_attachments, start=15):
                     file_cell = composition.cell(composition.max_row, index)
                     file_cell.hyperlink = attachment["archive_path"]
                     file_cell.style = "Hyperlink"
-        for col in (10, 11):
+        for col in (11, 12):
             for row in range(2, composition.max_row + 1):
                 composition.cell(row, col).number_format = MONEY_FORMAT
         self._autosize(composition)
-        composition.auto_filter.ref = f"A1:F{composition.max_row}"
+        composition.auto_filter.ref = f"A1:G{composition.max_row}"
         composition.freeze_panes = "A2"
 
         target = self.export_dir / filename

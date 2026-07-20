@@ -57,6 +57,7 @@ export default function App() {
     <Routes>
       <Route element={<Layout user={user} onLogout={logout} onUserChange={persistUser} />}>
         <Route path="/" element={user.role === 'employee' ? <Navigate to="/requests" replace /> : <DashboardPage user={user} />} />
+        <Route path="/income-dashboard" element={<Navigate to="/" replace />} />
         <Route path="/requests" element={<RequestsPage user={user} />} />
         <Route path="/requests/:id" element={<RequestDetailsPage user={user} />} />
         <Route path="/users" element={user.role === 'admin' ? <UsersPage /> : <Navigate to="/" replace />} />

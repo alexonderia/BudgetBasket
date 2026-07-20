@@ -144,6 +144,7 @@ class RequestPatch(StrictModel):
 class ItemCreate(StrictModel):
     dds_id: str | None = None
     invest_id: str | None = None
+    is_income: bool = False
     sum_plan: float = Field(ge=0)
     name: str = ""
     justification: str = ""

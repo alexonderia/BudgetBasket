@@ -58,13 +58,21 @@ class RequestService:
 
     def summary(self, request_id: str) -> dict:
         items = self._items(request_id)
+        expense_items = [item for item in items if not item.get("is_income", False)]
+        income_items = [item for item in items if item.get("is_income", False)]
         accepted = [item for item in items if item["status"] in APPROVED_ITEM_STATUSES]
         rejected = [item for item in items if item["status"] == ItemStatus.rejected]
         in_review = [item for item in items if item["status"] == ItemStatus.on_review]
         return {
             "request_id": request_id,
-            "planned_sum": sum(float(item.get("sum_plan") or 0) for item in items),
-            "approved_sum": sum(float(item.get("sum_fact") or 0) for item in accepted),
+            "planned_sum": sum(float(item.get("sum_plan") or 0) for item in expense_items),
+            "approved_sum": sum(float(item.get("sum_fact") or 0) for item in accepted if not item.get("is_income", False)),
+            "income_planned_sum": sum(float(item.get("sum_plan") or 0) for item in income_items),
+            "income_approved_sum": sum(
+                float(item.get("sum_fact") or 0)
+                for item in accepted
+                if item.get("is_income", False)
+            ),
             "items_count": len(items),
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
@@ -73,8 +81,19 @@ class RequestService:
         }
 
     def recalculate_total(self, request_id: str) -> dict:
-        summary = self.summary(request_id)
-        return self.repo.update("requests", request_id, {"sum_plan": summary["planned_sum"], "sum_fact": summary["approved_sum"]})
+        expense_items = [item for item in self._items(request_id) if not item.get("is_income", False)]
+        return self.repo.update(
+            "requests",
+            request_id,
+            {
+                "sum_plan": sum(float(item.get("sum_plan") or 0) for item in expense_items),
+                "sum_fact": sum(
+                    float(item.get("sum_fact") or 0)
+                    for item in expense_items
+                    if item["status"] in APPROVED_ITEM_STATUSES
+                ),
+            },
+        )
 
     def list_requests(self, user: dict, status: str | None = None, unit_id: str | None = None, created_from: str | None = None, created_to: str | None = None) -> list[dict]:
         visible = self.permissions.visible_request_ids(user)
@@ -94,7 +113,7 @@ class RequestService:
             result.append(self.public_request(budget_request, self.summary(budget_request["id"])))
         return result
 
-    def dashboard(self, user: dict, unit_id: str | None = None) -> dict:
+    def dashboard(self, user: dict, unit_id: str | None = None, *, is_income: bool = False) -> dict:
         visible = self.permissions.visible_request_ids(user)
         units = {item["id"]: item for item in self.repo.load_all("units")}
 
@@ -114,7 +133,6 @@ class RequestService:
             and item.get("status") not in {RequestStatus.draft, RequestStatus.cancelled}
             and (not unit_id or root(item.get("unit_id")) == unit_id)
         ]
-        request_ids = {item["id"] for item in requests}
         dds_catalog = {item["id"]: item for item in self.repo.load_all("dds_catalog")}
         invest_catalog = {item["id"]: item for item in self.repo.load_all("invests_catalog")}
         by_unit: dict[str, dict] = {}
@@ -129,10 +147,12 @@ class RequestService:
 
         total_plan = total_fact = frozen_total = 0.0
         request_by_id = {item["id"]: item for item in requests}
+        request_ids_with_matching_items: set[str] = set()
         for item in self.repo.load_all("req_items"):
             request = request_by_id.get(item.get("request_id"))
-            if not request or item.get("status") == ItemStatus.deleted:
+            if not request or item.get("is_income", False) != is_income or item.get("status") == ItemStatus.deleted:
                 continue
+            request_ids_with_matching_items.add(request["id"])
             kind = "dds" if item.get("dds_id") else "invest"
             catalog = dds_catalog if kind == "dds" else invest_catalog
             article = catalog.get(item.get("dds_id") or item.get("invest_id"), {})
@@ -151,9 +171,11 @@ class RequestService:
         def ordered(rows: dict[str, dict]) -> list[dict]:
             return sorted(rows.values(), key=lambda item: (-item["planned"], item["name"]))
 
+        matching_requests = [item for item in requests if item["id"] in request_ids_with_matching_items]
+
         return {
             "scope": {"unit_id": unit_id, "available_units": [{"id": item["id"], "name": item["name"], "parent_id": item.get("parent_id")} for item in units.values() if not item.get("parent_id")]},
-            "totals": {"planned": total_plan, "approved": total_fact, "frozen": frozen_total, "remaining": max(total_plan - total_fact, 0), "requests_count": len(requests), "approved_requests_count": sum(item.get("status") in APPROVED_ITEM_STATUSES for item in requests), "review_requests_count": sum(item.get("status") == RequestStatus.on_review for item in requests), "frozen_requests_count": sum(item.get("frozen") for item in requests)},
+            "totals": {"planned": total_plan, "approved": total_fact, "frozen": frozen_total, "remaining": max(total_plan - total_fact, 0), "requests_count": len(matching_requests), "approved_requests_count": sum(item.get("status") in APPROVED_ITEM_STATUSES for item in matching_requests), "review_requests_count": sum(item.get("status") == RequestStatus.on_review for item in matching_requests), "frozen_requests_count": sum(item.get("frozen") for item in matching_requests)},
             "by_unit": ordered(by_unit), "by_category": ordered(by_category), "by_article": ordered(by_article),
         }
 

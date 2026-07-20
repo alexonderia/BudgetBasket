@@ -49,6 +49,7 @@ CREATE TABLE req_items (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
     dds_id uuid REFERENCES dds_catalog(id) ON DELETE RESTRICT,
     invest_id uuid REFERENCES invests_catalog(id) ON DELETE RESTRICT,
+    is_income boolean NOT NULL DEFAULT false,
     name text NOT NULL, sum_plan numeric(14,2) NOT NULL DEFAULT 0, sum_fact numeric(14,2) NOT NULL DEFAULT 0,
     justification text NOT NULL DEFAULT '', status text NOT NULL DEFAULT 'on_review', comment text NOT NULL DEFAULT '',
     CONSTRAINT req_items_sum_plan_chk CHECK (sum_plan >= 0),
@@ -111,6 +112,7 @@ CREATE INDEX idx_req_items_request_id ON req_items(request_id);
 CREATE INDEX idx_req_items_dds_id ON req_items(dds_id);
 CREATE INDEX idx_req_items_invest_id ON req_items(invest_id);
 CREATE INDEX idx_req_items_status ON req_items(status);
+CREATE INDEX idx_req_items_is_income ON req_items(is_income);
 CREATE INDEX idx_files_storage_object ON files(id_storage_object);
 CREATE INDEX idx_req_item_files_req_item_id ON req_item_files(req_item_id);
 CREATE INDEX idx_storage_objects_storage_key ON storage_objects(storage_key);

@@ -54,6 +54,8 @@ export interface RequestSummary {
   request_id: string;
   planned_sum: number;
   approved_sum: number;
+  income_planned_sum: number;
+  income_approved_sum: number;
   items_count: number;
   accepted_count: number;
   rejected_count: number;
@@ -65,6 +67,7 @@ export interface BudgetItem {
   request_id: string;
   dds_id?: string;
   invest_id?: string;
+  is_income: boolean;
   sum_plan: number;
   sum_fact: number | null;
   name: string;

@@ -55,15 +55,17 @@ const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const UPLOAD_EXTENSIONS = new Set(UPLOAD_ACCEPT.split(','));
 
-type ItemTableColumn = 'category' | 'article' | 'justification' | 'plan' | 'status' | 'approved' | 'comment' | 'files' | 'actions';
+type ItemTableColumn = 'category' | 'article' | 'name' | 'justification' | 'plan' | 'status' | 'approved' | 'difference' | 'comment' | 'files' | 'actions';
 
 const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
   category: 120,
   article: 260,
+  name: 220,
   justification: 240,
   plan: 120,
   status: 150,
   approved: 120,
+  difference: 180,
   comment: 180,
   files: 230,
   actions: 92,
@@ -72,10 +74,12 @@ const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
 const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
   category: 90,
   article: 180,
+  name: 160,
   justification: 180,
   plan: 100,
   status: 120,
   approved: 100,
+  difference: 150,
   comment: 130,
   files: 160,
   actions: 72,
@@ -426,11 +430,13 @@ function FileAttachAction({
 
 function AddItemForm({
   kind,
+  isIncome,
   requestId,
   catalog,
   disabled,
 }: {
   kind: 'dds' | 'invest';
+  isIncome: boolean;
   requestId: string;
   catalog: CatalogItem[];
   disabled: boolean;
@@ -448,6 +454,7 @@ function AddItemForm({
     mutationFn: async () => {
       const created = await api.post<BudgetItem>(`/requests/${requestId}/items`, {
         [kind === 'dds' ? 'dds_id' : 'invest_id']: article?.id,
+        is_income: isIncome,
         name,
         sum_plan: Number(sumPlan),
         justification,
@@ -540,7 +547,7 @@ function AddItemForm({
         sx={{ minWidth: 220, flex: 1 }}
       />
         <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || !name.trim() || Number(sumPlan) <= 0 || create.isPending}>
-          Добавить строку
+          {isIncome ? 'Добавить доход' : 'Добавить расход'}
         </Button>
       </Stack>
       <TextField
@@ -583,6 +590,7 @@ function AddItemForm({
 function ItemsTable({
   title,
   kind,
+  isIncome,
   request,
   user,
   items,
@@ -590,6 +598,7 @@ function ItemsTable({
 }: {
   title: string;
   kind: 'dds' | 'invest';
+  isIncome: boolean;
   request: BudgetRequest;
   user: User;
   items: BudgetItem[];
@@ -819,7 +828,7 @@ function ItemsTable({
           Перетаскивайте границы заголовков, чтобы настроить ширину колонок.
         </Typography>
       </Stack>
-      {employeeCanEdit && <AddItemForm kind={kind} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || isEmployeeEditing} />}
+      {employeeCanEdit && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || isEmployeeEditing} />}
       <TableContainer className="request-items-table">
       <Table size="small" sx={{ width: tableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
         <colgroup>
@@ -829,10 +838,12 @@ function ItemsTable({
           <TableRow>
             <TableCell sx={headerCell('category')}>Категория{resizeHandle('category')}</TableCell>
             <TableCell sx={headerCell('article')}>{kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект'}{resizeHandle('article')}</TableCell>
+            <TableCell sx={headerCell('name')}>Наименование{resizeHandle('name')}</TableCell>
             <TableCell sx={headerCell('justification')}>Обоснование{resizeHandle('justification')}</TableCell>
             <TableCell sx={headerCell('plan')}>План{resizeHandle('plan')}</TableCell>
             <TableCell sx={headerCell('status')}>Статус{resizeHandle('status')}</TableCell>
             <TableCell sx={headerCell('approved')}>Утверждено{resizeHandle('approved')}</TableCell>
+            <TableCell sx={headerCell('difference')}>Корректировка{resizeHandle('difference')}</TableCell>
             <TableCell sx={headerCell('comment')}>Комментарий{resizeHandle('comment')}</TableCell>
             <TableCell sx={headerCell('files')}>Файл{resizeHandle('files')}</TableCell>
             <TableCell sx={headerCell('actions')} align="center">Действия</TableCell>
@@ -851,6 +862,9 @@ function ItemsTable({
             const stagedFiles = stagedFilesByItem[item.id] || [];
             const pendingDeletedFileIds = pendingDeletedFileIdsByItem[item.id] || [];
             const validationError = reviewValidationError(item, local);
+            const planValue = Number(local.sum_plan ?? item.sum_plan);
+            const factValue = local.sum_fact !== undefined ? local.sum_fact : item.sum_fact;
+            const planFactDifference = factValue === null || factValue === undefined ? null : Number(factValue) - planValue;
             return (
               <TableRow
                 key={item.id}
@@ -886,11 +900,13 @@ function ItemsTable({
                     <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
                       <Stack spacing={0.25}>
                         <span>{catalogEntry?.name || 'Статья НСИ недоступна'}</span>
-                        <Typography variant="caption" color="text.secondary">{item.name}</Typography>
                       </Stack>
                       {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" />}
                     </Stack>
                   )}
+                </TableCell>
+                <TableCell sx={{ px: 1, py: 1 }}>
+                  {item.name || '—'}
                 </TableCell>
                 <TableCell sx={{ px: 1, py: 1 }}>
                   {item.justification || '—'}
@@ -956,6 +972,11 @@ function ItemsTable({
                   ) : (
                     money(item.sum_fact)
                   )}
+                </TableCell>
+                <TableCell sx={{ px: 1, py: 1 }}>
+                  <Typography color={planFactDifference === null ? 'text.secondary' : planFactDifference >= 0 ? 'success.main' : 'error.main'}>
+                    {planFactDifference === null ? '—' : money(planFactDifference)}
+                  </Typography>
                 </TableCell>
                 <TableCell sx={{ px: 1, py: 1 }}>
                   {canEconomist && !isDeleted ? (
@@ -1234,11 +1255,15 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const usesInvestProjects = !!units.find((unit) => unit.id === request?.unit_id)?.uses_invest_projects;
   const activeKind = usesInvestProjects ? 'invest' : 'dds';
   const activeCatalog = usesInvestProjects ? investCatalog : ddsCatalog;
-  const visibleItems = useMemo(
-    () => requestItems.filter((item) => usesInvestProjects ? !!item.invest_id : !!item.dds_id),
+  const expenseItems = useMemo(
+    () => requestItems.filter((item) => !item.is_income && (usesInvestProjects ? !!item.invest_id : !!item.dds_id)),
     [requestItems, usesInvestProjects],
   );
-  const allItems = visibleItems.filter((item) => item.status !== 'deleted');
+  const incomeItems = useMemo(
+    () => requestItems.filter((item) => item.is_income && (usesInvestProjects ? !!item.invest_id : !!item.dds_id)),
+    [requestItems, usesInvestProjects],
+  );
+  const allItems = requestItems.filter((item) => item.status !== 'deleted');
   const deletePreviewRows = useMemo(() => {
     const rows = [
       ...allItems.map((item) => ({
@@ -1555,7 +1580,10 @@ export default function RequestDetailsPage({ user }: { user: User }) {
         </Drawer>
 
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
-          <ItemsTable title={usesInvestProjects ? 'Строки инвест-проектов' : 'Строки ДДС'} kind={activeKind} request={request} user={user} items={visibleItems} catalog={activeCatalog} />
+          <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} />
+        </Paper>
+        <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
+          <ItemsTable title="Доходы модуля" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} />
         </Paper>
       </Stack>
 

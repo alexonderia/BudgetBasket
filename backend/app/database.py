@@ -105,6 +105,7 @@ req_items = Table(
     Column("request_id", PgUUID(as_uuid=True), ForeignKey("requests.id", ondelete="CASCADE"), nullable=False),
     Column("dds_id", PgUUID(as_uuid=True), ForeignKey("dds_catalog.id", ondelete="RESTRICT")),
     Column("invest_id", PgUUID(as_uuid=True), ForeignKey("invests_catalog.id", ondelete="RESTRICT")),
+    Column("is_income", Boolean, nullable=False, server_default=text("false")),
     Column("name", Text, nullable=False),
     Column("sum_plan", Numeric(14, 2), nullable=False, server_default=text("0")),
     Column("sum_fact", Numeric(14, 2), nullable=False, server_default=text("0")),
@@ -115,7 +116,7 @@ req_items = Table(
     CheckConstraint("sum_fact >= 0", name="req_items_sum_fact_chk"),
     CheckConstraint("status IN ('on_review', 'rejected', 'approved_with_changes', 'approved', 'deleted')", name="req_items_status_chk"),
     CheckConstraint("(dds_id IS NULL) <> (invest_id IS NULL)", name="req_items_article_chk"),
-    Index("idx_req_items_request_id", "request_id"), Index("idx_req_items_dds_id", "dds_id"), Index("idx_req_items_invest_id", "invest_id"), Index("idx_req_items_status", "status"),
+    Index("idx_req_items_request_id", "request_id"), Index("idx_req_items_dds_id", "dds_id"), Index("idx_req_items_invest_id", "invest_id"), Index("idx_req_items_status", "status"), Index("idx_req_items_is_income", "is_income"),
 )
 
 storage_objects = Table(

@@ -19,7 +19,7 @@ def annual_budgets_by_unit(repo: Repository) -> dict[str, float]:
 
     for item in repo.load_all("req_items"):
         request = closed_requests.get(item.get("request_id"))
-        if not request or item.get("status") not in APPROVED_ITEM_STATUSES:
+        if not request or item.get("is_income", False) or item.get("status") not in APPROVED_ITEM_STATUSES:
             continue
         amount = float(item.get("sum_fact") or 0)
         unit_id = request.get("unit_id")

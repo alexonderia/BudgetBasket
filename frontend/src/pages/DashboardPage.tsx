@@ -15,6 +15,8 @@ import MenuItem from '@mui/material/MenuItem';
 import Skeleton from '@mui/material/Skeleton';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
+import Tab from '@mui/material/Tab';
+import Tabs from '@mui/material/Tabs';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useQuery } from '@tanstack/react-query';
@@ -189,7 +191,7 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts }: { rows: B
     <Card className="surface dashboard-panel" elevation={0}>
       <Box className="dashboard-panel-heading">
         <Typography variant="h6">{title}</Typography>
-        <Typography variant="body2" color="text.secondary">Расчет / утверждено</Typography>
+        <Typography variant="body2" color="text.secondary">План / утверждено</Typography>
       </Box>
       {!visibleRows.length ? (
         <Box className="dashboard-empty-chart">{emptyText}</Box>
@@ -214,7 +216,7 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts }: { rows: B
                   </Stack>
                   {showAmounts ? (
                     <Stack className="dashboard-article-amounts" spacing={0.15} alignItems="flex-end">
-                      <Typography variant="caption" color="text.secondary">Расчет: {money(row.planned)}</Typography>
+                      <Typography variant="caption" color="text.secondary">План: {money(row.planned)}</Typography>
                       <Typography variant="caption" color="primary.main" fontWeight={700}>Утверждено: {money(row.approved)}</Typography>
                       <Typography variant="caption" color={delta >= 0 ? 'success.main' : 'error.main'} fontWeight={700}>
                         Корректировка: {delta >= 0 ? `+${money(delta)}` : money(delta)}
@@ -239,9 +241,12 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts }: { rows: B
 
 export default function DashboardPage({ user }: { user: User }) {
   const [unitId, setUnitId] = useState('');
+  const [mode, setMode] = useState<'expense' | 'income'>('expense');
+  const isIncomeDashboard = mode === 'income';
+  const subject = isIncomeDashboard ? 'доходов' : 'расходов';
   const { data, isLoading } = useQuery({
-    queryKey: ['dashboard', unitId],
-    queryFn: async () => (await api.get<DashboardData>('/dashboard', { params: { unit_id: unitId || undefined } })).data,
+    queryKey: ['dashboard', mode, unitId],
+    queryFn: async () => (await api.get<DashboardData>(isIncomeDashboard ? '/dashboard/income' : '/dashboard', { params: { unit_id: unitId || undefined } })).data,
   });
 
   const approvalRate = data?.totals.planned ? Math.round((data.totals.approved / data.totals.planned) * 100) : 0;
@@ -256,7 +261,16 @@ export default function DashboardPage({ user }: { user: User }) {
     <Stack spacing={2.5} className="dashboard-page">
       <Card className="dashboard-hero" elevation={0}>
         <Box>
-          <Typography variant="h5">Сводка расчетов</Typography>
+          <Typography variant="h5">Сводка модулей</Typography>
+          <Tabs
+            value={mode}
+            onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
+            aria-label="Тип сводки"
+            sx={{ mt: 1 }}
+          >
+            <Tab value="expense" label="Расходы" />
+            <Tab value="income" label="Доходы" />
+          </Tabs>
         </Box>
         <TextField select size="small" label="Подразделение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
           <MenuItem value="">Все доступные подразделения</MenuItem>
@@ -265,7 +279,7 @@ export default function DashboardPage({ user }: { user: User }) {
       </Card>
 
       <Grid container spacing={2}>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Сумма" value={money(data.totals.planned)} hint="Запланированная модулями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={money(data.totals.planned)} hint="Запланированная модулями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Корректировка" value={correction >= 0 ? `+${money(correction)}` : money(correction)} hint={correctionLabel} icon={<TrendingUpIcon fontSize="small" />} tone="purple" /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Утверждено" value={money(data.totals.approved)} hint={`${approvalRate}% от расчета`} icon={<AssignmentTurnedInIcon fontSize="small" />} tone="green" /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Зафиксировано" value={money(data.totals.frozen)} hint={`${data.totals.frozen_requests_count} заявок зафиксировано`} icon={<LockOutlinedIcon fontSize="small" />} tone="amber" /></Grid>
@@ -277,12 +291,12 @@ export default function DashboardPage({ user }: { user: User }) {
           <Card className="surface dashboard-panel dashboard-category-panel" elevation={0}>
             <Box className="dashboard-panel-heading">
               <Box>
-                <Typography variant="h6">Структура расчета</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>По категориям модульных сумм и решений экономиста</Typography>
+                <Typography variant="h6">Структура {subject}</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>По категориям модульных сумм и решениям экономиста</Typography>
               </Box>
               <PieChartOutlineIcon color="primary" />
             </Box>
-            <DonutChart rows={data.by_category} total={data.totals.planned} ariaLabel="Распределение расчетов по категориям" />
+            <DonutChart rows={data.by_category} total={data.totals.planned} ariaLabel={`Распределение ${subject} по категориям`} />
           </Card>
         </Grid>
         <Grid size={{ xs: 12, lg: 7 }}>
@@ -290,15 +304,15 @@ export default function DashboardPage({ user }: { user: User }) {
             <Box className="dashboard-panel-heading">
               <Box>
                 <Typography variant="h6">Подразделения</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>Распределение рассчитанных сумм по подразделениям</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>Распределение плановых сумм по подразделениям</Typography>
               </Box>
               <PieChartOutlineIcon color="primary" />
             </Box>
-            <DonutChart rows={data.by_unit} total={data.totals.planned} ariaLabel="Распределение расчетов по подразделениям" />
+            <DonutChart rows={data.by_unit} total={data.totals.planned} ariaLabel={`Распределение ${subject} по подразделениям`} />
           </Card>
         </Grid>
         <Grid size={{ xs: 12, lg: 7 }}>
-          <BudgetBars rows={data.by_article} title="Ключевые статьи" emptyText="Добавьте статьи в заявки, чтобы увидеть распределение" showType showAmounts />
+          <BudgetBars rows={data.by_article} title={`Ключевые статьи ${subject}`} emptyText={`Добавьте строки ${subject} в заявки, чтобы увидеть распределение`} showType showAmounts />
         </Grid>
         <Grid size={{ xs: 12, lg: 5 }}>
           <Card className="surface dashboard-panel dashboard-progress-panel" elevation={0}>
@@ -308,7 +322,7 @@ export default function DashboardPage({ user }: { user: User }) {
             </Box>
             <Stack spacing={2.25}>
               <Box>
-                <Stack direction="row" justifyContent="space-between"><Typography variant="body2" fontWeight={650}>Исполнение расчета</Typography><Typography variant="body2" color="primary.main" fontWeight={700}>{approvalRate}%</Typography></Stack>
+                <Stack direction="row" justifyContent="space-between"><Typography variant="body2" fontWeight={650}>Подтверждение {subject}</Typography><Typography variant="body2" color="primary.main" fontWeight={700}>{approvalRate}%</Typography></Stack>
                 <LinearProgress variant="determinate" value={approvalRate} sx={{ mt: 1, height: 9, borderRadius: 9 }} />
               </Box>
               <Box className="dashboard-status-summary">

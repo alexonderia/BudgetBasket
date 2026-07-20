@@ -57,6 +57,7 @@ class BudgetItemService:
             "request_id": request_id,
             "dds_id": article_id if kind == "dds" else None,
             "invest_id": article_id if kind == "invest" else None,
+            "is_income": payload.get("is_income", False),
             "name": payload["name"].strip(),
             "sum_plan": payload["sum_plan"],
             "sum_fact": 0,
