@@ -36,14 +36,59 @@ class PermissionService:
                 module_ids.update(self._child_modules(unit_id))
         return module_ids
 
-    def economist_module_ids(self, user_id: str) -> set[str]:
+    def economist_editable_module_ids(self, user_id: str) -> set[str]:
+        """Modules where the economist may make review decisions."""
         assigned_units = {
             item["unit_id"]
             for item in self.repo.load_all("units_responsibles")
             if item.get("user_id") == user_id and item.get("is_active")
         }
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+        assigned_modules = {
+            unit_id for unit_id in assigned_units if units.get(unit_id, {}).get("parent_id")
+        }
         request_units = {request["unit_id"] for request in self.repo.load_all("requests") if request.get("economist_id") == user_id}
-        return assigned_units | request_units
+        return assigned_modules | request_units
+
+    def economist_visible_module_ids(self, user_id: str) -> set[str]:
+        """Modules visible to an economist, including read-only department scopes."""
+        assigned_units = {
+            item["unit_id"]
+            for item in self.repo.load_all("units_responsibles")
+            if item.get("user_id") == user_id and item.get("is_active")
+        }
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+        department_ids = {
+            unit_id for unit_id in assigned_units if unit_id in units and not units[unit_id].get("parent_id")
+        }
+        visible_modules = self.economist_editable_module_ids(user_id)
+        for department_id in department_ids:
+            visible_modules.update(self._child_modules(department_id))
+        return visible_modules
+
+    def economist_visible_department_ids(self, user_id: str) -> set[str]:
+        """Root departments represented by the economist's assignments."""
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+        assigned_units = {
+            item["unit_id"]
+            for item in self.repo.load_all("units_responsibles")
+            if item.get("user_id") == user_id and item.get("is_active")
+        }
+        department_ids = {
+            unit_id for unit_id in assigned_units if unit_id in units and not units[unit_id].get("parent_id")
+        }
+        for module_id in self.economist_editable_module_ids(user_id):
+            current = module_id
+            seen: set[str] = set()
+            while current and current not in seen:
+                seen.add(current)
+                unit = units.get(current)
+                if not unit or not unit.get("parent_id"):
+                    if unit:
+                        department_ids.add(current)
+                    break
+                current = unit["parent_id"]
+        return department_ids
 
     def visible_request_ids(self, user: dict) -> set[str] | None:
         if user["role"] == "admin":
@@ -52,7 +97,7 @@ class PermissionService:
             module_ids = self.employee_module_ids(user["id"])
             return {request["id"] for request in self.repo.load_all("requests") if request.get("unit_id") in module_ids}
 
-        module_ids = self.economist_module_ids(user["id"])
+        module_ids = self.economist_visible_module_ids(user["id"])
         return {
             request["id"]
             for request in self.repo.load_all("requests")
@@ -65,7 +110,7 @@ class PermissionService:
         if user["role"] == "employee":
             return request.get("unit_id") in self.employee_module_ids(user["id"])
         if user["role"] == "economist":
-            return request.get("status") != RequestStatus.draft and request.get("unit_id") in self.economist_module_ids(user["id"])
+            return request.get("status") != RequestStatus.draft and request.get("unit_id") in self.economist_visible_module_ids(user["id"])
         return False
 
     def require_view_request(self, user: dict, request: dict) -> None:
@@ -122,5 +167,5 @@ class PermissionService:
     def require_economist_review_request(self, user: dict, request: dict) -> None:
         if user["role"] != "economist":
             raise HTTPException(status_code=403, detail="Рассматривать заявку может только экономист")
-        if request.get("unit_id") not in self.economist_module_ids(user["id"]):
+        if request.get("unit_id") not in self.economist_editable_module_ids(user["id"]):
             raise HTTPException(status_code=403, detail="Рассматривать заявку может только назначенный экономист")

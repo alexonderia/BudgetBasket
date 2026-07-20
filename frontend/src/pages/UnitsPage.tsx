@@ -146,7 +146,7 @@ function UnitFormDialog({
   linkedEconomists: User[];
   onAssignResponsible: (userId: string) => void;
   onUnassignResponsible: () => void;
-  onAssignEconomist: (economistId: string) => void;
+  onAssignEconomist: (economistId: string, unitId: string) => void;
   onUnassignEconomist: (economistId: string) => void;
   assignPending: boolean;
   onDelete?: () => void;
@@ -222,8 +222,20 @@ function UnitFormDialog({
             <>
               <Divider />
               <Typography variant="subtitle2" fontWeight={700}>Ответственные модуля</Typography>
-              <UserAutocomplete users={employees} value={employeeId} label="Сотрудник" required onChange={setEmployeeId} />
-              <UserAutocomplete users={economists} value={economistId} label="Экономист" required onChange={setEconomistId} />
+              <UserAutocomplete users={employees} value={employeeId} label="Сотрудник" onChange={setEmployeeId} />
+            </>
+          )}
+
+          {mode.kind !== 'edit' && (
+            <>
+              <Divider />
+              <Typography variant="subtitle2" fontWeight={700}>Назначение экономиста</Typography>
+              <UserAutocomplete
+                users={economists}
+                value={economistId}
+                label={isRoot ? 'Экономист (только просмотр)' : 'Экономист'}
+                onChange={setEconomistId}
+              />
             </>
           )}
 
@@ -263,12 +275,14 @@ function UnitFormDialog({
               )}
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}>
-                <UserAutocomplete users={economists} value={economistId} label="Экономист" size="small" onChange={setEconomistId} />
+                <UserAutocomplete users={economists} value={economistId} label={isRoot ? 'Экономист (только просмотр)' : 'Экономист'} size="small" onChange={setEconomistId} />
                 <Tooltip title={economistId ? 'Сохранить назначение' : 'Снять экономиста'}>
                   <Button
                     variant="outlined"
                     disabled={assignPending || (!economistId && linkedEconomists.length === 0)}
-                    onClick={() => economistId ? onAssignEconomist(economistId) : onUnassignEconomist(linkedEconomists[0].id)}
+                    onClick={() => economistId
+                      ? onAssignEconomist(economistId, mode.kind === 'edit' ? mode.unit.id : '')
+                      : onUnassignEconomist(linkedEconomists[0].id)}
                     aria-label={economistId ? 'Сохранить назначение' : 'Снять экономиста'}
                     sx={{ minWidth: 44, width: 44, px: 0 }}
                   >
@@ -285,14 +299,14 @@ function UnitFormDialog({
         <Button onClick={onClose}>Отмена</Button>
         <Button
           variant="contained"
-          disabled={!name.trim() || pending || (mode.kind === 'create-child' && (!employeeId || !economistId))}
+          disabled={!name.trim() || pending}
           onClick={() => onSubmit({
             name: name.trim(),
             is_active: isActive,
             parent_id: parentId,
             uses_invest_projects: usesInvestProjects,
             responsible_user_id: mode.kind === 'create-child' ? employeeId : undefined,
-            economist_id: mode.kind === 'create-child' ? economistId : undefined,
+            economist_id: mode.kind !== 'edit' ? economistId || undefined : undefined,
           })}
         >
           {isEdit ? 'Сохранить' : 'Создать'}
@@ -437,12 +451,6 @@ export default function UnitsPage() {
         .filter(Boolean) as User[];
       result.set(unit.id, dedupeUsers(matched));
     }
-    for (const unit of units) {
-      if (!unit.parent_id) continue;
-      const own = result.get(unit.id) || [];
-      const parentList = result.get(unit.parent_id) || [];
-      result.set(unit.id, dedupeUsers([...parentList, ...own]));
-    }
     return result;
   }, [units, assignments, users]);
 
@@ -492,7 +500,7 @@ export default function UnitsPage() {
         await api.post('/economist-assignments', {
           economist_id: payload.economist_id,
           unit_id: unit.id,
-          assignment_type: 'module',
+          assignment_type: payload.parent_id ? 'module' : 'department',
           is_active: true,
         });
       }
@@ -696,10 +704,10 @@ export default function UnitsPage() {
           if (!editingUnit) return;
           unassignResponsible.mutate(editingUnit.id);
         }}
-        onAssignEconomist={(economistId) => {
-          if (!editingUnit) return;
+        onAssignEconomist={(economistId, unitId) => {
+          if (!editingUnit || editingUnit.id !== unitId) return;
           assign.mutate({
-            unitId: editingUnit.id,
+            unitId,
             economistId,
             assignmentType: editingUnit.parent_id ? 'module' : 'department',
           });

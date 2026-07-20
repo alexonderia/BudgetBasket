@@ -173,8 +173,18 @@ class RequestService:
 
         matching_requests = [item for item in requests if item["id"] in request_ids_with_matching_items]
 
+        if user["role"] == "admin":
+            available_department_ids = {item["id"] for item in units.values() if not item.get("parent_id")}
+        elif user["role"] == "economist":
+            available_department_ids = self.permissions.economist_visible_department_ids(user["id"])
+        else:
+            available_department_ids = {
+                root(item.get("unit_id"))
+                for item in self.repo.load_all("requests")
+                if item["id"] in (visible or set())
+            }
         return {
-            "scope": {"unit_id": unit_id, "available_units": [{"id": item["id"], "name": item["name"], "parent_id": item.get("parent_id")} for item in units.values() if not item.get("parent_id")]},
+            "scope": {"unit_id": unit_id, "available_units": [{"id": item["id"], "name": item["name"], "parent_id": item.get("parent_id")} for item in units.values() if item["id"] in available_department_ids]},
             "totals": {"planned": total_plan, "approved": total_fact, "frozen": frozen_total, "remaining": max(total_plan - total_fact, 0), "requests_count": len(matching_requests), "approved_requests_count": sum(item.get("status") in APPROVED_ITEM_STATUSES for item in matching_requests), "review_requests_count": sum(item.get("status") == RequestStatus.on_review for item in matching_requests), "frozen_requests_count": sum(item.get("frozen") for item in matching_requests)},
             "by_unit": ordered(by_unit), "by_category": ordered(by_category), "by_article": ordered(by_article),
         }

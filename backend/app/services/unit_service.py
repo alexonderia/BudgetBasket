@@ -77,6 +77,11 @@ class UnitService:
 
     def set_responsible(self, user: dict, unit_id: str, employee_id: str) -> dict:
         require_role(user, "admin")
+        unit = self.repo.get_by_id("units", unit_id)
+        if not unit:
+            raise HTTPException(status_code=404, detail="Подразделение не найдено")
+        if not unit.get("parent_id"):
+            raise HTTPException(status_code=400, detail="Сотрудника можно назначить только на модуль")
         target = self.repo.get_by_id("users", employee_id)
         if not target or target.get("role") != "employee":
             raise HTTPException(status_code=400, detail="Ответственным может быть только сотрудник")
@@ -147,7 +152,7 @@ class UnitService:
                     "id": f"{item['user_id']}:{item['unit_id']}",
                     "economist_id": item["user_id"],
                     "unit_id": item["unit_id"],
-                    "assignment_type": "module",
+                    "assignment_type": "module" if self.repo.get_by_id("units", item["unit_id"]).get("parent_id") else "department",
                     "is_active": True,
                 }
             )
@@ -158,11 +163,17 @@ class UnitService:
         target = self.repo.get_by_id("users", payload["economist_id"])
         if not target or target.get("role") != "economist":
             raise HTTPException(status_code=400, detail="Закрепить можно только экономиста")
+        unit = self.repo.get_by_id("units", payload["unit_id"])
+        if not unit:
+            raise HTTPException(status_code=404, detail="Подразделение не найдено")
+        expected_type = "department" if not unit.get("parent_id") else "module"
+        if payload.get("assignment_type") != expected_type:
+            raise HTTPException(status_code=400, detail="Тип назначения не соответствует подразделению")
         unit_ids = [payload["unit_id"]]
-        if payload.get("assignment_type") == "department":
-            unit_ids = [unit["id"] for unit in self.repo.load_all("units") if unit.get("parent_id") == payload["unit_id"]]
+        # Department assignments remain on the root and grant read-only access
+        # to its descendants; they are not expanded into module assignments.
         for request in self.repo.load_all("requests"):
-            if request.get("unit_id") in unit_ids:
+            if unit.get("parent_id") and request.get("unit_id") in unit_ids:
                 if request.get("frozen"):
                     raise HTTPException(status_code=400, detail="Бюджет зафиксирован")
                 self.repo.update("requests", request["id"], {"economist_id": payload["economist_id"]})
@@ -204,7 +215,10 @@ class UnitService:
         target = self.repo.get_by_id("users", economist_id)
         if not target or target.get("role") != "economist":
             raise HTTPException(status_code=404, detail="Назначение экономиста не найдено")
-        if any(
+        unit = self.repo.get_by_id("units", unit_id)
+        if not unit:
+            raise HTTPException(status_code=404, detail="Подразделение не найдено")
+        if unit.get("parent_id") and any(
             request.get("unit_id") == unit_id and request.get("frozen")
             for request in self.repo.load_all("requests")
         ):
@@ -216,7 +230,8 @@ class UnitService:
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Назначение экономиста не найдено")
-        for request in self.repo.load_all("requests"):
-            if request.get("unit_id") == unit_id and request.get("economist_id") == economist_id:
-                self.repo.update("requests", request["id"], {"economist_id": None})
+        if unit.get("parent_id"):
+            for request in self.repo.load_all("requests"):
+                if request.get("unit_id") == unit_id and request.get("economist_id") == economist_id:
+                    self.repo.update("requests", request["id"], {"economist_id": None})
         return {"id": assignment_id, "is_active": False}
