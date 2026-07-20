@@ -97,7 +97,6 @@ class UnitCreate(StrictModel):
     type: UnitType
     is_active: bool = True
     uses_invest_projects: bool = False
-    annual_budget: float = Field(default=0, ge=0)
 
 
 class UnitPatch(StrictModel):
@@ -106,7 +105,6 @@ class UnitPatch(StrictModel):
     type: UnitType | None = None
     is_active: bool | None = None
     uses_invest_projects: bool | None = None
-    annual_budget: float | None = Field(default=None, ge=0)
 
 
 class ResponsibleIn(StrictModel):

@@ -1,0 +1,48 @@
+from app.seed import DEPARTMENT_ID, DDS_LICENSE_ID, MODULE_ALPHA_ID
+from tests.test_api import auth, make_client
+
+
+def test_annual_budget_is_formed_from_approved_closed_request_lines(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    line = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Support", "sum_plan": 1_000, "justification": "Required"},
+        headers=employee,
+    )
+    assert line.status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    item_id = line.json()["id"]
+    assert client.patch(
+        f"/items/{item_id}",
+        json={"status": "approved_with_changes", "sum_fact": 750},
+        headers=economist,
+    ).status_code == 200
+    assert client.post(f"/requests/{request['id']}/finalize", headers=economist).status_code == 200
+
+    units = {unit["id"]: unit for unit in client.get("/units", headers=employee).json()}
+    assert units[MODULE_ALPHA_ID]["annual_budget"] == 750
+    assert units[DEPARTMENT_ID]["annual_budget"] == 750
+
+    assert client.post(f"/requests/{request['id']}/reopen", headers=economist).status_code == 200
+    units = {unit["id"]: unit for unit in client.get("/units", headers=employee).json()}
+    assert units[MODULE_ALPHA_ID]["annual_budget"] == 0
+    assert units[DEPARTMENT_ID]["annual_budget"] == 0
+
+
+def test_annual_budget_does_not_limit_draft_or_submitted_request_lines(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    line = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Large request", "sum_plan": 9_999_999, "justification": "Required"},
+        headers=employee,
+    )
+    assert line.status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200

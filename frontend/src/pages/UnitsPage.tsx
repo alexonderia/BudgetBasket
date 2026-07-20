@@ -30,6 +30,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { usePageChromeActions, usePageChromeLeading } from '../components/Layout';
 import { useAppToast } from '../components/Layout';
 import type { Unit, User } from '../types';
+import { money } from '../utils/labels';
 
 interface Responsible {
   unit_id: string;
@@ -135,7 +136,6 @@ function UnitFormDialog({
     is_active: boolean;
     parent_id: string | null;
     uses_invest_projects: boolean;
-    annual_budget: number;
     responsible_user_id?: string;
     economist_id?: string;
   }) => void;
@@ -155,7 +155,6 @@ function UnitFormDialog({
   const [name, setName] = useState('');
   const [isActive, setIsActive] = useState(true);
   const [usesInvestProjects, setUsesInvestProjects] = useState(false);
-  const [annualBudget, setAnnualBudget] = useState('0');
   const [employeeId, setEmployeeId] = useState('');
   const [economistId, setEconomistId] = useState('');
 
@@ -165,14 +164,12 @@ function UnitFormDialog({
       setName(mode.unit.name);
       setIsActive(mode.unit.is_active);
       setUsesInvestProjects(mode.unit.uses_invest_projects);
-      setAnnualBudget(String(mode.unit.annual_budget));
       setEmployeeId(responsibleUserId || '');
       setEconomistId(linkedEconomists[0]?.id || '');
     } else {
       setName('');
       setIsActive(true);
       setUsesInvestProjects(false);
-      setAnnualBudget('0');
       setEmployeeId('');
       setEconomistId('');
     }
@@ -216,7 +213,7 @@ function UnitFormDialog({
           {mode.kind === 'create-root' && <Alert severity="info">Подразделение верхнего уровня без родителя.</Alert>}
 
           <TextField label="Название" value={name} onChange={(event) => setName(event.target.value)} fullWidth autoFocus />
-          <TextField label="Годовой бюджет" type="number" inputProps={{ min: 0 }} value={annualBudget} onChange={(event) => setAnnualBudget(event.target.value)} fullWidth />
+          <Alert severity="info">Годовой бюджет рассчитывается автоматически из одобренных строк закрытых заявок.</Alert>
           <TextField select label="Тип строк заявки" value={usesInvestProjects ? 'invest' : 'dds'} onChange={(event) => setUsesInvestProjects(event.target.value === 'invest')} fullWidth>
             <MenuItem value="dds">Статьи ДДС</MenuItem>
             <MenuItem value="invest">Инвестиционные проекты</MenuItem>
@@ -294,7 +291,6 @@ function UnitFormDialog({
             is_active: isActive,
             parent_id: parentId,
             uses_invest_projects: usesInvestProjects,
-            annual_budget: Number(annualBudget),
             responsible_user_id: mode.kind === 'create-child' ? employeeId : undefined,
             economist_id: mode.kind === 'create-child' ? economistId : undefined,
           })}
@@ -354,15 +350,20 @@ function OrgUnitCard({
         </Stack>
 
         <Box className="org-people-section">
-          <Button
-            className="org-people-toggle"
-            size="small"
-            onClick={() => setPeopleExpanded((expanded) => !expanded)}
-            endIcon={peopleExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-            aria-expanded={peopleExpanded}
-          >
-            Пользователи · {peopleCount}
-          </Button>
+          <Box className="org-card-meta">
+            <Tooltip title={`Годовой бюджет: ${money(unit.annual_budget)}`}>
+              <Typography className="org-unit-budget" variant="caption" color="text.secondary">{money(unit.annual_budget)}</Typography>
+            </Tooltip>
+            <Button
+              className="org-people-toggle"
+              size="small"
+              onClick={() => setPeopleExpanded((expanded) => !expanded)}
+              endIcon={peopleExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+              aria-expanded={peopleExpanded}
+            >
+              Пользователи · {peopleCount}
+            </Button>
+          </Box>
           <Collapse in={peopleExpanded} timeout="auto">
             <Box className="org-people-grid in-card">
               {!isRoot && (responsibleUser ? <PersonCard user={responsibleUser} role="Ответственный сотрудник" /> : <PersonCard role="Ответственный сотрудник" vacancy />)}
@@ -474,7 +475,6 @@ export default function UnitsPage() {
       parent_id: string | null;
       is_active: boolean;
       uses_invest_projects: boolean;
-      annual_budget: number;
       responsible_user_id?: string;
       economist_id?: string;
     }) => {
@@ -484,7 +484,6 @@ export default function UnitsPage() {
         type: payload.parent_id ? 'module' : 'department',
         is_active: payload.is_active,
         uses_invest_projects: payload.uses_invest_projects,
-        annual_budget: payload.annual_budget,
       })).data;
       if (payload.responsible_user_id) {
         await api.post(`/units/${unit.id}/responsible`, { user_id: payload.responsible_user_id });
@@ -510,7 +509,7 @@ export default function UnitsPage() {
   });
 
   const updateUnit = useMutation({
-    mutationFn: ({ id, ...body }: { id: string; name: string; is_active: boolean; parent_id: string | null; uses_invest_projects: boolean; annual_budget: number }) =>
+    mutationFn: ({ id, ...body }: { id: string; name: string; is_active: boolean; parent_id: string | null; uses_invest_projects: boolean }) =>
       api.patch(`/units/${id}`, body),
     onSuccess: () => {
       setDialog(null);
@@ -584,7 +583,6 @@ export default function UnitsPage() {
     is_active: boolean;
     parent_id: string | null;
     uses_invest_projects: boolean;
-    annual_budget: number;
     responsible_user_id?: string;
     economist_id?: string;
   }) => {

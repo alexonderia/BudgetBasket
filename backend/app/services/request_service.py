@@ -5,6 +5,7 @@ from fastapi.encoders import jsonable_encoder
 
 from app.models import APPROVED_ITEM_STATUSES, ItemStatus, RequestStatus
 from app.repositories.base import Repository
+from app.services.budget_totals import sync_annual_budgets
 from app.services.common import get_required
 from app.services.permission_service import PermissionService
 
@@ -47,30 +48,12 @@ class RequestService:
             raise HTTPException(status_code=409, detail="К этому подразделению назначено несколько экономистов")
         return assignments[0]["user_id"] if assignments else None
 
-    def unit_budget(self, unit_id: str, *, exclude_request_id: str | None = None) -> dict:
-        unit = get_required(self.repo, "units", unit_id)
-        used = 0.0
-        for request in self.repo.load_all("requests"):
-            if request.get("unit_id") != unit_id or request.get("id") == exclude_request_id:
-                continue
-            status = request.get("status")
-            if status in {RequestStatus.cancelled, RequestStatus.rejected}:
-                continue
-            used += float(request.get("sum_fact") or 0) if status in APPROVED_ITEM_STATUSES else float(request.get("sum_plan") or 0)
-        annual = float(unit.get("annual_budget") or 0)
-        return {"annual_budget": annual, "reserved": used, "available": max(annual - used, 0)}
-
-    def ensure_budget(self, request: dict, proposed_sum_plan: float) -> None:
-        snapshot = self.unit_budget(request["unit_id"], exclude_request_id=request["id"])
-        if snapshot["reserved"] + proposed_sum_plan > snapshot["annual_budget"]:
-            raise HTTPException(status_code=400, detail="Будет превышен годовой бюджет подразделения")
-
     def public_request(self, request: dict, summary: dict | None = None) -> dict:
         return {
             **request,
             "total_approved_sum": request.get("sum_fact", 0),
             "summary": summary,
-            "unit_budget": self.unit_budget(request["unit_id"], exclude_request_id=request["id"]),
+            "unit_budget": {"annual_budget": float(get_required(self.repo, "units", request["unit_id"]).get("annual_budget") or 0)},
         }
 
     def summary(self, request_id: str) -> dict:
@@ -217,7 +200,6 @@ class RequestService:
         items = self._items(request_id)
         if not items:
             raise HTTPException(status_code=400, detail="Нельзя отправить заявку без строк")
-        self.ensure_budget(request, self.summary(request_id)["planned_sum"])
         economist_id = request.get("economist_id") or self._assigned_economist_id(request["unit_id"])
         if not economist_id:
             raise HTTPException(status_code=400, detail="К подразделению не назначен экономист")
@@ -267,6 +249,7 @@ class RequestService:
             raise HTTPException(status_code=400, detail="Перед завершением необходимо рассмотреть все строки заявки")
         self.recalculate_total(request_id)
         updated = self.repo.update("requests", request_id, {"status": self.status_from_items(items)})
+        sync_annual_budgets(self.repo)
         self.log(user, request_id, "finalized", before=request, after=updated)
         return self.public_request(updated, self.summary(request_id))
 
@@ -280,6 +263,7 @@ class RequestService:
         if request["status"] not in {RequestStatus.approved, RequestStatus.approved_with_changes, RequestStatus.partially_approved, RequestStatus.rejected}:
             raise HTTPException(status_code=400, detail="Вернуть на рассмотрение можно только завершённую заявку")
         updated = self.repo.update("requests", request_id, {"status": RequestStatus.on_review})
+        sync_annual_budgets(self.repo)
         self.log(user, request_id, "reopened", before=request, after=updated)
         return self.public_request(updated, self.summary(request_id))
 

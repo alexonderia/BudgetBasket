@@ -53,8 +53,6 @@ class BudgetItemService:
         kind, article_id = self._validate_article(request, payload)
         if not payload["name"].strip():
             raise HTTPException(status_code=400, detail="Укажите наименование строки заявки")
-        projected = self.requests.summary(request_id)["planned_sum"] + float(payload["sum_plan"])
-        self.requests.ensure_budget(request, projected)
         item = {
             "request_id": request_id,
             "dds_id": article_id if kind == "dds" else None,
@@ -122,9 +120,6 @@ class BudgetItemService:
                 kind, article_id = self._validate_article(request, candidate)
                 normalized["dds_id"] = article_id if kind == "dds" else None
                 normalized["invest_id"] = article_id if kind == "invest" else None
-            if "sum_plan" in normalized:
-                proposed = self.requests.summary(request["id"])["planned_sum"] - float(item["sum_plan"]) + float(normalized["sum_plan"])
-                self.requests.ensure_budget(request, proposed)
             if "name" in normalized:
                 normalized["name"] = normalized["name"].strip()
             if "justification" in normalized:

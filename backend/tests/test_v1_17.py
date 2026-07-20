@@ -62,7 +62,7 @@ def test_request_line_cannot_use_catalog_entry_from_another_department(tmp_path)
     admin = auth(client, "admin", "admin")
     other_unit = client.post(
         "/units",
-        json={"name": "Other department", "type": "department", "parent_id": None, "is_active": True, "annual_budget": 1_000_000},
+        json={"name": "Other department", "type": "department", "parent_id": None, "is_active": True},
         headers=admin,
     )
     assert other_unit.status_code == 200

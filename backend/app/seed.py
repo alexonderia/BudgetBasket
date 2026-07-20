@@ -35,9 +35,9 @@ def seed_data(repo: Repository) -> None:
         {"user_id": EMPLOYEE_ID, "name": "Иван", "second_name": "Петрович", "last_name": "Сотрудник", "phone": "+7 900 000-00-03", "email": "employee@example.local", "max_link": ""},
     ])
     repo.save_all("units", [
-        {"id": DEPARTMENT_ID, "parent_id": None, "name": "Департамент цифровых продуктов", "is_active": True, "uses_invest_projects": False, "annual_budget": 2_000_000},
-        {"id": MODULE_ALPHA_ID, "parent_id": DEPARTMENT_ID, "name": "Модуль клиентского кабинета", "is_active": True, "uses_invest_projects": False, "annual_budget": 1_000_000},
-        {"id": MODULE_BETA_ID, "parent_id": DEPARTMENT_ID, "name": "Модуль аналитики", "is_active": True, "uses_invest_projects": True, "annual_budget": 1_500_000},
+        {"id": DEPARTMENT_ID, "parent_id": None, "name": "Департамент цифровых продуктов", "is_active": True, "uses_invest_projects": False, "annual_budget": 0},
+        {"id": MODULE_ALPHA_ID, "parent_id": DEPARTMENT_ID, "name": "Модуль клиентского кабинета", "is_active": True, "uses_invest_projects": False, "annual_budget": 0},
+        {"id": MODULE_BETA_ID, "parent_id": DEPARTMENT_ID, "name": "Модуль аналитики", "is_active": True, "uses_invest_projects": True, "annual_budget": 0},
     ])
     repo.save_all("units_responsibles", [
         {"unit_id": MODULE_ALPHA_ID, "user_id": EMPLOYEE_ID, "is_active": True},

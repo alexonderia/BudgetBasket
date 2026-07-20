@@ -18,7 +18,9 @@ class UnitService:
     def create_unit(self, user: dict, payload: dict) -> dict:
         require_role(user, "admin")
         payload = {key: value for key, value in payload.items() if key != "type"}
-        return self.enrich_unit(self.repo.create("units", payload))
+        payload["annual_budget"] = 0
+        unit = self.repo.create("units", payload)
+        return self.enrich_unit(unit)
 
     def update_unit(self, user: dict, unit_id: str, patch: dict) -> dict:
         require_role(user, "admin")
@@ -40,7 +42,8 @@ class UnitService:
                             status_code=400,
                             detail="Нельзя изменить тип строк, пока у подразделения есть активные строки другого типа",
                         )
-        return self.enrich_unit(self.repo.update("units", unit_id, patch))
+        updated = self.repo.update("units", unit_id, patch)
+        return self.enrich_unit(updated)
 
     def delete_unit(self, user: dict, unit_id: str) -> None:
         require_role(user, "admin")

@@ -89,6 +89,13 @@ python -m alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
+Structural migrations run automatically with the backend. Data migrations that transform existing records are run separately and are tracked in `alembic_data_version`:
+
+```powershell
+cd backend
+python -m alembic -c alembic-data.ini upgrade head
+```
+
 Frontend:
 
 ```powershell

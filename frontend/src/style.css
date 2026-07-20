@@ -867,8 +867,10 @@
     z-index: 2;
     box-sizing: border-box;
     width: 250px;
-    min-height: 156px;
     padding: 12px;
+    display: grid;
+    grid-template-rows: 48px 32px minmax(32px, auto);
+    align-content: start;
   }
 
   .org-unit-card.is-child {
@@ -912,6 +914,7 @@
   .org-unit-heading {
     height: 48px;
     padding-right: 32px;
+    overflow: hidden;
   }
 
   .org-unit-title {
@@ -921,6 +924,15 @@
     overflow: hidden;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
+  }
+
+  .org-unit-budget {
+    display: block;
+    min-width: 0;
+    line-height: 24px !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .org-unit-role,
@@ -1020,19 +1032,28 @@
   }
 
   .org-people-section {
-    margin-top: 10px;
+    margin-top: 0;
+    min-width: 0;
+  }
+
+  .org-card-meta {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(100px, auto);
+    align-items: center;
+    column-gap: 8px;
+    min-height: 32px;
   }
 
   .org-unit-status {
-    min-height: 24px;
-    height: auto;
-    margin-top: 2px;
+    min-height: 32px;
+    align-items: center;
+    margin-top: 0;
     flex-wrap: wrap;
     row-gap: 6px;
   }
 
   .org-people-toggle {
-    width: 100%;
+    width: auto;
     justify-content: space-between !important;
     min-width: 0 !important;
     padding: 2px 0 !important;
