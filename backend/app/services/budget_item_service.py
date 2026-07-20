@@ -86,8 +86,14 @@ class BudgetItemService:
             raise HTTPException(status_code=403, detail="Экономист не может изменять поля сотрудника")
         status = allowed.get("status", item["status"])
         sum_fact = allowed.get("sum_fact", item.get("sum_fact"))
-        if status == ItemStatus.deleted:
-            raise HTTPException(status_code=400, detail="Удалить строку заявки может только сотрудник")
+        if status in {ItemStatus.on_review, ItemStatus.rejected, ItemStatus.deleted}:
+            allowed["sum_fact"] = 0
+            if status == ItemStatus.deleted:
+                allowed["sum_plan"] = 0
+            return allowed
+        if status == ItemStatus.approved:
+            allowed["sum_fact"] = item["sum_plan"]
+            return allowed
         if status == ItemStatus.approved:
             if sum_fact in (None, 0):
                 allowed["sum_fact"] = item["sum_plan"]
@@ -126,9 +132,13 @@ class BudgetItemService:
                 normalized["justification"] = normalized["justification"].strip()
         if not normalized:
             return item
-        updated = self.repo.update("req_items", item_id, normalized)
+        effective = {key: value for key, value in normalized.items() if item.get(key) != value}
+        if not effective:
+            return item
+        updated = self.repo.update("req_items", item_id, effective)
         self.requests.recalculate_total(item["request_id"])
-        self.requests.log(user, item["request_id"], "line_updated", entity="req_item", entity_id=item_id, before=item, after=updated)
+        action = "line_deleted" if updated.get("status") == ItemStatus.deleted else "line_updated"
+        self.requests.log(user, item["request_id"], action, entity="req_item", entity_id=item_id, before=item, after=updated)
         return updated
 
     def delete_item(self, user: dict, item_id: str) -> dict:
@@ -138,7 +148,7 @@ class BudgetItemService:
         self.permissions.require_employee_edit_request(user, request)
         if item.get("status") == ItemStatus.deleted:
             return item
-        updated = self.repo.update("req_items", item_id, {"status": ItemStatus.deleted, "sum_fact": 0})
+        updated = self.repo.update("req_items", item_id, {"status": ItemStatus.deleted, "sum_plan": 0, "sum_fact": 0})
         self.requests.recalculate_total(item["request_id"])
         self.requests.log(user, item["request_id"], "line_deleted", entity="req_item", entity_id=item_id, before=item, after=updated)
         return updated

@@ -22,6 +22,13 @@ def test_annual_budget_is_formed_from_approved_closed_request_lines(tmp_path):
         json={"status": "approved_with_changes", "sum_fact": 750},
         headers=economist,
     ).status_code == 200
+    approved = client.patch(f"/items/{item_id}", json={"status": "approved"}, headers=economist)
+    assert approved.status_code == 200
+    assert approved.json()["sum_fact"] == approved.json()["sum_plan"]
+    back_to_review = client.patch(f"/items/{item_id}", json={"status": "on_review"}, headers=economist)
+    assert back_to_review.status_code == 200
+    assert back_to_review.json()["sum_fact"] == 0
+    assert client.patch(f"/items/{item_id}", json={"status": "approved_with_changes", "sum_fact": 750}, headers=economist).status_code == 200
     assert client.post(f"/requests/{request['id']}/finalize", headers=economist).status_code == 200
 
     units = {unit["id"]: unit for unit in client.get("/units", headers=employee).json()}

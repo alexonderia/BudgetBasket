@@ -64,7 +64,7 @@ def create_app(*, repository: Repository | None = None, settings: Settings | Non
     app.state.chat_service = ChatService(repository, permissions, request_service)
     app.state.chat_connections = ChatConnectionManager()
     app.state.file_guard_client = file_guard
-    app.state.file_service = FileService(repository, permissions, upload_dir, settings, file_guard)
+    app.state.file_service = FileService(repository, permissions, upload_dir, settings, file_guard, request_service=request_service)
     app.state.excel_service = ExcelService(repository, permissions, request_service, app.state.file_service, export_dir, file_guard)
     app.add_middleware(
         CORSMiddleware,

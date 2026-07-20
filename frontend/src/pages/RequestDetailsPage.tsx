@@ -3,6 +3,8 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
@@ -11,6 +13,9 @@ import SendIcon from '@mui/icons-material/Send';
 import UndoIcon from '@mui/icons-material/Undo';
 import CloseIcon from '@mui/icons-material/Close';
 import Alert from '@mui/material/Alert';
+import Accordion from '@mui/material/Accordion';
+import AccordionDetails from '@mui/material/AccordionDetails';
+import AccordionSummary from '@mui/material/AccordionSummary';
 import Avatar from '@mui/material/Avatar';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
@@ -43,7 +48,7 @@ import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
 import type { BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, Profile, Unit, User } from '../types';
 import { CLOSED_REQUEST_STATUSES } from '../types';
 import { downloadAuthorized, downloadBlob } from '../utils/download';
-import { itemStatusLabels, money } from '../utils/labels';
+import { itemStatusLabels, money, requestStatusLabels } from '../utils/labels';
 import { normalizePositiveAmount } from '../utils/validation';
 
 const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
@@ -147,6 +152,14 @@ function reviewValidationError(item: BudgetItem, draft: Partial<BudgetItem>) {
   return '';
 }
 
+function hasEffectiveItemChanges(item: BudgetItem, draft: Partial<BudgetItem>) {
+  return Object.entries(draft).some(([field, value]) => {
+    const original = item[field as keyof BudgetItem];
+    if (typeof value === 'number' && typeof original === 'number') return value !== original;
+    return value !== original;
+  });
+}
+
 function categoryName(catalog: CatalogItem[], articleId?: string | null) {
   const item = catalog.find((entry) => entry.id === articleId);
   if (!item?.parent_id) return '—';
@@ -172,6 +185,106 @@ type RequestChat = {
   participants: { user_id: string; last_read_message_id: string | null }[];
   messages: ChatMessage[];
 };
+type RequestLog = {
+  id: number;
+  created_at: string;
+  user: { id: string; login: string; role: User['role']; profile?: Profile | null } | null;
+  subject: { type: 'request_line'; name: string | null; article: string | null; category: string | null } | null;
+  log: {
+    action: string;
+    entity: string;
+    changes: Record<string, { from: unknown; to: unknown }>;
+  };
+};
+
+const historyActionLabels: Record<string, string> = {
+  created: 'Заявка создана',
+  submitted: 'Заявка отправлена на рассмотрение',
+  withdrawn: 'Заявка отозвана в черновик',
+  cancelled: 'Заявка отменена',
+  review_started: 'Начато рассмотрение заявки',
+  finalized: 'Рассмотрение заявки завершено',
+  reopened: 'Заявка возвращена на рассмотрение',
+  frozen: 'Бюджет зафиксирован',
+  unfrozen: 'Бюджет разморожен',
+  line_created: 'Создана строка заявки',
+  line_updated: 'Изменена строка заявки',
+  line_deleted: 'Удалена строка заявки',
+  file_attached: 'Добавлен файл',
+  file_deleted: 'Удалён файл',
+  chat_message_sent: 'Отправлено сообщение в чат',
+};
+
+const historyFieldLabels: Record<string, string> = {
+  name: 'Наименование',
+  justification: 'Обоснование',
+  sum_plan: 'Плановая сумма',
+  sum_fact: 'Утверждённая сумма',
+  status: 'Статус',
+  comment: 'Комментарий',
+  frozen: 'Фиксация бюджета',
+  dds_id: 'Статья ДДС',
+  invest_id: 'Инвест-проект',
+  text: 'Текст сообщения',
+};
+
+const technicalHistoryFields = new Set([
+  'id', 'item_id', 'request_id', 'req_id', 'unit_id', 'economist_id', 'created_at', 'updated_at',
+]);
+
+function historyActorName(actor: RequestLog['user']) {
+  if (!actor) return 'Неизвестный пользователь';
+  const profile = actor.profile;
+  return [profile?.last_name, profile?.name, profile?.second_name].filter(Boolean).join(' ') || actor.login;
+}
+
+function historyValue(value: unknown, field: string, entity: string) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (field === 'sum_plan' || field === 'sum_fact') return money(Number(value));
+  if (field === 'status' && typeof value === 'string') {
+    return entity === 'req_item'
+      ? itemStatusLabels[value as ItemStatus] || value
+      : requestStatusLabels[value as keyof typeof requestStatusLabels] || value;
+  }
+  if (field === 'frozen') return value ? 'Зафиксирован' : 'Разморожен';
+  return String(value);
+}
+
+function historyChanges(entry: RequestLog) {
+  return Object.entries(entry.log.changes || {})
+    .filter(([field]) => !technicalHistoryFields.has(field))
+    .map(([field, change]) => ({
+      field: historyFieldLabels[field] || field,
+      from: historyValue(change.from, field, entry.log.entity),
+      to: historyValue(change.to, field, entry.log.entity),
+    }));
+}
+
+type HistoryChange = { field: string; from: string; to: string };
+
+function HistoryChangeList({ changes, heading = false }: { changes: HistoryChange[]; heading?: boolean }) {
+  return (
+    <Stack className="request-history-changes" spacing={0.75}>
+      {heading && (
+        <Stack className="request-history-changes-heading" direction="row" justifyContent="space-between" alignItems="center">
+          <Typography variant="caption" fontWeight={700}>Изменения</Typography>
+          <Typography variant="caption" color="text.secondary">{changes.length} {changes.length === 1 ? 'поле' : 'поля'}</Typography>
+        </Stack>
+      )}
+      {changes.map((change) => (
+        <Box key={change.field} className="request-history-change">
+          <Typography className="request-history-change-label" variant="caption" color="text.secondary">{change.field}</Typography>
+          <Stack direction="row" spacing={0.75} alignItems="baseline" flexWrap="wrap" useFlexGap>
+            <Typography className="request-history-change-old" variant="body2">{change.from}</Typography>
+            <Typography variant="caption" color="text.secondary">→</Typography>
+            <Typography className="request-history-change-new" variant="body2">{change.to}</Typography>
+          </Stack>
+        </Box>
+      ))}
+      {!changes.length && <Typography variant="body2" color="text.secondary">Изменений полей нет.</Typography>}
+    </Stack>
+  );
+}
 
 function contactName(contact: CounterpartyContact) {
   const profile = contact.profile;
@@ -728,7 +841,10 @@ function ItemsTable({
         <TableBody>
           {items.map((item) => {
             const local = drafts[item.id] || {};
-            const hasDraftChanges = Object.keys(local).length > 0;
+            const isDeleted = item.status === 'deleted';
+            const draftStatus = local.status || item.status;
+            const factIsAutomatic = ['on_review', 'rejected', 'approved', 'deleted'].includes(draftStatus);
+            const hasDraftChanges = hasEffectiveItemChanges(item, local);
             const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
             const catalogEntry = catalog.find((entry) => entry.id === catalogId);
             const inactiveCatalogSelection = isInactiveCatalogSelection(catalog, catalogId);
@@ -738,12 +854,15 @@ function ItemsTable({
             return (
               <TableRow
                 key={item.id}
-                className={inactiveCatalogSelection ? 'inactive-catalog-item' : ''}
-                sx={inactiveCatalogSelection ? { '& > .MuiTableCell-root': { bgcolor: 'rgba(237, 108, 2, 0.08)' } } : undefined}
+                className={[inactiveCatalogSelection && 'inactive-catalog-item', isDeleted && 'deleted-request-item'].filter(Boolean).join(' ')}
+                sx={{
+                  ...(inactiveCatalogSelection ? { '& > .MuiTableCell-root': { bgcolor: 'rgba(237, 108, 2, 0.08)' } } : {}),
+                  ...(isDeleted ? { '& > .MuiTableCell-root': { bgcolor: 'action.hover', color: 'text.secondary' } } : {}),
+                }}
               >
                 <TableCell sx={{ px: 1, py: 1 }}>{categoryName(catalog, catalogId)}</TableCell>
                 <TableCell sx={{ px: 1, py: 1 }}>
-                  {isEmployeeEditing ? (
+                  {isEmployeeEditing && !isDeleted ? (
                     <TextField
                       select
                       size="small"
@@ -777,7 +896,7 @@ function ItemsTable({
                   {item.justification || '—'}
                 </TableCell>
                 <TableCell sx={{ px: 1, py: 1 }}>
-                  {isEmployeeEditing ? (
+                  {isEmployeeEditing && !isDeleted ? (
                     <TextField
                       size="small"
                       type="number"
@@ -793,14 +912,18 @@ function ItemsTable({
                   )}
                 </TableCell>
                 <TableCell sx={{ px: 1, py: 1 }}>
-                  {canEconomist ? (
+                  {canEconomist && !isDeleted ? (
                     <TextField
                       select
                       size="small"
                       value={local.status || item.status}
-                      onChange={(event) =>
-                        setDrafts({ ...drafts, [item.id]: { ...local, status: event.target.value as ItemStatus } })
-                      }
+                      onChange={(event) => {
+                        const status = event.target.value as ItemStatus;
+                        const next = { ...local, status };
+                        if (['on_review', 'rejected', 'deleted'].includes(status)) next.sum_fact = 0;
+                        if (status === 'approved') next.sum_fact = item.sum_plan;
+                        setDrafts({ ...drafts, [item.id]: next });
+                      }}
                       sx={{ width: '100%', minWidth: 0 }}
                     >
                       {Object.entries(itemStatusLabels).map(([value, label]) => (
@@ -814,11 +937,12 @@ function ItemsTable({
                   )}
                 </TableCell>
                 <TableCell sx={{ px: 1, py: 1 }}>
-                  {canEconomist ? (
+                  {canEconomist && !isDeleted ? (
                     <TextField
                       size="small"
                       type="number"
                       value={local.sum_fact ?? item.sum_fact ?? ''}
+                      disabled={factIsAutomatic}
                       onChange={(event) =>
                         setDrafts({
                           ...drafts,
@@ -834,7 +958,7 @@ function ItemsTable({
                   )}
                 </TableCell>
                 <TableCell sx={{ px: 1, py: 1 }}>
-                  {canEconomist ? (
+                  {canEconomist && !isDeleted ? (
                     <TextField
                       size="small"
                       value={local.comment ?? item.comment ?? ''}
@@ -849,7 +973,7 @@ function ItemsTable({
                   <ItemFilesCell
                     kind={kind}
                     itemId={item.id}
-                    editing={isEmployeeEditing}
+                    editing={isEmployeeEditing && !isDeleted}
                     stagedFiles={stagedFiles}
                     pendingDeletedFileIds={pendingDeletedFileIds}
                     onRemoveStagedFile={(file) =>
@@ -870,18 +994,18 @@ function ItemsTable({
                         [item.id]: (current[item.id] || []).filter((id) => id !== fileId),
                       }))
                     }
-                    disabled={saveEmployeeChanges.isPending}
+                    disabled={saveEmployeeChanges.isPending || isDeleted}
                   />
                 </TableCell>
                 <TableCell align="center" sx={{ px: 1, py: 1 }}>
                   <Stack direction="row" spacing={0.5} justifyContent="center" alignItems="center">
-                    {isEmployeeEditing && (
+                    {isEmployeeEditing && !isDeleted && (
                       <FileAttachAction
                         disabled={saveEmployeeChanges.isPending}
                         onUpload={(file) => stageFile(item.id, file)}
                       />
                     )}
-                    {canEconomist ? (
+                    {canEconomist && !isDeleted ? (
                       <Tooltip title={validationError || 'Сохранить изменения строки'}>
                         <IconButton
                           size="small"
@@ -893,7 +1017,7 @@ function ItemsTable({
                           <SaveOutlinedIcon fontSize="small" />
                         </IconButton>
                       </Tooltip>
-                    ) : employeeCanEdit && !isEmployeeEditing ? (
+                    ) : employeeCanEdit && !isEmployeeEditing && !isDeleted ? (
                       <>
                         <Tooltip title="Удалить строку">
                           <IconButton
@@ -906,7 +1030,7 @@ function ItemsTable({
                           </IconButton>
                         </Tooltip>
                       </>
-                    ) : canDeleteItem && !isEmployeeEditing ? (
+                    ) : canDeleteItem && !isEmployeeEditing && !isDeleted ? (
                       <Tooltip title="Удалить строку">
                         <IconButton
                           size="small"
@@ -950,6 +1074,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const detailsKey = ['request-details', id];
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'withdraw' | 'approve-all-items' | null>(null);
 
   const { data: request } = useQuery({
@@ -972,8 +1097,8 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   });
   const { data: logs = [] } = useQuery({
     queryKey: [...detailsKey, 'logs'],
-    queryFn: async () => (await api.get<{ id: number; created_at: string; log: { action: string; changes: Record<string, unknown> } }[]>(`/requests/${id}/logs`)).data,
-    enabled: !!request && user.role === 'admin',
+    queryFn: async () => (await api.get<RequestLog[]>(`/requests/${id}/logs`)).data,
+    enabled: !!request,
   });
   const [chatText, setChatText] = useState('');
   const chatMessagesRef = useRef<HTMLDivElement>(null);
@@ -1110,20 +1235,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const activeKind = usesInvestProjects ? 'invest' : 'dds';
   const activeCatalog = usesInvestProjects ? investCatalog : ddsCatalog;
   const visibleItems = useMemo(
-    () => requestItems.filter((item) => item.status !== 'deleted' && (usesInvestProjects ? !!item.invest_id : !!item.dds_id)),
+    () => requestItems.filter((item) => usesInvestProjects ? !!item.invest_id : !!item.dds_id),
     [requestItems, usesInvestProjects],
   );
-  const allItems = visibleItems;
+  const allItems = visibleItems.filter((item) => item.status !== 'deleted');
   const deletePreviewRows = useMemo(() => {
     const rows = [
-      ...visibleItems.map((item) => ({
+      ...allItems.map((item) => ({
         kind: usesInvestProjects ? 'Инвест' : 'ДДС',
         name: activeCatalog.find((entry) => entry.id === (usesInvestProjects ? item.invest_id : item.dds_id))?.name || item.name,
         sum: item.sum_plan,
       })),
     ];
     return rows.slice(0, 5);
-  }, [activeCatalog, usesInvestProjects, visibleItems]);
+  }, [activeCatalog, allItems, usesInvestProjects]);
   const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.frozen && allItems.length > 0;
   const canWithdraw = user.role === 'employee' && request && request.status === 'on_review' && !request.frozen;
   const canCancel = user.role === 'employee' && request && request.status === 'on_review' && !request.frozen;
@@ -1163,6 +1288,9 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 </Stack>
                 <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ width: { xs: '100%', sm: 'auto' } }}>
                   <Stack className="request-summary-actions" direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
+                    <Button startIcon={<HistoryOutlinedIcon />} variant="outlined" onClick={() => setHistoryOpen(true)}>
+                      История изменений
+                    </Button>
                     {canFreezeBudget && (
                       <Button startIcon={<LockOutlinedIcon />} variant="outlined" onClick={() => lifecycle.mutate('freeze-budget')}>
                         Зафиксировать бюджет
@@ -1366,15 +1494,65 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           )}
         </Drawer>}
 
-        {user.role === 'admin' && (
-          <Paper className="surface-pad" elevation={0}>
-            <Typography variant="h6" sx={{ mb: 1 }}>Журнал изменений</Typography>
-            <Stack spacing={0.75}>
-              {logs.map((entry) => <Typography key={entry.id} variant="body2">{new Date(entry.created_at).toLocaleString('ru-RU')} — {entry.log.action}</Typography>)}
-              {!logs.length && <Typography color="text.secondary">Изменений пока нет.</Typography>}
-            </Stack>
-          </Paper>
-        )}
+        <Drawer anchor="right" open={historyOpen} onClose={() => setHistoryOpen(false)} PaperProps={{ className: 'request-history-drawer' }}>
+          <Stack className="request-chat-header" direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
+            <Box>
+              <Typography variant="h6">История изменений</Typography>
+              <Typography variant="body2" color="text.secondary">Все события по заявке</Typography>
+            </Box>
+            <IconButton onClick={() => setHistoryOpen(false)} aria-label="Закрыть историю изменений"><CloseIcon /></IconButton>
+          </Stack>
+          <Stack sx={{ px: 2.5, overflowY: 'auto' }}>
+            {logs.map((entry) => {
+              const changes = historyChanges(entry);
+              const isLineChange = !!entry.subject;
+              const content = (
+                <Stack className="request-history-entry-content" spacing={0.25}>
+                  <Typography className="request-history-kind" variant="overline" color="text.secondary" lineHeight={1.2}>{isLineChange ? 'Строка заявки' : 'Заявка'}</Typography>
+                  <Typography className="request-history-action" fontWeight={700} lineHeight={1.35}>{historyActionLabels[entry.log.action] || entry.log.action}</Typography>
+                  <Typography className="request-history-meta" variant="caption" color="text.secondary">
+                    {new Date(entry.created_at).toLocaleString('ru-RU')} · {historyActorName(entry.user)}
+                  </Typography>
+                  {isLineChange && (
+                    <>
+                      <Typography className="request-history-subject" variant="body2" sx={{ pt: 0.5 }}>
+                        <Box component="span" color="text.secondary">Строка: </Box>
+                        <Box component="span" fontWeight={700}>{entry.subject?.name || 'Наименование не указано'}</Box>
+                      </Typography>
+                      {(entry.subject?.category || entry.subject?.article) && (
+                        <Typography className="request-history-context" variant="caption" color="text.secondary">
+                          {[entry.subject?.category, entry.subject?.article].filter(Boolean).join(' · ')}
+                        </Typography>
+                      )}
+                    </>
+                  )}
+                </Stack>
+              );
+
+              return isLineChange && changes.length > 0 ? (
+                <Accordion key={entry.id} disableGutters elevation={0} sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'transparent', '&:before': { display: 'none' } }}>
+                  <AccordionSummary
+                    expandIcon={<ExpandMoreIcon fontSize="small" />}
+                    aria-controls={`request-log-${entry.id}-changes`}
+                    id={`request-log-${entry.id}-header`}
+                    sx={{ px: 0, py: 1.25, '& .MuiAccordionSummary-content': { my: 0 }, '& .MuiAccordionSummary-content.Mui-expanded': { my: 0 } }}
+                  >
+                    {content}
+                  </AccordionSummary>
+                  <AccordionDetails id={`request-log-${entry.id}-changes`} sx={{ px: 0, pt: 0, pb: 1.5 }}>
+                    <HistoryChangeList changes={changes} heading />
+                  </AccordionDetails>
+                </Accordion>
+              ) : (
+                <Box key={entry.id} sx={{ py: 1.5, borderBottom: 1, borderColor: 'divider' }}>
+                  {content}
+                  {!isLineChange && <HistoryChangeList changes={changes} />}
+                </Box>
+              );
+            })}
+            {!logs.length && <Typography sx={{ py: 2 }} color="text.secondary">Изменений пока нет.</Typography>}
+          </Stack>
+        </Drawer>
 
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
           <ItemsTable title={usesInvestProjects ? 'Строки инвест-проектов' : 'Строки ДДС'} kind={activeKind} request={request} user={user} items={visibleItems} catalog={activeCatalog} />

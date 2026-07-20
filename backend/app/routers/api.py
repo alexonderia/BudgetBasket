@@ -370,7 +370,66 @@ def delete_request_item_file(request: Request, item_id: str, file_id: str, user:
 def request_logs(request: Request, request_id: str, user: User):
     budget_request = request.app.state.request_service.get_request(user, request_id)
     logs = [item for item in request.app.state.repo.load_all("req_logs") if item.get("req_id") == budget_request["id"]]
-    return sorted(logs, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    users = {item["id"]: item for item in request.app.state.repo.load_all("users")}
+    profiles = {item["user_id"]: item for item in request.app.state.repo.load_all("profiles")}
+    request_items = {item["id"]: item for item in request.app.state.repo.load_all("req_items") if item.get("request_id") == budget_request["id"]}
+    catalogs = {
+        "dds_id": {item["id"]: item for item in request.app.state.repo.load_all("dds_catalog")},
+        "invest_id": {item["id"]: item for item in request.app.state.repo.load_all("invests_catalog")},
+    }
+
+    def catalog_name(field: str, item_id: str | None) -> str | None:
+        if item_id is None:
+            return None
+        return catalogs[field].get(item_id, {}).get("name", item_id)
+
+    def request_line_context(log: dict) -> dict | None:
+        changes = log.get("changes") or {}
+        item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
+        if not item_id:
+            item_change = changes.get("item_id") or {}
+            item_id = item_change.get("to") or item_change.get("from")
+        item = request_items.get(item_id) if item_id else None
+        if not item:
+            return None
+        article_field = "dds_id" if item.get("dds_id") else "invest_id"
+        article = catalogs[article_field].get(item.get(article_field), {})
+        category = catalogs[article_field].get(article.get("parent_id"), {})
+        return {
+            "type": "request_line",
+            "name": item.get("name") or changes.get("name", {}).get("to") or changes.get("name", {}).get("from"),
+            "article": article.get("name"),
+            "category": category.get("name"),
+        }
+
+    result = []
+    for item in logs:
+        actor = users.get(item.get("user_id"))
+        log = item.get("log") or {}
+        changes = {field: dict(change) for field, change in (log.get("changes") or {}).items()}
+        for field in ("dds_id", "invest_id"):
+            if field in changes:
+                changes[field]["from"] = catalog_name(field, changes[field].get("from"))
+                changes[field]["to"] = catalog_name(field, changes[field].get("to"))
+        public_log = {**log, "changes": changes}
+        result.append(
+            {
+                **item,
+                "log": public_log,
+                "subject": request_line_context(public_log),
+                "user": (
+                    {
+                        "id": actor["id"],
+                        "login": actor["login"],
+                        "role": actor["role"],
+                        "profile": profiles.get(actor["id"]),
+                    }
+                    if actor
+                    else None
+                ),
+            }
+        )
+    return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
 @router.get("/requests/{request_id}/chat")

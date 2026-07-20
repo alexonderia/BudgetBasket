@@ -27,6 +27,8 @@ def test_request_lines_chat_logs_and_budget_mode(tmp_path):
     deleted = client.delete(f"/items/{line.json()['id']}", headers=employee)
     assert deleted.status_code == 200
     assert deleted.json()["status"] == "deleted"
+    assert deleted.json()["sum_plan"] == 0
+    assert deleted.json()["sum_fact"] == 0
 
     line = client.post(
         f"/requests/{request['id']}/items",
@@ -35,6 +37,21 @@ def test_request_lines_chat_logs_and_budget_mode(tmp_path):
     )
     assert line.status_code == 200
     assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+    logs_before_noop = client.get(f"/requests/{request['id']}/logs", headers=employee).json()
+    noop = client.patch(f"/items/{line.json()['id']}", json={"status": "on_review"}, headers=economist)
+    assert noop.status_code == 200
+    logs_after_noop = client.get(f"/requests/{request['id']}/logs", headers=employee).json()
+    assert len(logs_after_noop) == len(logs_before_noop)
+
+    removed_by_economist = client.patch(
+        f"/items/{line.json()['id']}",
+        json={"status": "deleted"},
+        headers=economist,
+    )
+    assert removed_by_economist.status_code == 200
+    assert removed_by_economist.json()["status"] == "deleted"
+    assert removed_by_economist.json()["sum_plan"] == 0
+    assert removed_by_economist.json()["sum_fact"] == 0
 
     sent = client.post(f"/requests/{request['id']}/chat/messages", json={"text": "Нужна консультация"}, headers=employee)
     assert sent.status_code == 200
@@ -43,6 +60,15 @@ def test_request_lines_chat_logs_and_budget_mode(tmp_path):
     assert [message["text"] for message in chat.json()["messages"]] == ["Нужна консультация"]
     logs = client.get(f"/requests/{request['id']}/logs", headers=employee)
     assert {entry["log"]["action"] for entry in logs.json()} >= {"created", "line_created", "chat_message_sent"}
+    assert {entry["user"]["login"] for entry in logs.json()} == {"employee", "economist"}
+    assert any(entry["log"]["action"] == "line_deleted" and entry["user"]["login"] == "economist" for entry in logs.json())
+    line_log = next(entry for entry in logs.json() if entry["log"]["action"] == "line_created")
+    assert line_log["subject"] == {
+        "type": "request_line",
+        "name": line.json()["name"],
+        "article": "Лицензии и подписки",
+        "category": "Операционные расходы",
+    }
 
 def test_unit_mode_cannot_change_while_active_lines_exist(tmp_path):
     client = make_client(tmp_path)

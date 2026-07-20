@@ -390,6 +390,71 @@
     background: #f8fafc;
   }
 
+  .request-history-drawer {
+    width: min(460px, 100vw);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #f8fafc;
+  }
+
+  .request-history-entry-content {
+    min-width: 0;
+  }
+
+  .request-history-kind {
+    letter-spacing: 0.08em;
+    font-size: 0.68rem;
+    font-weight: 700;
+  }
+
+  .request-history-action {
+    color: var(--bb-ink);
+    font-size: 0.98rem;
+  }
+
+  .request-history-meta {
+    font-size: 0.76rem;
+  }
+
+  .request-history-subject {
+    margin-top: 2px;
+  }
+
+  .request-history-context {
+    display: block;
+    margin-top: 1px;
+  }
+
+  .request-history-changes {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-left: 2px solid var(--bb-primary);
+    background: rgba(47, 111, 237, 0.045);
+  }
+
+  .request-history-changes-heading {
+    padding-bottom: 5px;
+    border-bottom: 1px solid rgba(47, 111, 237, 0.15);
+    color: var(--bb-primary-dark);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .request-history-change-label {
+    display: block;
+    font-weight: 600;
+  }
+
+  .request-history-change-old {
+    color: var(--bb-muted);
+  }
+
+  .request-history-change-new {
+    color: var(--bb-ink);
+    font-weight: 700;
+  }
+
   .chat-inbox-list {
     flex: 1;
     overflow-y: auto;

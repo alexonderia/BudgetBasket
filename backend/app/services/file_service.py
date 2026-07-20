@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import hashlib
 import mimetypes
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile
@@ -13,17 +16,21 @@ from app.services.file_guard_client import FileGuardClient, require_valid_file
 from app.services.permission_service import PermissionService
 from app.storage import LocalObjectStorage, S3ObjectStorage
 
+if TYPE_CHECKING:
+    from app.services.request_service import RequestService
+
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class FileService:
-    def __init__(self, repo: Repository, permissions: PermissionService, upload_dir: str | Path, settings: Settings, file_guard: FileGuardClient, object_storage: LocalObjectStorage | S3ObjectStorage | None = None):
+    def __init__(self, repo: Repository, permissions: PermissionService, upload_dir: str | Path, settings: Settings, file_guard: FileGuardClient, object_storage: LocalObjectStorage | S3ObjectStorage | None = None, request_service: RequestService | None = None):
         self.repo = repo
         self.permissions = permissions
         self.settings = settings
         self.file_guard = file_guard
         self.object_storage = object_storage or (S3ObjectStorage(settings) if settings.use_s3 else LocalObjectStorage(upload_dir))
+        self.request_service = request_service
 
     def ensure_bucket(self) -> None:
         self.object_storage.ensure_bucket()
@@ -69,10 +76,19 @@ class FileService:
         return item, get_required(self.repo, "requests", item["request_id"])
 
     async def upload_for_item(self, user: dict, item_id: str, upload: UploadFile) -> dict:
-        _item, request = self._item_and_request(item_id)
+        item, request = self._item_and_request(item_id)
         self.permissions.require_employee_upload_file(user, request)
         file = await self._upload(upload)
         self._link_uploaded_file(user, item_id, file["id"])
+        if self.request_service:
+            self.request_service.log(
+                user,
+                request["id"],
+                "file_attached",
+                entity="file",
+                entity_id=str(file["id"]),
+                after={"name": file["original_name"], "item_id": item["id"]},
+            )
         return file
 
     def _link_uploaded_file(self, user: dict, item_id: str, file_id: str | int) -> dict:
@@ -85,15 +101,24 @@ class FileService:
         return self.repo.insert("req_item_files", {"file_id": file_id, "req_item_id": item_id})
 
     def delete_link(self, user: dict, item_id: str, file_id: str | int) -> None:
-        _item, request = self._item_and_request(item_id)
+        item, request = self._item_and_request(item_id)
         self.permissions.require_request_unfrozen(request)
         self.permissions.require_employee_upload_file(user, request)
         file_id = int(file_id) if str(file_id).isdigit() else file_id
         if not self.repo.delete_where("req_item_files", {"req_item_id": item_id, "file_id": file_id}):
             raise HTTPException(status_code=404, detail="Вложение не найдено")
+        file = get_required(self.repo, "files", file_id)
+        if self.request_service:
+            self.request_service.log(
+                user,
+                request["id"],
+                "file_deleted",
+                entity="file",
+                entity_id=str(file_id),
+                before={"name": file["original_name"], "item_id": item["id"]},
+            )
         if any(link.get("file_id") == file_id for link in self.repo.load_all("req_item_files")):
             return
-        file = get_required(self.repo, "files", file_id)
         storage_id = file["id_storage_object"]
         self.repo.delete("files", file_id)
         if not any(entry.get("id_storage_object") == storage_id for entry in self.repo.load_all("files")):
