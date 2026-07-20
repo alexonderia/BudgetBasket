@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 
+from app.models import RequestStatus
 from app.repositories.base import Repository
 from app.services.common import get_required
 from app.services.permission_service import PermissionService
@@ -20,6 +21,16 @@ class ChatService:
         }
         return employee_ids | ({request["economist_id"]} if request.get("economist_id") else set())
 
+    def notification_recipient_ids(self, request_id: str, sender_id: str) -> set[str]:
+        request = get_required(self.repo, "requests", request_id)
+        self._require_chat_available(request)
+        return self._participant_ids(request) - {sender_id}
+
+    @staticmethod
+    def _require_chat_available(request: dict) -> None:
+        if request.get("status") == RequestStatus.draft:
+            raise HTTPException(status_code=400, detail="Чат становится доступен после отправки заявки на рассмотрение")
+
     def _chat(self, request: dict) -> dict:
         chat = next((item for item in self.repo.load_all("req_chats") if item.get("req_id") == request["id"]), None)
         if chat:
@@ -37,6 +48,7 @@ class ChatService:
 
     def get_chat(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
+        self._require_chat_available(request)
         if user["role"] != "admin" and user["id"] not in self._participant_ids(request):
             raise HTTPException(status_code=403, detail="Нет доступа к чату этой заявки")
         chat = self._chat(request)
@@ -53,8 +65,61 @@ class ChatService:
         participants = [row for row in self.repo.load_all("chats_participants") if row.get("chat_id") == chat["id"]]
         return {"id": chat["id"], "request_id": request_id, "participants": participants, "messages": messages}
 
+    def list_chats(self, user: dict) -> list[dict]:
+        requests = {item["id"]: item for item in self.repo.load_all("requests")}
+        chats_by_request = {item["req_id"]: item for item in self.repo.load_all("req_chats")}
+        users = {item["id"]: item for item in self.repo.load_all("users")}
+        profiles = {item["user_id"]: item for item in self.repo.load_all("profiles")}
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+        participants_by_chat: dict[str, list[dict]] = {}
+        for participant in self.repo.load_all("chats_participants"):
+            participants_by_chat.setdefault(participant["chat_id"], []).append(participant)
+        messages_by_chat: dict[str, list[dict]] = {}
+        for message in self.repo.load_all("chat_messages"):
+            messages_by_chat.setdefault(message["chat_id"], []).append(message)
+
+        result = []
+        for request_id, request in requests.items():
+            if request.get("status") == RequestStatus.draft:
+                continue
+            if user["role"] != "admin" and user["id"] not in self._participant_ids(request):
+                continue
+            chat = chats_by_request.get(request_id)
+            if not chat:
+                continue
+            messages = sorted(messages_by_chat.get(chat["id"], []), key=lambda item: str(item.get("created_at") or ""))
+            participant = next((item for item in participants_by_chat.get(chat["id"], []) if item.get("user_id") == user["id"]), None)
+            last_read_id = participant.get("last_read_message_id") if participant else None
+            last_read_index = next((index for index, item in enumerate(messages) if item["id"] == last_read_id), -1)
+            unread_count = sum(1 for item in messages[last_read_index + 1 :] if item.get("sender_id") != user["id"])
+            last_message = messages[-1] if messages else None
+            result.append(
+                {
+                    "id": chat["id"],
+                    "request_id": request_id,
+                    "request_status": request.get("status"),
+                    "unit_name": units.get(request.get("unit_id"), {}).get("name", "Подразделение не указано"),
+                    "unread_count": unread_count,
+                    "last_message": (
+                        {
+                            **last_message,
+                            "sender": {
+                                "id": users.get(last_message["sender_id"], {}).get("id"),
+                                "login": users.get(last_message["sender_id"], {}).get("login"),
+                                "role": users.get(last_message["sender_id"], {}).get("role"),
+                                "profile": profiles.get(last_message["sender_id"]),
+                            },
+                        }
+                        if last_message
+                        else None
+                    ),
+                }
+            )
+        return sorted(result, key=lambda item: str((item["last_message"] or {}).get("created_at") or ""), reverse=True)
+
     def send(self, user: dict, request_id: str, payload: dict) -> dict:
         request = get_required(self.repo, "requests", request_id)
+        self._require_chat_available(request)
         chat = self._chat(request)
         self._require_participant(user, request, chat)
         if user["role"] == "admin":
@@ -74,6 +139,7 @@ class ChatService:
 
     def mark_read(self, user: dict, request_id: str, message_id: str | None) -> dict:
         request = get_required(self.repo, "requests", request_id)
+        self._require_chat_available(request)
         chat = self._chat(request)
         self._require_participant(user, request, chat)
         if message_id:

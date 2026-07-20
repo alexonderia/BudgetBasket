@@ -24,6 +24,18 @@ def test_request_lines_chat_logs_and_budget_mode(tmp_path):
     )
     assert wrong_kind.status_code == 400
 
+    deleted = client.delete(f"/items/{line.json()['id']}", headers=employee)
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "deleted"
+
+    line = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Продление лицензии", "sum_plan": 1000, "justification": "Для непрерывной работы"},
+        headers=employee,
+    )
+    assert line.status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
     sent = client.post(f"/requests/{request['id']}/chat/messages", json={"text": "Нужна консультация"}, headers=employee)
     assert sent.status_code == 200
     chat = client.get(f"/requests/{request['id']}/chat", headers=economist)
@@ -31,11 +43,6 @@ def test_request_lines_chat_logs_and_budget_mode(tmp_path):
     assert [message["text"] for message in chat.json()["messages"]] == ["Нужна консультация"]
     logs = client.get(f"/requests/{request['id']}/logs", headers=employee)
     assert {entry["log"]["action"] for entry in logs.json()} >= {"created", "line_created", "chat_message_sent"}
-
-    deleted = client.delete(f"/items/{line.json()['id']}", headers=employee)
-    assert deleted.status_code == 200
-    assert deleted.json()["status"] == "deleted"
-
 
 def test_unit_mode_cannot_change_while_active_lines_exist(tmp_path):
     client = make_client(tmp_path)

@@ -3,7 +3,6 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
-import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
@@ -35,8 +34,9 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { requestChatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
@@ -167,6 +167,10 @@ type ChatMessage = {
   text: string;
   created_at: string;
   sender: { id: string; login: string; role: 'economist' | 'employee'; profile?: Profile | null };
+};
+type RequestChat = {
+  participants: { user_id: string; last_read_message_id: string | null }[];
+  messages: ChatMessage[];
 };
 
 function contactName(contact: CounterpartyContact) {
@@ -939,6 +943,7 @@ function ItemsTable({
 
 export default function RequestDetailsPage({ user }: { user: User }) {
   const { id = '' } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useAppToast();
@@ -962,8 +967,8 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   });
   const { data: chat } = useQuery({
     queryKey: [...detailsKey, 'chat'],
-    queryFn: async () => (await api.get(`/requests/${id}/chat`)).data as { messages: ChatMessage[] },
-    enabled: !!request,
+    queryFn: async () => (await api.get(`/requests/${id}/chat`)).data as RequestChat,
+    enabled: !!request && request.status !== 'draft',
   });
   const { data: logs = [] } = useQuery({
     queryKey: [...detailsKey, 'logs'],
@@ -977,6 +982,67 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     const container = chatMessagesRef.current;
     if (container) container.scrollTop = container.scrollHeight;
   }, [chatMessages.length]);
+  const markChatRead = useMutation({
+    mutationFn: (messageId: string) => api.patch(`/requests/${id}/chat/read`, { last_read_message_id: messageId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [...detailsKey, 'chat'] }),
+  });
+  useEffect(() => {
+    if (!chatOpen || markChatRead.isPending) return;
+    const latestMessageId = chatMessages.at(-1)?.id;
+    const participant = chat?.participants.find((item) => item.user_id === user.id);
+    if (latestMessageId && participant?.last_read_message_id !== latestMessageId) {
+      markChatRead.mutate(latestMessageId);
+    }
+  }, [chat?.participants, chatMessages, chatOpen, markChatRead, user.id]);
+  const openChat = () => setChatOpen(true);
+  useEffect(() => {
+    if (!request || request.status === 'draft' || searchParams.get('chat') !== '1') return;
+    openChat();
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('chat');
+      return next;
+    }, { replace: true });
+  }, [request?.status, searchParams, setSearchParams]);
+  useEffect(() => {
+    const token = localStorage.getItem('budgetbasket_token');
+    if (!request?.id || request.status === 'draft' || !token) return;
+
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let disposed = false;
+    let reconnectDelay = 1_000;
+
+    const connect = () => {
+      socket = new WebSocket(requestChatWebSocketUrl(request.id, token));
+      socket.onopen = () => {
+        reconnectDelay = 1_000;
+        queryClient.invalidateQueries({ queryKey: ['request-details', id, 'chat'] });
+      };
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as { type?: string };
+          if (payload.type === 'chat.message.created') {
+            queryClient.invalidateQueries({ queryKey: ['request-details', id, 'chat'] });
+          }
+        } catch {
+          // Ignore malformed websocket messages and wait for the next event.
+        }
+      };
+      socket.onclose = () => {
+        if (disposed) return;
+        reconnectTimer = window.setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
+      };
+    };
+
+    connect();
+    return () => {
+      disposed = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [id, queryClient, request?.id, request?.status]);
   const sendChatMessage = useMutation({
     mutationFn: () => api.post(`/requests/${id}/chat/messages`, { text: chatText }),
     onSuccess: () => {
@@ -1097,9 +1163,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 </Stack>
                 <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ width: { xs: '100%', sm: 'auto' } }}>
                   <Stack className="request-summary-actions" direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
-                    <Button startIcon={<ForumOutlinedIcon />} variant="outlined" onClick={() => setChatOpen(true)}>
-                      Чат ({chatMessages.length})
-                    </Button>
                     {canFreezeBudget && (
                       <Button startIcon={<LockOutlinedIcon />} variant="outlined" onClick={() => lifecycle.mutate('freeze-budget')}>
                         Зафиксировать бюджет
@@ -1229,7 +1292,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           </Paper>
         ) : null}
 
-        <Drawer
+        {request.status !== 'draft' && <Drawer
           anchor="right"
           open={chatOpen}
           onClose={() => setChatOpen(false)}
@@ -1301,7 +1364,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               </Button>
             </Box>
           )}
-        </Drawer>
+        </Drawer>}
 
         {user.role === 'admin' && (
           <Paper className="surface-pad" elevation={0}>

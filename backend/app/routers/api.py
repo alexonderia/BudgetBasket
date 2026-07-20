@@ -3,7 +3,7 @@ from typing import Annotated
 from io import BytesIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.dependencies import current_user
@@ -378,14 +378,62 @@ def request_chat(request: Request, request_id: str, user: User):
     return request.app.state.chat_service.get_chat(user, request_id)
 
 
+@router.get("/chats")
+def list_chats(request: Request, user: User):
+    return request.app.state.chat_service.list_chats(user)
+
+
 @router.post("/requests/{request_id}/chat/messages")
-def send_chat_message(request: Request, request_id: str, payload: ChatMessageCreate, user: User):
-    return request.app.state.chat_service.send(user, request_id, payload.model_dump())
+async def send_chat_message(request: Request, request_id: str, payload: ChatMessageCreate, user: User):
+    message = request.app.state.chat_service.send(user, request_id, payload.model_dump())
+    await request.app.state.chat_connections.broadcast(
+        request_id,
+        {"type": "chat.message.created", "message_id": message["id"]},
+    )
+    event = {"type": "chat.message.created", "request_id": request_id, "message_id": message["id"], "text": message["text"]}
+    for user_id in request.app.state.chat_service.notification_recipient_ids(request_id, user["id"]):
+        await request.app.state.chat_connections.broadcast_user(user_id, event)
+    return message
 
 
 @router.patch("/requests/{request_id}/chat/read")
 def mark_chat_read(request: Request, request_id: str, payload: ChatReadPatch, user: User):
     return request.app.state.chat_service.mark_read(user, request_id, payload.last_read_message_id)
+
+
+@router.websocket("/ws/requests/{request_id}/chat")
+async def request_chat_websocket(websocket: WebSocket, request_id: str):
+    token = websocket.query_params.get("token")
+    try:
+        user = websocket.app.state.auth_service.me(token)
+        websocket.app.state.chat_service.get_chat(user, request_id)
+    except HTTPException:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.app.state.chat_connections.connect(request_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        websocket.app.state.chat_connections.disconnect(request_id, websocket)
+
+
+@router.websocket("/ws/chat-notifications")
+async def chat_notifications_websocket(websocket: WebSocket):
+    token = websocket.query_params.get("token")
+    try:
+        user = websocket.app.state.auth_service.me(token)
+    except HTTPException:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await websocket.app.state.chat_connections.connect_user(user["id"], websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        websocket.app.state.chat_connections.disconnect_user(user["id"], websocket)
 
 
 @router.get("/files/{file_id}/download")
