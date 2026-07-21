@@ -69,3 +69,24 @@ def test_expense_and_income_dashboards_are_separate(tmp_path):
     incomes = client.get("/dashboard/income", headers=admin).json()
     assert expenses["totals"]["planned"] == initial_expense_total + 100
     assert incomes["totals"]["planned"] == initial_income_total + 250
+
+
+def test_draft_request_shows_module_economist_contact(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    client.app.state.repo.create(
+        "requests",
+        {
+            "id": "draft-with-module-economist",
+            "economist_id": None,
+            "unit_id": MODULE_ALPHA_ID,
+            "status": "draft",
+            "frozen": False,
+        },
+    )
+
+    response = client.get("/requests/draft-with-module-economist/counterparty-contact", headers=employee)
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "economist"
+    assert response.json()["login"] == "economist"

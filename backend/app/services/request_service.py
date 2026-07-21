@@ -198,7 +198,7 @@ class RequestService:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_view_request(user, request)
         users = {item["id"]: item for item in self.repo.load_all("users")}
-        target_id = request.get("economist_id") if user["role"] == "employee" else None
+        target_id = (request.get("economist_id") or self._assigned_economist_id(request["unit_id"])) if user["role"] == "employee" else None
         target_role = "economist" if target_id else None
         if user["role"] == "economist":
             employee = next((item for item in self.repo.load_all("units_responsibles") if item.get("unit_id") == request["unit_id"] and item.get("is_active") and users.get(item.get("user_id"), {}).get("role") == "employee"), None)

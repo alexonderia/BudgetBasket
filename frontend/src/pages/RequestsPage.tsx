@@ -31,7 +31,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -49,83 +49,6 @@ function getErrorMessage(error: unknown, fallback: string) {
   return detail || (error instanceof Error ? error.message : fallback);
 }
 
-function RequestCreatePanel({
-  user,
-  employeeModules,
-  unitId,
-  onUnitIdChange,
-  onCreate,
-  pending,
-}: {
-  user: User;
-  employeeModules: Unit[];
-  unitId: string;
-  onUnitIdChange: (value: string) => void;
-  onCreate: () => void;
-  pending: boolean;
-}) {
-  if (user.role !== 'employee') return null;
-
-  const singleModule = employeeModules.length === 1 ? employeeModules[0] : null;
-  const hasModules = employeeModules.length > 0;
-
-  return (
-    <Paper className="surface-pad" elevation={0}>
-      <Stack spacing={2.5}>
-        <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={2} alignItems={{ md: 'center' }}>
-          <div>
-            <Typography variant="h6">Новая заявка</Typography>
-            <Typography color="text.secondary">
-              Заявка создаётся сразу в нужном подразделении. Если доступен один вариант, он подставится автоматически.
-            </Typography>
-          </div>
-          {singleModule && (
-            <Alert severity="info" sx={{ minWidth: { md: 420 } }}>
-              Доступно одно подразделение, оно выбрано автоматически.
-            </Alert>
-          )}
-          {!hasModules && (
-            <Alert severity="warning" sx={{ minWidth: { md: 420 } }}>
-              У текущего сотрудника нет доступных подразделений. Назначьте сотрудника в оргструктуре.
-            </Alert>
-          )}
-        </Stack>
-
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }}>
-          {singleModule ? (
-            <TextField
-              label="Подразделение"
-              value={singleModule.name}
-              disabled
-              helperText="Подразделение выбрано автоматически"
-              sx={{ minWidth: 360, flex: 1 }}
-            />
-          ) : (
-            <TextField
-              select
-              label="Подразделение"
-              value={unitId}
-              onChange={(event) => onUnitIdChange(event.target.value)}
-              disabled={!hasModules}
-              sx={{ minWidth: 360, flex: 1 }}
-            >
-              <MenuItem value="">Выберите подразделение</MenuItem>
-              {employeeModules.map((unit) => (
-                <MenuItem key={unit.id} value={unit.id}>
-                  {unit.name}
-                </MenuItem>
-              ))}
-            </TextField>
-          )}
-          <Button startIcon={<AddIcon />} variant="contained" onClick={() => onCreate()} disabled={pending || !unitId}>
-            Создать заявку
-          </Button>
-        </Stack>
-      </Stack>
-    </Paper>
-  );
-}
-
 export default function RequestsPage({ user }: { user: User }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -133,11 +56,9 @@ export default function RequestsPage({ user }: { user: User }) {
   const [filters, setFilters] = useState({ status: '', frozen: '' });
   const [withdrawTarget, setWithdrawTarget] = useState<BudgetRequest | null>(null);
   const [createError, setCreateError] = useState('');
-  const [requestDraft, setRequestDraft] = useState({ unit_id: '' });
   const [exportError, setExportError] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
   const [expandedExportDepartments, setExpandedExportDepartments] = useState<string[]>([]);
-  const [createOpen, setCreateOpen] = useState(false);
   const [exportSettings, setExportSettings] = useState({
     statuses: [...EXPORTABLE_REQUEST_STATUSES],
     fixed_only: false,
@@ -225,24 +146,12 @@ export default function RequestsPage({ user }: { user: User }) {
     });
   }, [allModules, unitById, user.role, user.unit_ids]);
 
-  useEffect(() => {
-    if (user.role !== 'employee') return;
-    if (employeeModules.length === 1 && requestDraft.unit_id !== employeeModules[0].id) {
-      setRequestDraft({ unit_id: employeeModules[0].id });
-      return;
-    }
-    if (requestDraft.unit_id && !employeeModules.some((module) => module.id === requestDraft.unit_id)) {
-      setRequestDraft({ unit_id: '' });
-    }
-  }, [employeeModules, requestDraft.unit_id, user.role]);
-
   const create = useMutation({
-    mutationFn: () => api.post<BudgetRequest>('/requests', requestDraft),
+    mutationFn: (unitId: string) => api.post<BudgetRequest>('/requests', { unit_id: unitId }),
     onSuccess: (response) => {
       setCreateError('');
       queryClient.invalidateQueries({ queryKey: ['requests'] });
       toast('Заявка создана', 'success');
-      setCreateOpen(false);
       navigate(`/requests/${response.data.id}`);
     },
     onError: (error) => {
@@ -374,7 +283,7 @@ export default function RequestsPage({ user }: { user: User }) {
             </Stack>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {user.role === 'employee' ? (
-                <Button startIcon={<AddIcon />} variant="contained" onClick={() => setCreateOpen(true)} disabled={employeeModules.length === 0}>
+                <Button startIcon={<AddIcon />} variant="contained" onClick={() => employeeModules[0] && create.mutate(employeeModules[0].id)} disabled={employeeModules.length === 0 || create.isPending}>
                   Добавить заявку
                 </Button>
               ) : null}
@@ -390,26 +299,6 @@ export default function RequestsPage({ user }: { user: User }) {
           ) : null}
         </Stack>
       </Paper>
-
-      <Dialog open={createOpen} onClose={() => setCreateOpen(false)} fullWidth maxWidth="sm" className="profile-dialog">
-        <DialogTitle>Добавить заявку</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={1.5} sx={{ pt: 0.5 }}>
-            <Alert severity="info" variant="outlined">
-              Объединение сотрудника: {employeeUnitNames.length ? employeeUnitNames.join(', ') : 'не назначено'}
-            </Alert>
-            <Typography color="text.secondary">Выберите объединение, к которому будет привязана бюджетная заявка.</Typography>
-            <TextField select label="Объединение заявки" value={requestDraft.unit_id} onChange={(event) => setRequestDraft({ unit_id: event.target.value })} fullWidth>
-              <MenuItem value="">Выберите объединение заявки</MenuItem>
-              {employeeModules.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
-            </TextField>
-          </Stack>
-        </DialogContent>
-        <DialogActions sx={{ px: 3, py: 2 }}>
-          <Button onClick={() => setCreateOpen(false)}>Отмена</Button>
-          <Button startIcon={<AddIcon />} variant="contained" onClick={() => create.mutate()} disabled={!requestDraft.unit_id || create.isPending}>Создать заявку</Button>
-        </DialogActions>
-      </Dialog>
 
       <Dialog open={exportOpen} onClose={() => setExportOpen(false)} fullWidth maxWidth="sm" className="export-dialog">
         <DialogTitle>Настройки экспорта</DialogTitle>
