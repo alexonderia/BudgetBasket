@@ -1,5 +1,6 @@
 import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
@@ -9,6 +10,7 @@ import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
+import Collapse from '@mui/material/Collapse';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -36,7 +38,7 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { RequestStatusBadge } from '../components/StatusBadge';
 import { useAppToast } from '../components/Layout';
 import type { BudgetItem, BudgetRequest, CatalogItem, RequestStatus, Unit, User } from '../types';
-import { CLOSED_REQUEST_STATUSES, EXPORTABLE_REQUEST_STATUSES } from '../types';
+import { EXPORTABLE_REQUEST_STATUSES } from '../types';
 import { downloadBlob } from '../utils/download';
 import { money, requestStatusLabels } from '../utils/labels';
 
@@ -128,16 +130,20 @@ export default function RequestsPage({ user }: { user: User }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useAppToast();
-  const [filters, setFilters] = useState({ status: '' });
+  const [filters, setFilters] = useState({ status: '', frozen: '' });
   const [withdrawTarget, setWithdrawTarget] = useState<BudgetRequest | null>(null);
   const [createError, setCreateError] = useState('');
   const [requestDraft, setRequestDraft] = useState({ unit_id: '' });
   const [exportError, setExportError] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
+  const [expandedExportDepartments, setExpandedExportDepartments] = useState<string[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [exportSettings, setExportSettings] = useState({
     statuses: [...EXPORTABLE_REQUEST_STATUSES],
-    unit_id: '',
+    fixed_only: false,
+    export_kind: 'all' as 'all' | 'expense' | 'income',
+    department_ids: [] as string[],
+    module_ids: [] as string[],
     include_files: false,
   });
   const [deleteTarget, setDeleteTarget] = useState<BudgetRequest | null>(null);
@@ -180,7 +186,7 @@ export default function RequestsPage({ user }: { user: User }) {
     enabled: !!deleteTargetRequest?.unit_id,
   });
   const { data = [] } = useQuery({
-    queryKey: ['requests', filters],
+    queryKey: ['requests', filters.status],
     queryFn: async () =>
       (
         await api.get<BudgetRequest[]>('/requests', {
@@ -188,8 +194,17 @@ export default function RequestsPage({ user }: { user: User }) {
         })
       ).data,
   });
+  const filteredRequests = useMemo(
+    () => data.filter((request) => !filters.frozen || request.frozen === (filters.frozen === 'frozen')),
+    [data, filters.frozen],
+  );
 
   const allModules = units.filter((unit) => unit.type === 'department' || unit.type === 'module');
+  const departments = units.filter((unit) => !unit.parent_id);
+  const modulesByDepartment = useMemo(
+    () => new Map(departments.map((department) => [department.id, units.filter((unit) => unit.parent_id === department.id)])),
+    [departments, units],
+  );
   const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
   const formatUnitName = (unitId: string | null | undefined) => units.find((unit) => unit.id === unitId)?.name || unitId || '—';
   const employeeUnitNames = useMemo(
@@ -262,13 +277,21 @@ export default function RequestsPage({ user }: { user: User }) {
     try {
       const response = await api.get('/requests/export/closed', {
         params: {
-          unit_id: exportSettings.unit_id || undefined,
+          department_ids: exportSettings.department_ids.join(',') || undefined,
+          module_ids: exportSettings.module_ids.join(',') || undefined,
           statuses: exportSettings.statuses.join(','),
+          fixed_only: exportSettings.fixed_only,
+          export_kind: exportSettings.export_kind,
           include_files: exportSettings.include_files,
         },
         responseType: 'blob',
       });
-      downloadBlob(response.data, exportSettings.include_files ? 'Утверждение_бюджета.zip' : 'Утверждение_бюджета.xlsx');
+      const baseFilename = exportSettings.export_kind === 'income'
+        ? 'Доходы_бюджета'
+        : exportSettings.export_kind === 'expense'
+          ? 'Расходы_бюджета'
+          : exportSettings.fixed_only ? 'Зафиксированные_заявки' : 'Утверждение_бюджета';
+      downloadBlob(response.data, `${baseFilename}.${exportSettings.include_files ? 'zip' : 'xlsx'}`);
       setExportOpen(false);
     } catch {
       setExportError('Нет заявок для выбранных настроек экспорта или недостаточно прав.');
@@ -284,6 +307,32 @@ export default function RequestsPage({ user }: { user: User }) {
         ? current.statuses.filter((item) => item !== status)
         : [...current.statuses, status],
     }));
+  };
+
+  const toggleExportDepartment = (departmentId: string) => {
+    setExportSettings((current) => ({
+      ...current,
+      department_ids: current.department_ids.includes(departmentId)
+        ? current.department_ids.filter((id) => id !== departmentId)
+        : [...current.department_ids, departmentId],
+    }));
+  };
+
+  const toggleExportModule = (moduleId: string) => {
+    setExportSettings((current) => ({
+      ...current,
+      module_ids: current.module_ids.includes(moduleId)
+        ? current.module_ids.filter((id) => id !== moduleId)
+        : [...current.module_ids, moduleId],
+    }));
+  };
+
+  const toggleExportDepartmentModules = (departmentId: string) => {
+    setExpandedExportDepartments((current) => (
+      current.includes(departmentId)
+        ? current.filter((id) => id !== departmentId)
+        : [...current, departmentId]
+    ));
   };
 
   const deletePreviewRows = useMemo(() => {
@@ -309,13 +358,18 @@ export default function RequestsPage({ user }: { user: User }) {
         <Stack spacing={1.5}>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }} justifyContent="space-between">
             <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ flex: 1 }}>
-              <TextField select label="Статус" value={filters.status} onChange={(event) => setFilters({ status: event.target.value })} sx={{ minWidth: 220 }}>
+              <TextField select label="Статус" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))} sx={{ minWidth: 220 }}>
                 <MenuItem value="">Все</MenuItem>
                 {Object.entries(requestStatusLabels).map(([value, label]) => (
                   <MenuItem key={value} value={value}>
                     {label}
                   </MenuItem>
                 ))}
+              </TextField>
+              <TextField select label="Фиксация бюджета" value={filters.frozen} onChange={(event) => setFilters((current) => ({ ...current, frozen: event.target.value }))} sx={{ minWidth: 220 }}>
+                <MenuItem value="">Все заявки</MenuItem>
+                <MenuItem value="frozen">Зафиксированные</MenuItem>
+                <MenuItem value="unfrozen">Незафиксированные</MenuItem>
               </TextField>
             </Stack>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -363,12 +417,80 @@ export default function RequestsPage({ user }: { user: User }) {
           <Stack spacing={2.5} sx={{ pt: 0.5 }}>
             <Stack spacing={0.5}>
               <Stack direction="row" spacing={0.5} alignItems="center">
+                <Typography fontWeight={700}>Состав выгрузки</Typography>
+                <Tooltip title="Выберите, включать в экспорт доходы, расходы или оба вида строк.">
+                  <IconButton size="small" aria-label="Нюансы состава выгрузки"><InfoOutlinedIcon fontSize="small" /></IconButton>
+                </Tooltip>
+              </Stack>
+              <TextField
+                select
+                label="Состав выгрузки"
+                value={exportSettings.export_kind}
+                onChange={(event) => setExportSettings((current) => ({ ...current, export_kind: event.target.value as 'all' | 'expense' | 'income' }))}
+                fullWidth
+                sx={{ mt: 1 }}
+              >
+                <MenuItem value="all">Доходы и расходы</MenuItem>
+                <MenuItem value="expense">Только расходы</MenuItem>
+                <MenuItem value="income">Только доходы</MenuItem>
+              </TextField>
+            </Stack>
+
+            <Stack spacing={0.75}>
+              <Stack direction="row" spacing={0.5} alignItems="center">
+                <Typography fontWeight={700}>Подразделения и модули</Typography>
+                <Tooltip title="Отметьте подразделение, чтобы включить все его модули, или отметьте только нужные модули. Без выбора экспортируются все доступные подразделения.">
+                  <IconButton size="small" aria-label="Нюансы выбора области экспорта"><InfoOutlinedIcon fontSize="small" /></IconButton>
+                </Tooltip>
+              </Stack>
+              <FormGroup sx={{ mt: 0.5 }}>
+                {departments.map((department) => {
+                  const departmentSelected = exportSettings.department_ids.includes(department.id);
+                  const modules = modulesByDepartment.get(department.id) || [];
+                  const modulesExpanded = expandedExportDepartments.includes(department.id);
+                  return (
+                    <Stack key={department.id} spacing={0}>
+                      <Stack direction="row" alignItems="center">
+                        <FormControlLabel
+                          sx={{ flex: 1, mr: 0 }}
+                          control={<Checkbox checked={departmentSelected} onChange={() => toggleExportDepartment(department.id)} />}
+                          label={department.name}
+                        />
+                        {modules.length > 0 && (
+                          <IconButton
+                            size="small"
+                            aria-label={`${modulesExpanded ? 'Скрыть' : 'Показать'} модули подразделения ${department.name}`}
+                            onClick={() => toggleExportDepartmentModules(department.id)}
+                          >
+                            <ExpandMoreIcon sx={{ transform: modulesExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />
+                          </IconButton>
+                        )}
+                      </Stack>
+                      <Collapse in={modulesExpanded} timeout="auto" unmountOnExit>
+                        <FormGroup>
+                          {modules.map((module) => (
+                            <FormControlLabel
+                              key={module.id}
+                              sx={{ ml: 3 }}
+                              control={<Checkbox checked={departmentSelected || exportSettings.module_ids.includes(module.id)} disabled={departmentSelected} onChange={() => toggleExportModule(module.id)} />}
+                              label={module.name}
+                            />
+                          ))}
+                        </FormGroup>
+                      </Collapse>
+                    </Stack>
+                  );
+                })}
+              </FormGroup>
+            </Stack>
+
+            <Stack spacing={0.5}>
+              <Stack direction="row" spacing={0.5} alignItems="center">
                 <Typography fontWeight={700}>Заявки и статусы</Typography>
                 <Tooltip title="По умолчанию выгружаются утверждённые заявки. При необходимости отдельно включите отклонённые; отменённые заявки не экспортируются.">
                   <IconButton size="small" aria-label="Нюансы статусов экспорта"><InfoOutlinedIcon fontSize="small" /></IconButton>
                 </Tooltip>
               </Stack>
-              <Typography variant="body2" color="text.secondary">Выберите один или несколько статусов. По умолчанию выгружаются все доступные для экспорта заявки.</Typography>
               <FormGroup sx={{ mt: 0.5 }}>
                 {exportStatusOptions.map((status) => (
                   <FormControlLabel
@@ -378,19 +500,16 @@ export default function RequestsPage({ user }: { user: User }) {
                   />
                 ))}
               </FormGroup>
-            </Stack>
-
-            <Stack spacing={0.75}>
-              <Stack direction="row" spacing={0.5} alignItems="center">
-                <Typography fontWeight={700}>Подразделение</Typography>
-                <Tooltip title="Оставьте «Все доступные подразделения», чтобы получить общий экспорт. При выборе подразделения в файл попадут только его заявки.">
-                  <IconButton size="small" aria-label="Нюансы выбора подразделения"><InfoOutlinedIcon fontSize="small" /></IconButton>
+              <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5 }}>
+                <FormControlLabel
+                  sx={{ mr: 0 }}
+                  control={<Switch checked={exportSettings.fixed_only} onChange={(event) => setExportSettings((current) => ({ ...current, fixed_only: event.target.checked }))} />}
+                  label="Экспортировать только зафиксированные заявки"
+                />
+                <Tooltip title="В выгрузку попадут только заявки с зафиксированным бюджетом среди выбранных статусов.">
+                  <IconButton size="small" aria-label="Нюансы экспорта зафиксированных заявок"><InfoOutlinedIcon fontSize="small" /></IconButton>
                 </Tooltip>
               </Stack>
-              <TextField select label="Подразделение" value={exportSettings.unit_id} onChange={(event) => setExportSettings((current) => ({ ...current, unit_id: event.target.value }))} fullWidth>
-                <MenuItem value="">Все доступные подразделения</MenuItem>
-                {allModules.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
-              </TextField>
             </Stack>
 
             <Stack spacing={0.25}>
@@ -404,13 +523,17 @@ export default function RequestsPage({ user }: { user: User }) {
                   <IconButton size="small" aria-label="Нюансы выгрузки файлов"><InfoOutlinedIcon fontSize="small" /></IconButton>
                 </Tooltip>
               </Stack>
-              <Typography variant="body2" color="text.secondary">Доступ к вложениям проверяется теми же правами, что и доступ к заявкам.</Typography>
             </Stack>
           </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 3, py: 2 }}>
           <Button onClick={() => setExportOpen(false)}>Отмена</Button>
-          <Button variant="contained" startIcon={<FileDownloadIcon />} onClick={exportClosed} disabled={exportSettings.statuses.length === 0}>
+          <Button
+            variant="contained"
+            startIcon={<FileDownloadIcon />}
+            onClick={exportClosed}
+            disabled={exportSettings.statuses.length === 0}
+          >
             Экспортировать
           </Button>
         </DialogActions>
@@ -429,7 +552,7 @@ export default function RequestsPage({ user }: { user: User }) {
             </TableRow>
           </TableHead>
           <TableBody>
-            {data.map((item) => {
+            {filteredRequests.map((item) => {
               const canDelete = item.status === 'draft' && user.role === 'employee';
               const canWithdraw = item.status === 'on_review' && user.role === 'employee';
               const unitName = formatUnitName(item.unit_id);
@@ -439,7 +562,7 @@ export default function RequestsPage({ user }: { user: User }) {
                   hover
                   onClick={() => navigate(`/requests/${item.id}`)}
                   sx={{ cursor: 'pointer' }}
-                  className={CLOSED_REQUEST_STATUSES.includes(item.status) && item.status !== 'cancelled' ? 'fixed-request' : ''}
+                  className={item.frozen ? 'fixed-request' : ''}
                 >
                   <TableCell>{unitName}</TableCell>
                   <TableCell>
@@ -470,6 +593,11 @@ export default function RequestsPage({ user }: { user: User }) {
                 </TableRow>
               );
             })}
+            {filteredRequests.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={6} align="center">Заявки по выбранным фильтрам не найдены</TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </Paper>

@@ -670,6 +670,18 @@
     scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
   }
 
+  .chat-day-divider {
+    align-self: center;
+    padding: 3px 10px;
+    border: 1px solid #e2e8f0;
+    border-radius: 999px;
+    color: #64748b;
+    background: rgba(248, 250, 252, 0.94);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+
   .request-chat-message {
     display: flex;
     align-items: flex-end;

@@ -430,10 +430,12 @@ class ExcelService:
             return ""
         return self._catalog_name(collection, parent_id)
 
-    def _request_items(self, request_id: str) -> list[dict]:
+    def _request_items(self, request_id: str, is_income: bool | None = None) -> list[dict]:
         rows: list[dict] = []
         for item in self.repo.load_all("req_items"):
             if item.get("request_id") != request_id or item.get("status") == "deleted":
+                continue
+            if is_income is not None and bool(item.get("is_income", False)) != is_income:
                 continue
             is_dds = bool(item.get("dds_id"))
             catalog, field, kind = ("dds_catalog", "dds_id", "ДДС") if is_dds else ("invests_catalog", "invest_id", "Инвест")
@@ -470,23 +472,79 @@ class ExcelService:
         unit_id: str | None = None,
         statuses: set[str] | None = None,
         include_files: bool = False,
+        *,
+        department_id: str | None = None,
+        department_ids: set[str] | None = None,
+        module_ids: set[str] | None = None,
+        fixed_only: bool = False,
+        export_kind: str = "all",
     ) -> Path:
         selected_statuses = self.DEFAULT_EXPORT_STATUSES if statuses is None else statuses
         if not selected_statuses or not selected_statuses.issubset(self.CLOSED_STATUSES):
             raise HTTPException(status_code=400, detail="Выберите допустимые статусы для экспорта")
-        requests = [
-            item
-            for status in selected_statuses
-            for item in self.requests.list_requests(user, status=status, unit_id=unit_id)
-        ]
+        if export_kind not in {"all", "income", "expense"}:
+            raise HTTPException(status_code=400, detail="Выберите допустимый состав экспорта")
+        is_income = {"income": True, "expense": False}.get(export_kind)
+
+        selected_unit_ids = self._export_unit_ids(unit_id, department_id, department_ids, module_ids)
+        requests = []
+        for status in selected_statuses:
+            for item in self.requests.list_requests(user, status=status):
+                if selected_unit_ids is not None and item.get("unit_id") not in selected_unit_ids:
+                    continue
+                if fixed_only and not item.get("frozen"):
+                    continue
+                requests.append(item)
+        if is_income is not None:
+            requests = [item for item in requests if self._request_items(item["id"], is_income)]
         if not requests:
             raise HTTPException(status_code=404, detail="Нет закрытых заявок для экспорта")
-        suffix = re.sub(r"[^a-zA-Z0-9_-]+", "", unit_id or "all")[:24] or "all"
-        attachments = self._collect_export_attachments(requests) if include_files else []
-        workbook = self._write_request_workbook(requests, "Утверждение_бюджета.xlsx", attachments)
+        attachments = self._collect_export_attachments(requests, is_income) if include_files else []
+        filename = {"income": "Доходы_бюджета.xlsx", "expense": "Расходы_бюджета.xlsx"}.get(export_kind, "Утверждение_бюджета.xlsx")
+        workbook = self._write_request_workbook(requests, filename, attachments, is_income)
         if not include_files:
             return workbook
         return self._write_export_archive(user, workbook, attachments)
+
+    def _export_unit_ids(
+        self,
+        unit_id: str | None,
+        department_id: str | None,
+        department_ids: set[str] | None,
+        module_ids: set[str] | None,
+    ) -> set[str] | None:
+        """Return the units selected by an export scope.
+
+        ``unit_id`` remains supported for existing API consumers. A department
+        scope includes every nested module, while a module scope stays limited
+        to the explicitly selected modules.
+        """
+        selected_departments = set(department_ids or set())
+        if department_id:
+            selected_departments.add(department_id)
+        if selected_departments:
+            units = {item["id"]: item for item in self.repo.load_all("units")}
+            selected_units = set(module_ids or set())
+            for selected_department_id in selected_departments:
+                selected_units.update(self._department_unit_ids(selected_department_id, units))
+            return selected_units
+        if module_ids:
+            return module_ids
+        return {unit_id} if unit_id else None
+
+    @staticmethod
+    def _department_unit_ids(department_id: str, units: dict[str, dict]) -> set[str]:
+        if department_id not in units:
+            raise HTTPException(status_code=404, detail="Подразделение не найдено")
+        selected = {department_id}
+        changed = True
+        while changed:
+            changed = False
+            for unit in units.values():
+                if unit.get("parent_id") in selected and unit["id"] not in selected:
+                    selected.add(unit["id"])
+                    changed = True
+        return selected
 
     # Compat aliases
     def export_fixed_request(self, user: dict, request_id: str) -> Path:
@@ -495,10 +553,16 @@ class ExcelService:
     def export_fixed_requests(self, user: dict, unit_id: str | None = None) -> Path:
         return self.export_closed_requests(user, unit_id)
 
-    def _collect_export_attachments(self, requests: list[dict]) -> list[dict]:
+    def _collect_export_attachments(self, requests: list[dict], is_income: bool | None = None) -> list[dict]:
         request_ids = {item["id"] for item in requests}
         requests_by_id = {item["id"]: item for item in requests}
-        items = {item["id"]: item for item in self.repo.load_all("req_items") if item.get("request_id") in request_ids}
+        items = {
+            item["id"]: item
+            for item in self.repo.load_all("req_items")
+            if item.get("request_id") in request_ids
+            and item.get("status") != "deleted"
+            and (is_income is None or bool(item.get("is_income", False)) == is_income)
+        }
         links = self.repo.load_all("req_item_files")
         files = {item["id"]: item for item in self.repo.load_all("files")}
         catalogs = {
@@ -558,7 +622,13 @@ class ExcelService:
         name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", str(value or "").strip()).strip(". ")
         return name or fallback
 
-    def _write_request_workbook(self, requests: list[dict], filename: str, attachments: list[dict] | None = None) -> Path:
+    def _write_request_workbook(
+        self,
+        requests: list[dict],
+        filename: str,
+        attachments: list[dict] | None = None,
+        is_income: bool | None = None,
+    ) -> Path:
         wb = Workbook()
         attachments_by_item: dict[str, list[dict]] = {}
         for attachment in attachments or []:
@@ -592,7 +662,7 @@ class ExcelService:
             module_name = self._unit_name(request.get("unit_id"))
             department_name = self._department_name(request.get("unit_id"))
             request_status = REQUEST_STATUS_LABELS.get(request.get("status"), request.get("status") or "")
-            items = self._request_items(request["id"])
+            items = self._request_items(request["id"], is_income)
             if not items:
                 composition.append(
                     [

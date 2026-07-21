@@ -17,9 +17,10 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
+import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { RequestStatusBadge } from './StatusBadge';
 import type { Profile, RequestStatus } from '../types';
 
@@ -187,15 +188,19 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
                 <Typography variant="body2" color="text.secondary">Уточняйте детали заявки прямо здесь.</Typography>
               </Box>
             )}
-            {requestChat?.messages.map((message) => {
+            {requestChat?.messages.map((message, index) => {
               const isOwn = message.sender.id === currentUserId;
+              const previousMessage = requestChat.messages[index - 1];
+              const startsNewDay = !previousMessage || chatDayKey(previousMessage.created_at) !== chatDayKey(message.created_at);
               const reply = message.reply_to ? requestChat.messages.find((item) => item.id === message.reply_to) : undefined;
               const messageIndex = requestChat.messages.findIndex((item) => item.id === message.id);
               const isReadByRecipient = isOwn && requestChat.participants
                 .filter((participant) => participant.user_id !== currentUserId)
                 .some((participant) => requestChat.messages.findIndex((item) => item.id === participant.last_read_message_id) >= messageIndex);
               return (
-                <Box key={message.id} className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''}`}>
+                <Fragment key={message.id}>
+                  {startsNewDay && <Box className="chat-day-divider">{chatDayLabel(message.created_at)}</Box>}
+                  <Box className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''}`}>
                   <Box className="request-chat-bubble">
                     {!isOwn && <Typography className="request-chat-sender" variant="caption">{senderName(message.sender)}</Typography>}
                     {reply && (
@@ -221,7 +226,8 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
                       <ReplyOutlinedIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
-                </Box>
+                  </Box>
+                </Fragment>
               );
             })}
           </Box>

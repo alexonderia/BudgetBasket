@@ -38,9 +38,10 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { requestChatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
@@ -1472,17 +1473,22 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 <Typography variant="body2" color="text.secondary">Уточняйте детали заявки прямо здесь.</Typography>
               </Box>
             )}
-            {chatMessages.map((message) => {
+            {chatMessages.map((message, index) => {
               const isOwn = message.sender.id === user.id;
+              const previousMessage = chatMessages[index - 1];
+              const startsNewDay = !previousMessage || chatDayKey(previousMessage.created_at) !== chatDayKey(message.created_at);
               return (
-                <Box key={message.id} className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''}`}>
+                <Fragment key={message.id}>
+                  {startsNewDay && <Box className="chat-day-divider">{chatDayLabel(message.created_at)}</Box>}
+                  <Box className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''}`}>
                   {!isOwn && <Avatar className="request-chat-avatar">{chatSenderInitial(message.sender)}</Avatar>}
                   <Box className="request-chat-bubble">
                     {!isOwn && <Typography className="request-chat-sender" variant="caption">{chatSenderName(message.sender)}</Typography>}
                     <Typography className="request-chat-text">{message.text}</Typography>
                     <Typography className="request-chat-time" variant="caption">{chatTime(message.created_at)}</Typography>
                   </Box>
-                </Box>
+                  </Box>
+                </Fragment>
               );
             })}
           </Box>

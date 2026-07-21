@@ -239,11 +239,28 @@ def export_closed_requests(
     request: Request,
     user: User,
     unit_id: str | None = None,
+    department_id: str | None = None,
+    department_ids: str | None = None,
+    module_ids: str | None = None,
     statuses: str | None = None,
     include_files: bool = False,
+    fixed_only: bool = False,
+    export_kind: str = "all",
 ):
     selected_statuses = {status.strip() for status in statuses.split(",") if status.strip()} if statuses else None
-    path = request.app.state.excel_service.export_closed_requests(user, unit_id, selected_statuses, include_files)
+    selected_department_ids = {department_id.strip() for department_id in department_ids.split(",") if department_id.strip()} if department_ids else None
+    selected_module_ids = {module_id.strip() for module_id in module_ids.split(",") if module_id.strip()} if module_ids else None
+    path = request.app.state.excel_service.export_closed_requests(
+        user,
+        unit_id,
+        selected_statuses,
+        include_files,
+        department_id=department_id,
+        department_ids=selected_department_ids,
+        module_ids=selected_module_ids,
+        fixed_only=fixed_only,
+        export_kind=export_kind,
+    )
     media_type = "application/zip" if path.suffix == ".zip" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     return FileResponse(path, filename=path.name, media_type=media_type)
 
