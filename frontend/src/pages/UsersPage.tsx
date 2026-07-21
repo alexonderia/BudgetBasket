@@ -1,6 +1,6 @@
 import AddIcon from '@mui/icons-material/Add';
-import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import CloseIcon from '@mui/icons-material/Close';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Dialog from '@mui/material/Dialog';
@@ -23,9 +23,11 @@ import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
+import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import type { Role, Unit, User } from '../types';
+import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
 import { roleLabels } from '../utils/labels';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 
@@ -53,6 +55,17 @@ type UserDraft = {
   email: string;
   max_link: string;
 };
+
+type UserTableColumn =
+  | 'actions'
+  | 'login'
+  | 'role'
+  | 'last_name'
+  | 'name'
+  | 'second_name'
+  | 'phone'
+  | 'email'
+  | 'max_link';
 
 const emptyDraft = (): UserDraft => ({
   login: '',
@@ -82,7 +95,7 @@ function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
   if (detail) return detail;
   if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
-  return detail || (error instanceof Error ? error.message : fallback);
+  return error instanceof Error ? error.message : fallback;
 }
 
 function ProfileSection({ title, children }: { title: string; children: ReactNode }) {
@@ -123,8 +136,9 @@ function CreateUserDialog({
   });
 
   const setField = <K extends keyof CreateForm>(key: K, value: CreateForm[K]) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
+    setForm((current) => ({ ...current, [key]: value }));
   };
+
   const invalidContact = (form.email && !EMAIL_RE.test(form.email)) || (form.phone && !PHONE_RE.test(form.phone));
 
   return (
@@ -135,45 +149,30 @@ function CreateUserDialog({
           <CloseIcon />
         </IconButton>
       </DialogTitle>
-      <DialogContent
-        dividers
-        sx={{
-          p: 0,
-          overflowY: 'auto',
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-          '&::-webkit-scrollbar': { display: 'none' },
-        }}
-      >
+      <DialogContent dividers sx={{ p: 0, overflowY: 'auto', scrollbarWidth: 'none', msOverflowStyle: 'none', '&::-webkit-scrollbar': { display: 'none' } }}>
         <Stack spacing={0} sx={{ px: 3, py: 2.5 }}>
           <ProfileSection title="Основное">
-            <TextField label="Фамилия" value={form.last_name} onChange={(e) => setField('last_name', lettersOnly(e.target.value))} fullWidth />
+            <TextField label="Фамилия" value={form.last_name} onChange={(event) => setField('last_name', lettersOnly(event.target.value))} fullWidth />
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.75}>
-              <TextField label="Имя" value={form.name} onChange={(e) => setField('name', lettersOnly(e.target.value))} fullWidth autoFocus />
-              <TextField label="Отчество" value={form.second_name} onChange={(e) => setField('second_name', lettersOnly(e.target.value))} fullWidth />
+              <TextField label="Имя" value={form.name} onChange={(event) => setField('name', lettersOnly(event.target.value))} fullWidth autoFocus />
+              <TextField label="Отчество" value={form.second_name} onChange={(event) => setField('second_name', lettersOnly(event.target.value))} fullWidth />
             </Stack>
           </ProfileSection>
 
           <Divider sx={{ my: 2.5 }} />
 
           <ProfileSection title="Контакты">
-            <TextField label="Электронная почта" type="email" value={form.email} onChange={(e) => setField('email', e.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите адрес в формате name@example.ru' : undefined} fullWidth />
-            <TextField label="Телефон" value={form.phone} onChange={(e) => setField('phone', formatPhone(e.target.value))} error={!!form.phone && !PHONE_RE.test(form.phone)} helperText={form.phone && !PHONE_RE.test(form.phone) ? 'Формат: +7 (000) 000-00-00' : undefined} fullWidth />
-            <TextField
-              label="Ссылка Max"
-              value={form.max_link}
-              onChange={(e) => setField('max_link', e.target.value)}
-              fullWidth
-              placeholder="https://max.ru/..."
-            />
+            <TextField label="Электронная почта" type="email" value={form.email} onChange={(event) => setField('email', event.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите адрес в формате name@example.ru' : undefined} fullWidth />
+            <TextField label="Телефон" value={form.phone} onChange={(event) => setField('phone', formatPhone(event.target.value))} error={!!form.phone && !PHONE_RE.test(form.phone)} helperText={form.phone && !PHONE_RE.test(form.phone) ? 'Формат: +7 (000) 000-00-00' : undefined} fullWidth />
+            <TextField label="Ссылка Max" value={form.max_link} onChange={(event) => setField('max_link', event.target.value)} fullWidth placeholder="https://max.ru/..." />
           </ProfileSection>
 
           <Divider sx={{ my: 2.5 }} />
 
           <ProfileSection title="Доступ">
-            <TextField label="Логин" value={form.login} onChange={(e) => setField('login', e.target.value)} fullWidth />
-            <TextField label="Пароль" type="password" value={form.password} onChange={(e) => setField('password', e.target.value)} fullWidth />
-            <TextField select label="Роль" value={form.role} onChange={(e) => setField('role', e.target.value as Role)} fullWidth>
+            <TextField label="Логин" value={form.login} onChange={(event) => setField('login', event.target.value)} fullWidth />
+            <TextField label="Пароль" type="password" value={form.password} onChange={(event) => setField('password', event.target.value)} fullWidth />
+            <TextField select label="Роль" value={form.role} onChange={(event) => setField('role', event.target.value as Role)} fullWidth>
               {Object.entries(roleLabels).map(([value, label]) => (
                 <MenuItem key={value} value={value}>{label}</MenuItem>
               ))}
@@ -183,12 +182,7 @@ function CreateUserDialog({
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2 }}>
         <Button onClick={onClose}>Отмена</Button>
-        <Button
-          startIcon={<AddIcon />}
-          variant="contained"
-          onClick={() => create.mutate()}
-          disabled={!form.login || !form.password || invalidContact || create.isPending}
-        >
+        <Button startIcon={<AddIcon />} variant="contained" onClick={() => create.mutate()} disabled={!form.login || !form.password || !!invalidContact || create.isPending}>
           Создать профиль
         </Button>
       </DialogActions>
@@ -225,8 +219,9 @@ function EditUserDialog({
   });
 
   const setField = <K extends keyof UserDraft>(key: K, value: UserDraft[K]) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
+    setForm((current) => ({ ...current, [key]: value }));
   };
+
   const invalidContact = (form.email && !EMAIL_RE.test(form.email)) || (form.phone && !PHONE_RE.test(form.phone));
 
   return (
@@ -237,38 +232,29 @@ function EditUserDialog({
           <CloseIcon />
         </IconButton>
       </DialogTitle>
-      <DialogContent
-        dividers
-        sx={{
-          p: 0,
-          overflowY: 'auto',
-          scrollbarWidth: 'none',
-          msOverflowStyle: 'none',
-          '&::-webkit-scrollbar': { display: 'none' },
-        }}
-      >
+      <DialogContent dividers sx={{ p: 0, overflowY: 'auto', scrollbarWidth: 'none', msOverflowStyle: 'none', '&::-webkit-scrollbar': { display: 'none' } }}>
         <Stack spacing={0} sx={{ px: 3, py: 2.5 }}>
           <ProfileSection title="Основное">
-            <TextField label="Фамилия" value={form.last_name} onChange={(e) => setField('last_name', lettersOnly(e.target.value))} fullWidth />
+            <TextField label="Фамилия" value={form.last_name} onChange={(event) => setField('last_name', lettersOnly(event.target.value))} fullWidth />
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.75}>
-              <TextField label="Имя" value={form.name} onChange={(e) => setField('name', lettersOnly(e.target.value))} fullWidth autoFocus />
-              <TextField label="Отчество" value={form.second_name} onChange={(e) => setField('second_name', lettersOnly(e.target.value))} fullWidth />
+              <TextField label="Имя" value={form.name} onChange={(event) => setField('name', lettersOnly(event.target.value))} fullWidth autoFocus />
+              <TextField label="Отчество" value={form.second_name} onChange={(event) => setField('second_name', lettersOnly(event.target.value))} fullWidth />
             </Stack>
           </ProfileSection>
 
           <Divider sx={{ my: 2.5 }} />
 
           <ProfileSection title="Контакты">
-            <TextField label="Электронная почта" type="email" value={form.email} onChange={(e) => setField('email', e.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите адрес в формате name@example.ru' : undefined} fullWidth />
-            <TextField label="Телефон" value={form.phone} onChange={(e) => setField('phone', formatPhone(e.target.value))} error={!!form.phone && !PHONE_RE.test(form.phone)} helperText={form.phone && !PHONE_RE.test(form.phone) ? 'Формат: +7 (000) 000-00-00' : undefined} fullWidth />
-            <TextField label="Ссылка Max" value={form.max_link} onChange={(e) => setField('max_link', e.target.value)} fullWidth placeholder="https://max.ru/..." />
+            <TextField label="Электронная почта" type="email" value={form.email} onChange={(event) => setField('email', event.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите адрес в формате name@example.ru' : undefined} fullWidth />
+            <TextField label="Телефон" value={form.phone} onChange={(event) => setField('phone', formatPhone(event.target.value))} error={!!form.phone && !PHONE_RE.test(form.phone)} helperText={form.phone && !PHONE_RE.test(form.phone) ? 'Формат: +7 (000) 000-00-00' : undefined} fullWidth />
+            <TextField label="Ссылка Max" value={form.max_link} onChange={(event) => setField('max_link', event.target.value)} fullWidth placeholder="https://max.ru/..." />
           </ProfileSection>
 
           <Divider sx={{ my: 2.5 }} />
 
           <ProfileSection title="Доступ">
-            <TextField label="Логин" value={form.login} onChange={(e) => setField('login', e.target.value)} fullWidth />
-            <TextField select label="Роль" value={form.role} onChange={(e) => setField('role', e.target.value as Role)} fullWidth>
+            <TextField label="Логин" value={form.login} onChange={(event) => setField('login', event.target.value)} fullWidth />
+            <TextField select label="Роль" value={form.role} onChange={(event) => setField('role', event.target.value as Role)} fullWidth>
               {Object.entries(roleLabels).map(([value, label]) => (
                 <MenuItem key={value} value={value}>{label}</MenuItem>
               ))}
@@ -278,7 +264,7 @@ function EditUserDialog({
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2 }}>
         <Button onClick={onClose} disabled={save.isPending}>Отмена</Button>
-        <Button variant="contained" onClick={() => save.mutate()} disabled={!form.login.trim() || invalidContact || save.isPending}>
+        <Button variant="contained" onClick={() => save.mutate()} disabled={!form.login.trim() || !!invalidContact || save.isPending}>
           Сохранить
         </Button>
       </DialogActions>
@@ -298,14 +284,64 @@ export default function UsersPage() {
   const [unitFilter, setUnitFilter] = useState('');
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['users'] });
-
   const unitNames = useMemo(() => new Map(units.map((unit) => [unit.id, unit.name])), [units]);
   const filteredUsers = useMemo(
-    () => data.filter((user) =>
-      (!roleFilter || user.role === roleFilter) &&
-      (!unitFilter || user.unit_ids?.includes(unitFilter)),
-    ),
+    () => data.filter((user) => (!roleFilter || user.role === roleFilter) && (!unitFilter || user.unit_ids?.includes(unitFilter))),
     [data, roleFilter, unitFilter],
+  );
+
+  const tableColumns = useMemo<TableColumnDefinition<User, UserTableColumn>[]>(() => [
+    { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
+    { id: 'login', label: 'Логин', getValue: (user) => user.login },
+    { id: 'role', label: 'Роль', getValue: (user) => roleLabels[user.role] },
+    { id: 'last_name', label: 'Фамилия', getValue: (user) => user.profile?.last_name || '—' },
+    { id: 'name', label: 'Имя', getValue: (user) => user.profile?.name || '—' },
+    { id: 'second_name', label: 'Отчество', getValue: (user) => user.profile?.second_name || '—' },
+    { id: 'phone', label: 'Телефон', getValue: (user) => user.profile?.phone || '—' },
+    { id: 'email', label: 'Электронная почта', getValue: (user) => user.profile?.email || '—' },
+    { id: 'max_link', label: 'Max', getValue: (user) => user.profile?.max_link || '—' },
+  ], []);
+
+  const {
+    clearColumnFilter,
+    clearSort,
+    filterOptions,
+    filterSearchValues,
+    hasActiveFilters,
+    resetFilters,
+    resetVisibility,
+    rows: tableRows,
+    selectedFilterValues,
+    setAllFilterOptions,
+    setFilterSearchValue,
+    setSortAscending,
+    setSortDescending,
+    setVisibleFilterOptions,
+    sort,
+    toggleFilterOption,
+    toggleVisibility,
+    visibility,
+    visibleColumns,
+  } = useTableColumnControls({ rows: filteredUsers, columns: tableColumns });
+
+  const renderHeader = (columnId: UserTableColumn, label: string, options?: { sortable?: boolean; filterable?: boolean }) => (
+    <TableColumnHeader
+      label={label}
+      sortable={options?.sortable}
+      filterable={options?.filterable}
+      sortDirection={sort?.column === columnId ? sort.direction : null}
+      onSortAscending={() => setSortAscending(columnId)}
+      onSortDescending={() => setSortDescending(columnId)}
+      onClearSort={() => clearSort(columnId)}
+      filterOptions={filterOptions[columnId]}
+      selectedFilterValues={selectedFilterValues[columnId]}
+      filterSearchValue={filterSearchValues[columnId]}
+      onFilterSearchChange={(value) => setFilterSearchValue(columnId, value)}
+      onToggleFilterValue={(value) => toggleFilterOption(columnId, value)}
+      onSelectAllFilterValues={() => setAllFilterOptions(columnId)}
+      onClearColumnFilter={() => clearColumnFilter(columnId)}
+      onClearVisibleFilterValues={() => setVisibleFilterOptions(columnId, false)}
+    />
   );
 
   const deleteUser = useMutation({
@@ -313,9 +349,7 @@ export default function UsersPage() {
     onSuccess: (_data, deletedId) => {
       toast('Пользователь удалён', 'success');
       setDeleteTarget(null);
-      if (editingUser?.id === deletedId) {
-        setEditingUser(null);
-      }
+      if (editingUser?.id === deletedId) setEditingUser(null);
       refresh();
     },
     onError: (error) => {
@@ -326,27 +360,15 @@ export default function UsersPage() {
   return (
     <Stack spacing={3}>
       <Paper className="table-surface" sx={{ p: 2 }}>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ sm: 'center' }}>
+        <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ lg: 'center' }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-            <TextField
-              select
-              label="Роль"
-              value={roleFilter}
-              onChange={(event) => setRoleFilter(event.target.value as Role | '')}
-              sx={{ minWidth: 220 }}
-            >
+            <TextField select label="Роль" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value as Role | '')} sx={{ minWidth: 220 }}>
               <MenuItem value="">Все роли</MenuItem>
               {Object.entries(roleLabels).map(([value, label]) => (
                 <MenuItem key={value} value={value}>{label}</MenuItem>
               ))}
             </TextField>
-            <TextField
-              select
-              label="Подразделение"
-              value={unitFilter}
-              onChange={(event) => setUnitFilter(event.target.value)}
-              sx={{ minWidth: 260 }}
-            >
+            <TextField select label="Подразделение" value={unitFilter} onChange={(event) => setUnitFilter(event.target.value)} sx={{ minWidth: 260 }}>
               <MenuItem value="">Все подразделения</MenuItem>
               {units.map((unit) => (
                 <MenuItem key={unit.id} value={unit.id}>
@@ -355,9 +377,19 @@ export default function UsersPage() {
               ))}
             </TextField>
           </Stack>
-          <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDialogOpen(true)}>
-            Добавить пользователя
-          </Button>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap justifyContent="flex-end">
+            <TableColumnTools
+              columns={tableColumns}
+              visibility={visibility}
+              onToggleColumn={toggleVisibility}
+              onResetColumns={resetVisibility}
+              onResetFilters={resetFilters}
+              hasActiveFilters={hasActiveFilters}
+            />
+            <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDialogOpen(true)}>
+              Добавить пользователя
+            </Button>
+          </Stack>
         </Stack>
       </Paper>
 
@@ -365,49 +397,46 @@ export default function UsersPage() {
         <Table size="small" sx={{ minWidth: 1200 }}>
           <TableHead>
             <TableRow>
-              <TableCell>Действия</TableCell>
-              <TableCell>Логин</TableCell>
-              <TableCell>Роль</TableCell>
-              <TableCell>Фамилия</TableCell>
-              <TableCell>Имя</TableCell>
-              <TableCell>Отчество</TableCell>
-              <TableCell>Телефон</TableCell>
-              <TableCell>Электронная почта</TableCell>
-              <TableCell>Max</TableCell>
+              {visibility.actions && <TableCell>{renderHeader('actions', 'Действия', { sortable: false, filterable: false })}</TableCell>}
+              {visibility.login && <TableCell>{renderHeader('login', 'Логин')}</TableCell>}
+              {visibility.role && <TableCell>{renderHeader('role', 'Роль')}</TableCell>}
+              {visibility.last_name && <TableCell>{renderHeader('last_name', 'Фамилия')}</TableCell>}
+              {visibility.name && <TableCell>{renderHeader('name', 'Имя')}</TableCell>}
+              {visibility.second_name && <TableCell>{renderHeader('second_name', 'Отчество')}</TableCell>}
+              {visibility.phone && <TableCell>{renderHeader('phone', 'Телефон')}</TableCell>}
+              {visibility.email && <TableCell>{renderHeader('email', 'Электронная почта')}</TableCell>}
+              {visibility.max_link && <TableCell>{renderHeader('max_link', 'Max')}</TableCell>}
             </TableRow>
           </TableHead>
           <TableBody>
-            {filteredUsers.map((user) => (
-              <TableRow
-                key={user.id}
-                hover
-                onClick={() => setEditingUser(user)}
-                sx={{ cursor: 'pointer' }}
-              >
-                <TableCell sx={{ minWidth: 80 }}>
-                  <IconButton
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setDeleteTarget(user);
-                    }}
-                    aria-label="Удалить пользователя"
-                  >
-                    <DeleteOutlineIcon fontSize="small" />
-                  </IconButton>
-                </TableCell>
-                <TableCell sx={{ minWidth: 160 }}>{user.login}</TableCell>
-                <TableCell sx={{ minWidth: 160 }}>{roleLabels[user.role]}</TableCell>
-                <TableCell sx={{ minWidth: 150 }}>{user.profile?.last_name || '—'}</TableCell>
-                <TableCell sx={{ minWidth: 150 }}>{user.profile?.name || '—'}</TableCell>
-                <TableCell sx={{ minWidth: 170 }}>{user.profile?.second_name || '—'}</TableCell>
-                <TableCell sx={{ minWidth: 170 }}>{user.profile?.phone || '—'}</TableCell>
-                <TableCell sx={{ minWidth: 220 }}>{user.profile?.email || '—'}</TableCell>
-                <TableCell sx={{ minWidth: 240 }}>{user.profile?.max_link || '—'}</TableCell>
+            {tableRows.map((user) => (
+              <TableRow key={user.id} hover onClick={() => setEditingUser(user)} sx={{ cursor: 'pointer' }}>
+                {visibility.actions && (
+                  <TableCell sx={{ minWidth: 80 }}>
+                    <IconButton
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setDeleteTarget(user);
+                      }}
+                      aria-label="Удалить пользователя"
+                    >
+                      <DeleteOutlineIcon fontSize="small" />
+                    </IconButton>
+                  </TableCell>
+                )}
+                {visibility.login && <TableCell sx={{ minWidth: 160 }}>{user.login}</TableCell>}
+                {visibility.role && <TableCell sx={{ minWidth: 160 }}>{roleLabels[user.role]}</TableCell>}
+                {visibility.last_name && <TableCell sx={{ minWidth: 150 }}>{user.profile?.last_name || '—'}</TableCell>}
+                {visibility.name && <TableCell sx={{ minWidth: 150 }}>{user.profile?.name || '—'}</TableCell>}
+                {visibility.second_name && <TableCell sx={{ minWidth: 170 }}>{user.profile?.second_name || '—'}</TableCell>}
+                {visibility.phone && <TableCell sx={{ minWidth: 170 }}>{user.profile?.phone || '—'}</TableCell>}
+                {visibility.email && <TableCell sx={{ minWidth: 220 }}>{user.profile?.email || '—'}</TableCell>}
+                {visibility.max_link && <TableCell sx={{ minWidth: 240 }}>{user.profile?.max_link || '—'}</TableCell>}
               </TableRow>
             ))}
-            {filteredUsers.length === 0 && (
+            {tableRows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} align="center">Пользователи не найдены</TableCell>
+                <TableCell colSpan={visibleColumns.length} align="center">Пользователи не найдены</TableCell>
               </TableRow>
             )}
           </TableBody>

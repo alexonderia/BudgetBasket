@@ -45,11 +45,13 @@ import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { requestChatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
+import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
 import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
 import type { BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, Profile, Unit, User } from '../types';
 import { CLOSED_REQUEST_STATUSES } from '../types';
 import { downloadAuthorized, downloadBlob } from '../utils/download';
 import { itemStatusLabels, money, requestStatusLabels } from '../utils/labels';
+import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
 import { normalizePositiveAmount } from '../utils/validation';
 
 const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
@@ -57,6 +59,12 @@ const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const UPLOAD_EXTENSIONS = new Set(UPLOAD_ACCEPT.split(','));
 
 type ItemTableColumn = 'category' | 'article' | 'name' | 'justification' | 'plan' | 'status' | 'approved' | 'difference' | 'comment' | 'files' | 'actions';
+type RequestDeletePreviewColumn = 'kind' | 'name' | 'sum';
+type RequestDeletePreviewRow = {
+  kind: string;
+  name: string;
+  sum: number;
+};
 
 const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
   category: 120,
@@ -619,7 +627,315 @@ function ItemsTable({
   const canEconomist = user.role === 'economist' && request.status === 'on_review' && !request.frozen;
   const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
-  const tableWidth = ITEM_TABLE_COLUMNS.reduce((sum, column) => sum + columnWidths[column], 0);
+
+  const itemTableDefinitions = useMemo<TableColumnDefinition<BudgetItem, ItemTableColumn>[]>(() => [
+    {
+      id: 'category',
+      label: '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F',
+      getValue: (item) => categoryName(catalog, kind === 'dds' ? item.dds_id : item.invest_id),
+    },
+    {
+      id: 'article',
+      label: kind === 'dds' ? '\u0421\u0442\u0430\u0442\u044C\u044F \u0414\u0414\u0421' : '\u0418\u043D\u0432\u0435\u0441\u0442-\u043F\u0440\u043E\u0435\u043A\u0442',
+      getValue: (item) => catalog.find((entry) => entry.id === (kind === 'dds' ? item.dds_id : item.invest_id))?.name || '\u0421\u0442\u0430\u0442\u044C\u044F \u041D\u0421\u0418 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430',
+    },
+    { id: 'name', label: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435', getValue: (item) => item.name || '?' },
+    { id: 'justification', label: '\u041E\u0431\u043E\u0441\u043D\u043E\u0432\u0430\u043D\u0438\u0435', getValue: (item) => item.justification || '?' },
+    { id: 'plan', label: '\u041F\u043B\u0430\u043D', getValue: (item) => money(item.sum_plan), getSortValue: (item) => item.sum_plan },
+    { id: 'status', label: '\u0421\u0442\u0430\u0442\u0443\u0441', getValue: (item) => itemStatusLabels[item.status] || item.status },
+    { id: 'approved', label: '\u0423\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u043E', getValue: (item) => money(item.sum_fact), getSortValue: (item) => item.sum_fact ?? -1 },
+    {
+      id: 'difference',
+      label: '\u041A\u043E\u0440\u0440\u0435\u043A\u0442\u0438\u0440\u043E\u0432\u043A\u0430',
+      getValue: (item) => item.sum_fact === null || item.sum_fact === undefined ? '?' : money(Number(item.sum_fact) - Number(item.sum_plan)),
+      getSortValue: (item) => item.sum_fact === null || item.sum_fact === undefined ? null : Number(item.sum_fact) - Number(item.sum_plan),
+    },
+    {
+      id: 'comment',
+      label: '\u041A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439',
+      getValue: (item) => item.comment || (item.status === 'rejected' ? '\u041A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439 \u0440\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u0442\u0441\u044F' : '?'),
+    },
+    { id: 'files', label: '\u0424\u0430\u0439\u043B', sortable: false, filterable: false, getValue: () => '' },
+    { id: 'actions', label: '\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F', sortable: false, filterable: false, hideable: false, getValue: () => '' },
+  ], [catalog, kind]);
+  const {
+    clearColumnFilter: clearItemColumnFilter,
+    clearSort: clearItemSort,
+    filterOptions: itemFilterOptions,
+    filterSearchValues: itemFilterSearchValues,
+    hasActiveFilters: hasActiveItemFilters,
+    resetFilters: resetItemFilters,
+    resetVisibility: resetItemVisibility,
+    rows: visibleItems,
+    selectedFilterValues: selectedItemFilterValues,
+    setAllFilterOptions: setAllItemFilterOptions,
+    setFilterSearchValue: setItemFilterSearchValue,
+    setSortAscending: setItemSortAscending,
+    setSortDescending: setItemSortDescending,
+    setVisibleFilterOptions: setItemVisibleFilterOptions,
+    sort: itemSort,
+    toggleFilterOption: toggleItemFilterOption,
+    toggleVisibility: toggleItemVisibility,
+    visibility: itemVisibility,
+    visibleColumns: visibleItemColumns,
+  } = useTableColumnControls({ rows: items, columns: itemTableDefinitions });
+  const renderItemHeader = (
+    columnId: ItemTableColumn,
+    label: string,
+    options?: { sortable?: boolean; filterable?: boolean },
+  ) => (
+    <TableColumnHeader
+      label={label}
+      sortable={options?.sortable}
+      filterable={options?.filterable}
+      sortDirection={itemSort?.column === columnId ? itemSort.direction : null}
+      onSortAscending={() => setItemSortAscending(columnId)}
+      onSortDescending={() => setItemSortDescending(columnId)}
+      onClearSort={() => clearItemSort(columnId)}
+      filterOptions={itemFilterOptions[columnId]}
+      selectedFilterValues={selectedItemFilterValues[columnId]}
+      filterSearchValue={itemFilterSearchValues[columnId]}
+      onFilterSearchChange={(value) => setItemFilterSearchValue(columnId, value)}
+      onToggleFilterValue={(value) => toggleItemFilterOption(columnId, value)}
+      onSelectAllFilterValues={() => setAllItemFilterOptions(columnId)}
+      onClearColumnFilter={() => clearItemColumnFilter(columnId)}
+      onClearVisibleFilterValues={() => setItemVisibleFilterOptions(columnId, false)}
+      endAdornment={resizeHandle(columnId)}
+    />
+  );
+  const renderItemCell = (
+    columnId: ItemTableColumn,
+    item: BudgetItem,
+    local: Partial<BudgetItem>,
+    isDeleted: boolean,
+    draftStatus: ItemStatus,
+    inactiveCatalogSelection: boolean,
+    catalogId: string | null,
+    catalogEntry: CatalogItem | undefined,
+    validationError: string | null,
+    hasDraftChanges: boolean,
+    planFactDifference: number | null,
+    stagedFiles: File[],
+    pendingDeletedFileIds: number[],
+  ) => {
+    switch (columnId) {
+      case 'category':
+        return <TableCell key={columnId} sx={bodyCellSx(columnId)}>{categoryName(catalog, catalogId)}</TableCell>;
+      case 'article':
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            {isEmployeeEditing && !isDeleted ? (
+              <TextField
+                select
+                size="small"
+                value={(kind === 'dds' ? local.dds_id : local.invest_id) || catalogId || ''}
+                onChange={(event) =>
+                  setDrafts({
+                    ...drafts,
+                    [item.id]: { ...local, [kind === 'dds' ? 'dds_id' : 'invest_id']: event.target.value },
+                  })
+                }
+                sx={{ width: '100%', minWidth: 0 }}
+              >
+                {selectableItems(catalog).map((entry) => <MenuItem key={entry.id} value={entry.id}>{catalogLabel(entry, catalog)}</MenuItem>)}
+                {inactiveCatalogSelection && catalogId && (
+                  <MenuItem value={catalogId} disabled>
+                    {catalogLabel(catalog.find((entry) => entry.id === catalogId)!, catalog)} (неактивна)
+                  </MenuItem>
+                )}
+              </TextField>
+            ) : (
+              <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Stack spacing={0.25}>
+                  <span>{catalogEntry?.name || 'Статья НСИ недоступна'}</span>
+                </Stack>
+                {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" />}
+              </Stack>
+            )}
+          </TableCell>
+        );
+      case 'name':
+        return <TableCell key={columnId} sx={bodyCellSx(columnId)}>{item.name || '—'}</TableCell>;
+      case 'justification':
+        return <TableCell key={columnId} sx={bodyCellSx(columnId)}>{item.justification || '—'}</TableCell>;
+      case 'plan':
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            {isEmployeeEditing && !isDeleted ? (
+              <TextField
+                size="small"
+                type="number"
+                value={local.sum_plan ?? item.sum_plan}
+                onChange={(event) =>
+                  setDrafts({ ...drafts, [item.id]: { ...local, sum_plan: Number(event.target.value) } })
+                }
+                inputProps={{ min: 0 }}
+                sx={{ width: '100%', minWidth: 0 }}
+              />
+            ) : (
+              money(item.sum_plan)
+            )}
+          </TableCell>
+        );
+      case 'status':
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            {canEconomist && !isDeleted ? (
+              <TextField
+                select
+                size="small"
+                value={local.status || item.status}
+                onChange={(event) => {
+                  const status = event.target.value as ItemStatus;
+                  const next = { ...local, status };
+                  if (['on_review', 'rejected', 'deleted'].includes(status)) next.sum_fact = 0;
+                  if (status === 'approved') next.sum_fact = item.sum_plan;
+                  setDrafts({ ...drafts, [item.id]: next });
+                }}
+                sx={{ width: '100%', minWidth: 0 }}
+              >
+                {Object.entries(itemStatusLabels).map(([value, label]) => (
+                  <MenuItem key={value} value={value}>
+                    {label}
+                  </MenuItem>
+                ))}
+              </TextField>
+            ) : (
+              <ItemStatusBadge status={item.status} />
+            )}
+          </TableCell>
+        );
+      case 'approved':
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            {canEconomist && !isDeleted ? (
+              <TextField
+                size="small"
+                type="number"
+                value={local.sum_fact ?? item.sum_fact ?? ''}
+                disabled={draftStatus === 'on_review' || draftStatus === 'rejected' || draftStatus === 'approved' || draftStatus === 'deleted'}
+                onChange={(event) =>
+                  setDrafts({
+                    ...drafts,
+                    [item.id]: { ...local, sum_fact: event.target.value === '' ? null : Number(event.target.value) },
+                  })
+                }
+                error={!!validationError}
+                helperText={validationError || undefined}
+                sx={{ width: '100%', minWidth: 0 }}
+              />
+            ) : (
+              money(item.sum_fact)
+            )}
+          </TableCell>
+        );
+      case 'difference':
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            <Typography color={planFactDifference === null ? 'text.secondary' : planFactDifference >= 0 ? 'success.main' : 'error.main'}>
+              {planFactDifference === null ? '—' : money(planFactDifference)}
+            </Typography>
+          </TableCell>
+        );
+      case 'comment':
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            {canEconomist && !isDeleted ? (
+              <TextField
+                size="small"
+                value={local.comment ?? item.comment ?? ''}
+                onChange={(event) => setDrafts({ ...drafts, [item.id]: { ...local, comment: event.target.value } })}
+                sx={{ width: '100%', minWidth: 0 }}
+              />
+            ) : (
+              item.comment || (item.status === 'rejected' ? 'Комментарий рекомендуется' : '—')
+            )}
+          </TableCell>
+        );
+      case 'files':
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            <ItemFilesCell
+              kind={kind}
+              itemId={item.id}
+              editing={isEmployeeEditing && !isDeleted}
+              stagedFiles={stagedFiles}
+              pendingDeletedFileIds={pendingDeletedFileIds}
+              onRemoveStagedFile={(file) =>
+                setStagedFilesByItem((current) => ({
+                  ...current,
+                  [item.id]: (current[item.id] || []).filter((entry) => entry !== file),
+                }))
+              }
+              onStageDelete={(file) =>
+                setPendingDeletedFileIdsByItem((current) => ({
+                  ...current,
+                  [item.id]: [...new Set([...(current[item.id] || []), file.id])],
+                }))
+              }
+              onRestoreDelete={(fileId) =>
+                setPendingDeletedFileIdsByItem((current) => ({
+                  ...current,
+                  [item.id]: (current[item.id] || []).filter((id) => id !== fileId),
+                }))
+              }
+              disabled={saveEmployeeChanges.isPending || isDeleted}
+            />
+          </TableCell>
+        );
+      case 'actions':
+        return (
+          <TableCell key={columnId} align="center" sx={bodyCellSx(columnId)}>
+            <Stack direction="row" spacing={0.5} justifyContent="center" alignItems="center">
+              {isEmployeeEditing && !isDeleted && (
+                <FileAttachAction
+                  disabled={saveEmployeeChanges.isPending}
+                  onUpload={(file) => stageFile(item.id, file)}
+                />
+              )}
+              {canEconomist && !isDeleted ? (
+                <Tooltip title={validationError || 'Сохранить изменения строки'}>
+                  <IconButton
+                    size="small"
+                    color="primary"
+                    onClick={() => patch.mutate({ id: item.id, body: drafts[item.id] || {} })}
+                    disabled={!hasDraftChanges || !!validationError || patch.isPending}
+                    aria-label="Сохранить"
+                  >
+                    <SaveOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              ) : employeeCanEdit && !isEmployeeEditing && !isDeleted ? (
+                <Tooltip title="Удалить строку">
+                  <IconButton
+                    size="small"
+                    color="error"
+                    onClick={() => setDeleteTarget(item)}
+                    aria-label="Удалить строку"
+                  >
+                    <DeleteOutlineIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              ) : canDeleteItem && !isEmployeeEditing && !isDeleted ? (
+                <Tooltip title="Удалить строку">
+                  <IconButton
+                    size="small"
+                    color="error"
+                    onClick={() => setDeleteTarget(item)}
+                    aria-label="Удалить строку"
+                  >
+                    <DeleteOutlineIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              ) : null}
+            </Stack>
+          </TableCell>
+        );
+      default:
+        return null;
+    }
+  };
+  const tableWidth = visibleItemColumns.reduce((sum, column) => sum + columnWidths[column.id], 0);
 
   const resizeColumn = (column: ItemTableColumn, event: ReactPointerEvent<HTMLSpanElement>) => {
     event.preventDefault();
@@ -638,12 +954,20 @@ function ItemsTable({
   };
 
   const headerCell = (column: ItemTableColumn) => ({
-    width: columnWidths[column],
-    minWidth: columnWidths[column],
-    maxWidth: columnWidths[column],
+    width: itemVisibility[column] ? columnWidths[column] : 0,
+    minWidth: itemVisibility[column] ? columnWidths[column] : 0,
+    maxWidth: itemVisibility[column] ? columnWidths[column] : 0,
+    px: itemVisibility[column] ? 1 : 0,
+    py: itemVisibility[column] ? 1 : 0,
+    position: 'relative' as const,
+    display: itemVisibility[column] ? 'table-cell' : 'none',
+  });
+
+  const bodyCellSx = (column: ItemTableColumn, sx: Record<string, unknown> = {}) => ({
     px: 1,
     py: 1,
-    position: 'relative' as const,
+    display: itemVisibility[column] ? 'table-cell' : 'none',
+    ...sx,
   });
 
   const resizeHandle = (column: ItemTableColumn) => (
@@ -816,6 +1140,14 @@ function ItemsTable({
                 <RestartAltIcon fontSize="small" />
               </IconButton>
             </Tooltip>
+            <TableColumnTools
+              columns={itemTableDefinitions}
+              visibility={itemVisibility}
+              onToggleColumn={toggleItemVisibility}
+              onResetColumns={resetItemVisibility}
+              onResetFilters={resetItemFilters}
+              hasActiveFilters={hasActiveItemFilters}
+            />
           </Stack>
         </Stack>
         <Typography color="text.secondary">
@@ -831,246 +1163,86 @@ function ItemsTable({
       </Stack>
       {employeeCanEdit && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || isEmployeeEditing} />}
       <TableContainer className="request-items-table">
-      <Table size="small" sx={{ width: tableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
-        <colgroup>
-          {ITEM_TABLE_COLUMNS.map((column) => <col key={column} style={{ width: columnWidths[column] }} />)}
-        </colgroup>
-        <TableHead>
-          <TableRow>
-            <TableCell sx={headerCell('category')}>Категория{resizeHandle('category')}</TableCell>
-            <TableCell sx={headerCell('article')}>{kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект'}{resizeHandle('article')}</TableCell>
-            <TableCell sx={headerCell('name')}>Наименование{resizeHandle('name')}</TableCell>
-            <TableCell sx={headerCell('justification')}>Обоснование{resizeHandle('justification')}</TableCell>
-            <TableCell sx={headerCell('plan')}>План{resizeHandle('plan')}</TableCell>
-            <TableCell sx={headerCell('status')}>Статус{resizeHandle('status')}</TableCell>
-            <TableCell sx={headerCell('approved')}>Утверждено{resizeHandle('approved')}</TableCell>
-            <TableCell sx={headerCell('difference')}>Корректировка{resizeHandle('difference')}</TableCell>
-            <TableCell sx={headerCell('comment')}>Комментарий{resizeHandle('comment')}</TableCell>
-            <TableCell sx={headerCell('files')}>Файл{resizeHandle('files')}</TableCell>
-            <TableCell sx={headerCell('actions')} align="center">Действия</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {items.map((item) => {
-            const local = drafts[item.id] || {};
-            const isDeleted = item.status === 'deleted';
-            const draftStatus = local.status || item.status;
-            const factIsAutomatic = ['on_review', 'rejected', 'approved', 'deleted'].includes(draftStatus);
-            const hasDraftChanges = hasEffectiveItemChanges(item, local);
-            const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
-            const catalogEntry = catalog.find((entry) => entry.id === catalogId);
-            const inactiveCatalogSelection = isInactiveCatalogSelection(catalog, catalogId);
-            const stagedFiles = stagedFilesByItem[item.id] || [];
-            const pendingDeletedFileIds = pendingDeletedFileIdsByItem[item.id] || [];
-            const validationError = reviewValidationError(item, local);
-            const planValue = Number(local.sum_plan ?? item.sum_plan);
-            const factValue = local.sum_fact !== undefined ? local.sum_fact : item.sum_fact;
-            const planFactDifference = factValue === null || factValue === undefined ? null : Number(factValue) - planValue;
-            return (
-              <TableRow
-                key={item.id}
-                className={[inactiveCatalogSelection && 'inactive-catalog-item', isDeleted && 'deleted-request-item'].filter(Boolean).join(' ')}
-                sx={{
-                  ...(inactiveCatalogSelection ? { '& > .MuiTableCell-root': { bgcolor: 'rgba(237, 108, 2, 0.08)' } } : {}),
-                  ...(isDeleted ? { '& > .MuiTableCell-root': { bgcolor: 'action.hover', color: 'text.secondary' } } : {}),
-                }}
-              >
-                <TableCell sx={{ px: 1, py: 1 }}>{categoryName(catalog, catalogId)}</TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  {isEmployeeEditing && !isDeleted ? (
-                    <TextField
-                      select
-                      size="small"
-                      value={(kind === 'dds' ? local.dds_id : local.invest_id) || catalogId || ''}
-                      onChange={(event) =>
-                        setDrafts({
-                          ...drafts,
-                          [item.id]: { ...local, [kind === 'dds' ? 'dds_id' : 'invest_id']: event.target.value },
-                        })
-                      }
-                      sx={{ width: '100%', minWidth: 0 }}
-                    >
-                      {selectableItems(catalog).map((entry) => <MenuItem key={entry.id} value={entry.id}>{catalogLabel(entry, catalog)}</MenuItem>)}
-                      {inactiveCatalogSelection && catalogId && (
-                        <MenuItem value={catalogId} disabled>
-                          {catalogLabel(catalog.find((entry) => entry.id === catalogId)!, catalog)} (неактивна)
-                        </MenuItem>
-                      )}
-                    </TextField>
-                  ) : (
-                    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                      <Stack spacing={0.25}>
-                        <span>{catalogEntry?.name || 'Статья НСИ недоступна'}</span>
-                      </Stack>
-                      {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" />}
-                    </Stack>
-                  )}
-                </TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  {item.name || '—'}
-                </TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  {item.justification || '—'}
-                </TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  {isEmployeeEditing && !isDeleted ? (
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={local.sum_plan ?? item.sum_plan}
-                      onChange={(event) =>
-                        setDrafts({ ...drafts, [item.id]: { ...local, sum_plan: Number(event.target.value) } })
-                      }
-                      inputProps={{ min: 0 }}
-                      sx={{ width: '100%', minWidth: 0 }}
-                    />
-                  ) : (
-                    money(item.sum_plan)
-                  )}
-                </TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  {canEconomist && !isDeleted ? (
-                    <TextField
-                      select
-                      size="small"
-                      value={local.status || item.status}
-                      onChange={(event) => {
-                        const status = event.target.value as ItemStatus;
-                        const next = { ...local, status };
-                        if (['on_review', 'rejected', 'deleted'].includes(status)) next.sum_fact = 0;
-                        if (status === 'approved') next.sum_fact = item.sum_plan;
-                        setDrafts({ ...drafts, [item.id]: next });
-                      }}
-                      sx={{ width: '100%', minWidth: 0 }}
-                    >
-                      {Object.entries(itemStatusLabels).map(([value, label]) => (
-                        <MenuItem key={value} value={value}>
-                          {label}
-                        </MenuItem>
-                      ))}
-                    </TextField>
-                  ) : (
-                    <ItemStatusBadge status={item.status} />
-                  )}
-                </TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  {canEconomist && !isDeleted ? (
-                    <TextField
-                      size="small"
-                      type="number"
-                      value={local.sum_fact ?? item.sum_fact ?? ''}
-                      disabled={factIsAutomatic}
-                      onChange={(event) =>
-                        setDrafts({
-                          ...drafts,
-                          [item.id]: { ...local, sum_fact: event.target.value === '' ? null : Number(event.target.value) },
-                        })
-                      }
-                      error={!!validationError}
-                      helperText={validationError || undefined}
-                      sx={{ width: '100%', minWidth: 0 }}
-                    />
-                  ) : (
-                    money(item.sum_fact)
-                  )}
-                </TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  <Typography color={planFactDifference === null ? 'text.secondary' : planFactDifference >= 0 ? 'success.main' : 'error.main'}>
-                    {planFactDifference === null ? '—' : money(planFactDifference)}
-                  </Typography>
-                </TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  {canEconomist && !isDeleted ? (
-                    <TextField
-                      size="small"
-                      value={local.comment ?? item.comment ?? ''}
-                      onChange={(event) => setDrafts({ ...drafts, [item.id]: { ...local, comment: event.target.value } })}
-                      sx={{ width: '100%', minWidth: 0 }}
-                    />
-                  ) : (
-                    item.comment || (item.status === 'rejected' ? 'Комментарий рекомендуется' : '—')
-                  )}
-                </TableCell>
-                <TableCell sx={{ px: 1, py: 1 }}>
-                  <ItemFilesCell
-                    kind={kind}
-                    itemId={item.id}
-                    editing={isEmployeeEditing && !isDeleted}
-                    stagedFiles={stagedFiles}
-                    pendingDeletedFileIds={pendingDeletedFileIds}
-                    onRemoveStagedFile={(file) =>
-                      setStagedFilesByItem((current) => ({
-                        ...current,
-                        [item.id]: (current[item.id] || []).filter((entry) => entry !== file),
-                      }))
-                    }
-                    onStageDelete={(file) =>
-                      setPendingDeletedFileIdsByItem((current) => ({
-                        ...current,
-                        [item.id]: [...new Set([...(current[item.id] || []), file.id])],
-                      }))
-                    }
-                    onRestoreDelete={(fileId) =>
-                      setPendingDeletedFileIdsByItem((current) => ({
-                        ...current,
-                        [item.id]: (current[item.id] || []).filter((id) => id !== fileId),
-                      }))
-                    }
-                    disabled={saveEmployeeChanges.isPending || isDeleted}
-                  />
-                </TableCell>
-                <TableCell align="center" sx={{ px: 1, py: 1 }}>
-                  <Stack direction="row" spacing={0.5} justifyContent="center" alignItems="center">
-                    {isEmployeeEditing && !isDeleted && (
-                      <FileAttachAction
-                        disabled={saveEmployeeChanges.isPending}
-                        onUpload={(file) => stageFile(item.id, file)}
-                      />
-                    )}
-                    {canEconomist && !isDeleted ? (
-                      <Tooltip title={validationError || 'Сохранить изменения строки'}>
-                        <IconButton
-                          size="small"
-                          color="primary"
-                          onClick={() => patch.mutate({ id: item.id, body: drafts[item.id] || {} })}
-                          disabled={!hasDraftChanges || !!validationError || patch.isPending}
-                          aria-label="Сохранить"
-                        >
-                          <SaveOutlinedIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                    ) : employeeCanEdit && !isEmployeeEditing && !isDeleted ? (
-                      <>
-                        <Tooltip title="Удалить строку">
-                          <IconButton
-                            size="small"
-                            color="error"
-                            onClick={() => setDeleteTarget(item)}
-                            aria-label="Удалить строку"
-                          >
-                            <DeleteOutlineIcon fontSize="small" />
-                          </IconButton>
-                        </Tooltip>
-                      </>
-                    ) : canDeleteItem && !isEmployeeEditing && !isDeleted ? (
-                      <Tooltip title="Удалить строку">
-                        <IconButton
-                          size="small"
-                          color="error"
-                          onClick={() => setDeleteTarget(item)}
-                          aria-label="Удалить строку"
-                        >
-                          <DeleteOutlineIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                    ) : null}
-                  </Stack>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+        <Table size="small" sx={{ width: tableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
+          <colgroup>
+            {visibleItemColumns.map((column) => <col key={column.id} style={{ width: columnWidths[column.id] }} />)}
+          </colgroup>
+          <TableHead>
+            <TableRow>
+              {visibleItemColumns.map((column) => {
+                switch (column.id) {
+                  case 'category':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('category', 'Категория')}</TableCell>;
+                  case 'article':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('article', kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект')}</TableCell>;
+                  case 'name':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('name', 'Наименование')}</TableCell>;
+                  case 'justification':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('justification', 'Обоснование')}</TableCell>;
+                  case 'plan':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('plan', 'План')}</TableCell>;
+                  case 'status':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('status', 'Статус')}</TableCell>;
+                  case 'approved':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('approved', 'Утверждено')}</TableCell>;
+                  case 'difference':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('difference', 'Корректировка')}</TableCell>;
+                  case 'comment':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('comment', 'Комментарий')}</TableCell>;
+                  case 'files':
+                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('files', 'Файл', { sortable: false, filterable: false })}</TableCell>;
+                  case 'actions':
+                    return <TableCell key={column.id} sx={headerCell(column.id)} align="center">{renderItemHeader('actions', 'Действия', { sortable: false, filterable: false })}</TableCell>;
+                  default:
+                    return null;
+                }
+              })}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {visibleItems.map((item) => {
+              const local = drafts[item.id] || {};
+              const isDeleted = item.status === 'deleted';
+              const draftStatus = local.status || item.status;
+              const hasDraftChanges = hasEffectiveItemChanges(item, local);
+              const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
+              const catalogEntry = catalog.find((entry) => entry.id === catalogId);
+              const inactiveCatalogSelection = isInactiveCatalogSelection(catalog, catalogId);
+              const stagedFiles = stagedFilesByItem[item.id] || [];
+              const pendingDeletedFileIds = pendingDeletedFileIdsByItem[item.id] || [];
+              const validationError = reviewValidationError(item, local);
+              const planValue = Number(local.sum_plan ?? item.sum_plan);
+              const factValue = local.sum_fact !== undefined ? local.sum_fact : item.sum_fact;
+              const planFactDifference = factValue === null || factValue === undefined ? null : Number(factValue) - planValue;
+              return (
+                <TableRow
+                  key={item.id}
+                  className={[inactiveCatalogSelection && 'inactive-catalog-item', isDeleted && 'deleted-request-item'].filter(Boolean).join(' ')}
+                  sx={{
+                    ...(inactiveCatalogSelection ? { '& > .MuiTableCell-root': { bgcolor: 'rgba(237, 108, 2, 0.08)' } } : {}),
+                    ...(isDeleted ? { '& > .MuiTableCell-root': { bgcolor: 'action.hover', color: 'text.secondary' } } : {}),
+                  }}
+                >
+                  {visibleItemColumns.map((column) => renderItemCell(
+                    column.id,
+                    item,
+                    local,
+                    isDeleted,
+                    draftStatus,
+                    inactiveCatalogSelection,
+                    catalogId ?? null,
+                    catalogEntry,
+                    validationError,
+                    hasDraftChanges,
+                    planFactDifference,
+                    stagedFiles,
+                    pendingDeletedFileIds,
+                  ))}
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
       </TableContainer>
 
       <ConfirmDialog
@@ -1265,16 +1437,76 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     [requestItems, usesInvestProjects],
   );
   const allItems = requestItems.filter((item) => item.status !== 'deleted');
-  const deletePreviewRows = useMemo(() => {
-    const rows = [
-      ...allItems.map((item) => ({
-        kind: usesInvestProjects ? 'Инвест' : 'ДДС',
-        name: activeCatalog.find((entry) => entry.id === (usesInvestProjects ? item.invest_id : item.dds_id))?.name || item.name,
-        sum: item.sum_plan,
-      })),
-    ];
-    return rows.slice(0, 5);
-  }, [activeCatalog, allItems, usesInvestProjects]);
+  const requestDeletePreviewDefinitions = useMemo<TableColumnDefinition<RequestDeletePreviewRow, RequestDeletePreviewColumn>[]>(() => [
+    {
+      id: 'kind',
+      label: 'Тип',
+      getValue: (row) => row.kind,
+    },
+    {
+      id: 'name',
+      label: 'Статья / проект',
+      getValue: (row) => row.name,
+    },
+    {
+      id: 'sum',
+      label: 'План',
+      getValue: (row) => money(row.sum),
+      getSortValue: (row) => row.sum,
+    },
+  ], []);
+  const requestDeletePreviewRows = useMemo<RequestDeletePreviewRow[]>(() => allItems.map((item) => ({
+    kind: usesInvestProjects ? 'Инвест' : 'ДДС',
+    name: activeCatalog.find((entry) => entry.id === (usesInvestProjects ? item.invest_id : item.dds_id))?.name || item.name || '',
+    sum: item.sum_plan,
+  })), [activeCatalog, allItems, usesInvestProjects]);
+  const {
+    clearColumnFilter: clearRequestDeletePreviewColumnFilter,
+    clearSort: clearRequestDeletePreviewSort,
+    filterOptions: requestDeletePreviewFilterOptions,
+    filterSearchValues: requestDeletePreviewFilterSearchValues,
+    hasActiveFilters: hasActiveRequestDeletePreviewFilters,
+    resetFilters: resetRequestDeletePreviewFilters,
+    resetVisibility: resetRequestDeletePreviewVisibility,
+    rows: visibleRequestDeletePreviewRows,
+    selectedFilterValues: selectedRequestDeletePreviewFilterValues,
+    setAllFilterOptions: setAllRequestDeletePreviewFilterOptions,
+    setFilterSearchValue: setRequestDeletePreviewFilterSearchValue,
+    setSortAscending: setRequestDeletePreviewSortAscending,
+    setSortDescending: setRequestDeletePreviewSortDescending,
+    setVisibleFilterOptions: setRequestDeletePreviewVisibleFilterOptions,
+    sort: requestDeletePreviewSort,
+    toggleFilterOption: toggleRequestDeletePreviewFilterOption,
+    toggleVisibility: toggleRequestDeletePreviewVisibility,
+    visibility: requestDeletePreviewVisibility,
+    visibleColumns: visibleRequestDeletePreviewColumns,
+  } = useTableColumnControls({
+    rows: requestDeletePreviewRows,
+    columns: requestDeletePreviewDefinitions,
+  });
+  const renderRequestDeletePreviewHeader = (
+    columnId: RequestDeletePreviewColumn,
+    label: string,
+    options?: { sortable?: boolean; filterable?: boolean },
+  ) => (
+    <TableColumnHeader
+      label={label}
+      sortable={options?.sortable}
+      filterable={options?.filterable}
+      sortDirection={requestDeletePreviewSort?.column === columnId ? requestDeletePreviewSort.direction : null}
+      onSortAscending={() => setRequestDeletePreviewSortAscending(columnId)}
+      onSortDescending={() => setRequestDeletePreviewSortDescending(columnId)}
+      onClearSort={() => clearRequestDeletePreviewSort(columnId)}
+      filterOptions={requestDeletePreviewFilterOptions[columnId]}
+      selectedFilterValues={selectedRequestDeletePreviewFilterValues[columnId]}
+      filterSearchValue={requestDeletePreviewFilterSearchValues[columnId]}
+      onFilterSearchChange={(value) => setRequestDeletePreviewFilterSearchValue(columnId, value)}
+      onToggleFilterValue={(value) => toggleRequestDeletePreviewFilterOption(columnId, value)}
+      onSelectAllFilterValues={() => setAllRequestDeletePreviewFilterOptions(columnId)}
+      onClearColumnFilter={() => clearRequestDeletePreviewColumnFilter(columnId)}
+      onClearVisibleFilterValues={() => setRequestDeletePreviewVisibleFilterOptions(columnId, false)}
+    />
+  );
   const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.frozen && allItems.length > 0;
   const canWithdraw = user.role === 'employee' && request && request.status === 'on_review' && !request.frozen;
   const canCancel = user.role === 'employee' && request && request.status === 'on_review' && !request.frozen;
@@ -1616,28 +1848,56 @@ export default function RequestDetailsPage({ user }: { user: User }) {
         maxWidth="md"
         description={
           <Stack spacing={1.5}>
-            <Table size="small">
+            <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="body2" color="text.secondary">
+                Проверьте строки перед удалением.
+              </Typography>
+              <TableColumnTools
+                columns={requestDeletePreviewDefinitions}
+                visibility={requestDeletePreviewVisibility}
+                onToggleColumn={toggleRequestDeletePreviewVisibility}
+                onResetColumns={resetRequestDeletePreviewVisibility}
+                onResetFilters={resetRequestDeletePreviewFilters}
+                hasActiveFilters={hasActiveRequestDeletePreviewFilters}
+              />
+            </Stack>
+            <Table size="small" sx={{ width: '100%' }}>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={{ py: 0.75 }}>Тип</TableCell>
-                  <TableCell sx={{ py: 0.75 }}>Статья / проект</TableCell>
-                  <TableCell sx={{ py: 0.75 }} align="right">План</TableCell>
+                  {visibleRequestDeletePreviewColumns.map((column) => {
+                    switch (column.id) {
+                      case 'kind':
+                        return <TableCell key={column.id} sx={{ py: 0.75 }}>{renderRequestDeletePreviewHeader('kind', 'Тип')}</TableCell>;
+                      case 'name':
+                        return <TableCell key={column.id} sx={{ py: 0.75 }}>{renderRequestDeletePreviewHeader('name', 'Статья / проект')}</TableCell>;
+                      case 'sum':
+                        return <TableCell key={column.id} sx={{ py: 0.75 }} align="right">{renderRequestDeletePreviewHeader('sum', 'План')}</TableCell>;
+                      default:
+                        return null;
+                    }
+                  })}
                 </TableRow>
               </TableHead>
               <TableBody>
-                {deletePreviewRows.map((row, index) => (
+                {visibleRequestDeletePreviewRows.length > 0 ? visibleRequestDeletePreviewRows.map((row, index) => (
                   <TableRow key={`${row.kind}-${row.name}-${index}`}>
-                    <TableCell sx={{ py: 0.75 }}>{row.kind}</TableCell>
-                    <TableCell sx={{ py: 0.75 }}>{row.name}</TableCell>
-                    <TableCell sx={{ py: 0.75 }} align="right">
-                      {money(row.sum)}
-                    </TableCell>
+                    {visibleRequestDeletePreviewColumns.map((column) => {
+                      switch (column.id) {
+                        case 'kind':
+                          return <TableCell key={column.id} sx={{ py: 0.75 }}>{row.kind}</TableCell>;
+                        case 'name':
+                          return <TableCell key={column.id} sx={{ py: 0.75 }}>{row.name}</TableCell>;
+                        case 'sum':
+                          return <TableCell key={column.id} sx={{ py: 0.75 }} align="right">{money(row.sum)}</TableCell>;
+                        default:
+                          return null;
+                      }
+                    })}
                   </TableRow>
-                ))}
-                {allItems.length > deletePreviewRows.length && (
+                )) : (
                   <TableRow>
-                    <TableCell sx={{ py: 0.75 }} colSpan={3}>
-                      Ещё строк: {allItems.length - deletePreviewRows.length}
+                    <TableCell sx={{ py: 1.5 }} colSpan={visibleRequestDeletePreviewColumns.length || 1} align="center">
+                      Ничего не найдено
                     </TableCell>
                   </TableRow>
                 )}

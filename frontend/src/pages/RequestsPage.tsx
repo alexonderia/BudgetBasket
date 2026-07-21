@@ -35,12 +35,14 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
-import { RequestStatusBadge } from '../components/StatusBadge';
 import { useAppToast } from '../components/Layout';
+import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
+import { RequestStatusBadge } from '../components/StatusBadge';
 import type { BudgetItem, BudgetRequest, CatalogItem, RequestStatus, Unit, User } from '../types';
 import { EXPORTABLE_REQUEST_STATUSES } from '../types';
 import { downloadBlob } from '../utils/download';
 import { money, requestStatusLabels } from '../utils/labels';
+import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
 
 function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -48,6 +50,14 @@ function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
   return detail || (error instanceof Error ? error.message : fallback);
 }
+
+type RequestTableColumn = 'unit' | 'status' | 'planned' | 'approved' | 'items_count' | 'actions';
+type DeletePreviewColumn = 'kind' | 'name' | 'sum';
+type DeletePreviewRow = {
+  kind: string;
+  name: string;
+  sum: number;
+};
 
 export default function RequestsPage({ user }: { user: User }) {
   const navigate = useNavigate();
@@ -244,19 +254,119 @@ export default function RequestsPage({ user }: { user: User }) {
     ));
   };
 
-  const deletePreviewRows = useMemo(() => {
+  const deletePreviewRows = useMemo<DeletePreviewRow[]>(() => {
     const ddsRows = deleteTargetDds.map((item) => ({
       kind: 'ДДС',
-      name: deleteTargetDdsCatalog.find((entry) => entry.id === item.dds_id)?.name || item.dds_id,
+      name: deleteTargetDdsCatalog.find((entry) => entry.id === item.dds_id)?.name || item.dds_id || '',
       sum: item.sum_plan,
     }));
     const investRows = deleteTargetInvest.map((item) => ({
       kind: 'Инвест',
-      name: deleteTargetInvestCatalog.find((entry) => entry.id === item.invest_id)?.name || item.invest_id,
+      name: deleteTargetInvestCatalog.find((entry) => entry.id === item.invest_id)?.name || item.invest_id || '',
       sum: item.sum_plan,
     }));
-    return [...ddsRows, ...investRows].slice(0, 5);
+    return [...ddsRows, ...investRows];
   }, [deleteTargetDds, deleteTargetDdsCatalog, deleteTargetInvest, deleteTargetInvestCatalog]);
+
+  const requestTableColumns = useMemo<TableColumnDefinition<BudgetRequest, RequestTableColumn>[]>(() => [
+    { id: 'unit', label: 'Объединение заявки', getValue: (item) => formatUnitName(item.unit_id) },
+    { id: 'status', label: 'Статус', getValue: (item) => requestStatusLabels[item.status] || item.status },
+    { id: 'planned', label: 'План', getValue: (item) => money(item.summary?.planned_sum), getSortValue: (item) => item.summary?.planned_sum ?? 0 },
+    { id: 'approved', label: 'Утверждено', getValue: (item) => money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum)), getSortValue: (item) => item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum) },
+    { id: 'items_count', label: 'Строк', getValue: (item) => String(item.summary?.items_count || 0), getSortValue: (item) => item.summary?.items_count || 0 },
+    { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
+  ], [formatUnitName]);
+  const {
+    clearColumnFilter: clearRequestColumnFilter,
+    clearSort: clearRequestSort,
+    filterOptions: requestFilterOptions,
+    filterSearchValues: requestFilterSearchValues,
+    hasActiveFilters: hasActiveRequestFilters,
+    resetFilters: resetRequestFilters,
+    resetVisibility: resetRequestVisibility,
+    rows: visibleRequests,
+    selectedFilterValues: selectedRequestFilterValues,
+    setAllFilterOptions: setAllRequestFilterOptions,
+    setFilterSearchValue: setRequestFilterSearchValue,
+    setSortAscending: setRequestSortAscending,
+    setSortDescending: setRequestSortDescending,
+    setVisibleFilterOptions: setRequestVisibleFilterOptions,
+    sort: requestSort,
+    toggleFilterOption: toggleRequestFilterOption,
+    toggleVisibility: toggleRequestVisibility,
+    visibility: requestVisibility,
+    visibleColumns: visibleRequestColumns,
+  } = useTableColumnControls({ rows: filteredRequests, columns: requestTableColumns });
+  const renderRequestHeader = (
+    columnId: RequestTableColumn,
+    label: string,
+    options?: { sortable?: boolean; filterable?: boolean },
+  ) => (
+    <TableColumnHeader
+      label={label}
+      sortable={options?.sortable}
+      filterable={options?.filterable}
+      sortDirection={requestSort?.column === columnId ? requestSort.direction : null}
+      onSortAscending={() => setRequestSortAscending(columnId)}
+      onSortDescending={() => setRequestSortDescending(columnId)}
+      onClearSort={() => clearRequestSort(columnId)}
+      filterOptions={requestFilterOptions[columnId]}
+      selectedFilterValues={selectedRequestFilterValues[columnId]}
+      filterSearchValue={requestFilterSearchValues[columnId]}
+      onFilterSearchChange={(value) => setRequestFilterSearchValue(columnId, value)}
+      onToggleFilterValue={(value) => toggleRequestFilterOption(columnId, value)}
+      onSelectAllFilterValues={() => setAllRequestFilterOptions(columnId)}
+      onClearColumnFilter={() => clearRequestColumnFilter(columnId)}
+      onClearVisibleFilterValues={() => setRequestVisibleFilterOptions(columnId, false)}
+    />
+  );
+
+  const deletePreviewColumns = useMemo<TableColumnDefinition<DeletePreviewRow, DeletePreviewColumn>[]>(() => [
+    { id: 'kind', label: 'Тип', getValue: (row) => row.kind },
+    { id: 'name', label: 'Статья / проект', getValue: (row) => row.name },
+    { id: 'sum', label: 'План', getValue: (row) => money(row.sum), getSortValue: (row) => row.sum },
+  ], []);
+  const {
+    clearColumnFilter: clearDeletePreviewColumnFilter,
+    clearSort: clearDeletePreviewSort,
+    filterOptions: deletePreviewFilterOptions,
+    filterSearchValues: deletePreviewFilterSearchValues,
+    hasActiveFilters: hasActiveDeletePreviewFilters,
+    resetFilters: resetDeletePreviewFilters,
+    resetVisibility: resetDeletePreviewVisibility,
+    rows: visibleDeletePreviewRows,
+    selectedFilterValues: selectedDeletePreviewFilterValues,
+    setAllFilterOptions: setAllDeletePreviewFilterOptions,
+    setFilterSearchValue: setDeletePreviewFilterSearchValue,
+    setSortAscending: setDeletePreviewSortAscending,
+    setSortDescending: setDeletePreviewSortDescending,
+    setVisibleFilterOptions: setDeletePreviewVisibleFilterOptions,
+    sort: deletePreviewSort,
+    toggleFilterOption: toggleDeletePreviewFilterOption,
+    toggleVisibility: toggleDeletePreviewVisibility,
+    visibility: deletePreviewVisibility,
+    visibleColumns: visibleDeletePreviewColumns,
+  } = useTableColumnControls({ rows: deletePreviewRows, columns: deletePreviewColumns });
+  const renderDeletePreviewHeader = (
+    columnId: DeletePreviewColumn,
+    label: string,
+  ) => (
+    <TableColumnHeader
+      label={label}
+      sortDirection={deletePreviewSort?.column === columnId ? deletePreviewSort.direction : null}
+      onSortAscending={() => setDeletePreviewSortAscending(columnId)}
+      onSortDescending={() => setDeletePreviewSortDescending(columnId)}
+      onClearSort={() => clearDeletePreviewSort(columnId)}
+      filterOptions={deletePreviewFilterOptions[columnId]}
+      selectedFilterValues={selectedDeletePreviewFilterValues[columnId]}
+      filterSearchValue={deletePreviewFilterSearchValues[columnId]}
+      onFilterSearchChange={(value) => setDeletePreviewFilterSearchValue(columnId, value)}
+      onToggleFilterValue={(value) => toggleDeletePreviewFilterOption(columnId, value)}
+      onSelectAllFilterValues={() => setAllDeletePreviewFilterOptions(columnId)}
+      onClearColumnFilter={() => clearDeletePreviewColumnFilter(columnId)}
+      onClearVisibleFilterValues={() => setDeletePreviewVisibleFilterOptions(columnId, false)}
+    />
+  );
 
   return (
     <Stack spacing={3}>
@@ -429,62 +539,76 @@ export default function RequestsPage({ user }: { user: User }) {
       </Dialog>
 
       <Paper className="table-surface" elevation={0}>
+        <Stack direction="row" justifyContent="flex-end" sx={{ px: 2, pt: 2 }}>
+          <TableColumnTools
+            columns={requestTableColumns}
+            visibility={requestVisibility}
+            onToggleColumn={toggleRequestVisibility}
+            onResetColumns={resetRequestVisibility}
+            onResetFilters={resetRequestFilters}
+            hasActiveFilters={hasActiveRequestFilters}
+          />
+        </Stack>
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Объединение заявки</TableCell>
-              <TableCell>Статус</TableCell>
-              <TableCell>План</TableCell>
-              <TableCell>Утверждено</TableCell>
-              <TableCell>Строк</TableCell>
-              <TableCell align="right">Действия</TableCell>
+              {requestVisibility.unit && <TableCell>{renderRequestHeader('unit', 'Объединение заявки')}</TableCell>}
+              {requestVisibility.status && <TableCell>{renderRequestHeader('status', 'Статус')}</TableCell>}
+              {requestVisibility.planned && <TableCell>{renderRequestHeader('planned', 'План')}</TableCell>}
+              {requestVisibility.approved && <TableCell>{renderRequestHeader('approved', 'Утверждено')}</TableCell>}
+              {requestVisibility.items_count && <TableCell>{renderRequestHeader('items_count', 'Строк')}</TableCell>}
+              {requestVisibility.actions && <TableCell align="right">{renderRequestHeader('actions', 'Действия', { sortable: false, filterable: false })}</TableCell>}
             </TableRow>
           </TableHead>
           <TableBody>
-            {filteredRequests.map((item) => {
+            {visibleRequests.map((item) => {
               const canDelete = item.status === 'draft' && user.role === 'employee';
               const canWithdraw = item.status === 'on_review' && user.role === 'employee';
               const unitName = formatUnitName(item.unit_id);
               return (
-              <TableRow
+                <TableRow
                   key={item.id}
                   hover
                   onClick={() => navigate(`/requests/${item.id}`)}
                   sx={{ cursor: 'pointer' }}
                   className={item.frozen ? 'fixed-request' : ''}
                 >
-                  <TableCell>{unitName}</TableCell>
-                  <TableCell>
-                    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                      <RequestStatusBadge status={item.status} />
-                      {item.frozen && (
-                        <Chip size="small" icon={<LockOutlinedIcon />} label="Зафиксирован" color="warning" variant="outlined" />
-                      )}
-                    </Stack>
-                  </TableCell>
-                  <TableCell>{money(item.summary?.planned_sum)}</TableCell>
-                  <TableCell>{money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum))}</TableCell>
-                  <TableCell>{item.summary?.items_count || 0}</TableCell>
-                  <TableCell align="right">
-                    <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                      {canWithdraw ? (
-                        <Button size="small" startIcon={<UndoIcon />} onClick={(event) => { event.stopPropagation(); setWithdrawTarget(item); }} disabled={withdrawRequest.isPending}>
-                          Отозвать
-                        </Button>
-                      ) : null}
-                      {canDelete ? (
-                        <Button size="small" startIcon={<DeleteOutlineIcon />} color="error" onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }}>
-                          Удалить
-                        </Button>
-                      ) : null}
-                    </Stack>
-                  </TableCell>
+                  {requestVisibility.unit && <TableCell>{unitName}</TableCell>}
+                  {requestVisibility.status && (
+                    <TableCell>
+                      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                        <RequestStatusBadge status={item.status} />
+                        {item.frozen && (
+                          <Chip size="small" icon={<LockOutlinedIcon />} label="Зафиксирован" color="warning" variant="outlined" />
+                        )}
+                      </Stack>
+                    </TableCell>
+                  )}
+                  {requestVisibility.planned && <TableCell>{money(item.summary?.planned_sum)}</TableCell>}
+                  {requestVisibility.approved && <TableCell>{money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum))}</TableCell>}
+                  {requestVisibility.items_count && <TableCell>{item.summary?.items_count || 0}</TableCell>}
+                  {requestVisibility.actions && (
+                    <TableCell align="right">
+                      <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                        {canWithdraw ? (
+                          <Button size="small" startIcon={<UndoIcon />} onClick={(event) => { event.stopPropagation(); setWithdrawTarget(item); }} disabled={withdrawRequest.isPending}>
+                            Отозвать
+                          </Button>
+                        ) : null}
+                        {canDelete ? (
+                          <Button size="small" startIcon={<DeleteOutlineIcon />} color="error" onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }}>
+                            Удалить
+                          </Button>
+                        ) : null}
+                      </Stack>
+                    </TableCell>
+                  )}
                 </TableRow>
               );
             })}
-            {filteredRequests.length === 0 && (
+            {visibleRequests.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} align="center">Заявки по выбранным фильтрам не найдены</TableCell>
+                <TableCell colSpan={visibleRequestColumns.length} align="center">Заявки по выбранным фильтрам не найдены</TableCell>
               </TableRow>
             )}
           </TableBody>
@@ -513,43 +637,55 @@ export default function RequestsPage({ user }: { user: User }) {
             <Stack spacing={1.5}>
               {deleteTargetRequest ? (
                 <Typography variant="body2" color="text.secondary">
-                  {deleteTargetRequest.unit_id ? `Заявка привязана к объединению: ${formatUnitName(deleteTargetRequest.unit_id)}` : ''}
+                  {deleteTargetRequest.unit_id ? `???????????? ?????????????????? ?? ??????????????????????: ${formatUnitName(deleteTargetRequest.unit_id)}` : ''}
                 </Typography>
               ) : (
                 <Typography variant="body2" color="text.secondary">
-                  Загрузка состава заявки...
+                  ???????????????? ?????????????? ????????????...
                 </Typography>
               )}
               {deletePreviewRows.length > 0 && (
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ py: 0.75 }}>Тип</TableCell>
-                      <TableCell sx={{ py: 0.75 }}>Статья / проект</TableCell>
-                      <TableCell sx={{ py: 0.75 }} align="right">
-                        План
-                      </TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {deletePreviewRows.map((row, index) => (
-                      <TableRow key={`${row.kind}-${row.name}-${index}`}>
-                        <TableCell sx={{ py: 0.75 }}>{row.kind}</TableCell>
-                        <TableCell sx={{ py: 0.75 }}>{row.name}</TableCell>
-                        <TableCell sx={{ py: 0.75 }} align="right">
-                          {money(row.sum)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {deleteTargetDds.length + deleteTargetInvest.length > deletePreviewRows.length && (
+                <Stack spacing={1}>
+                  <Stack direction="row" justifyContent="flex-end">
+                    <TableColumnTools
+                      columns={deletePreviewColumns}
+                      visibility={deletePreviewVisibility}
+                      onToggleColumn={toggleDeletePreviewVisibility}
+                      onResetColumns={resetDeletePreviewVisibility}
+                      onResetFilters={resetDeletePreviewFilters}
+                      hasActiveFilters={hasActiveDeletePreviewFilters}
+                    />
+                  </Stack>
+                  <Table size="small">
+                    <TableHead>
                       <TableRow>
-                        <TableCell sx={{ py: 0.75 }} colSpan={3}>
-                          Ещё строк: {deleteTargetDds.length + deleteTargetInvest.length - deletePreviewRows.length}
-                        </TableCell>
+                        {deletePreviewVisibility.kind && <TableCell sx={{ py: 0.75 }}>{renderDeletePreviewHeader('kind', '???')}</TableCell>}
+                        {deletePreviewVisibility.name && <TableCell sx={{ py: 0.75 }}>{renderDeletePreviewHeader('name', '?????? / ??????')}</TableCell>}
+                        {deletePreviewVisibility.sum && <TableCell sx={{ py: 0.75 }} align="right">{renderDeletePreviewHeader('sum', '????')}</TableCell>}
                       </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
+                    </TableHead>
+                    <TableBody>
+                      {visibleDeletePreviewRows.map((row, index) => (
+                        <TableRow key={`${row.kind}-${row.name}-${index}`}>
+                          {deletePreviewVisibility.kind && <TableCell sx={{ py: 0.75 }}>{row.kind}</TableCell>}
+                          {deletePreviewVisibility.name && <TableCell sx={{ py: 0.75 }}>{row.name}</TableCell>}
+                          {deletePreviewVisibility.sum && (
+                            <TableCell sx={{ py: 0.75 }} align="right">
+                              {money(row.sum)}
+                            </TableCell>
+                          )}
+                        </TableRow>
+                      ))}
+                      {visibleDeletePreviewRows.length === 0 && (
+                        <TableRow>
+                          <TableCell sx={{ py: 0.75 }} colSpan={visibleDeletePreviewColumns.length} align="center">
+                            ?????? ?? ???????
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </Stack>
               )}
             </Stack>
           ) : null

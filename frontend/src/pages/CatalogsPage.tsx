@@ -33,12 +33,15 @@ import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import { downloadBlob } from '../utils/download';
 import type { CatalogItem, Unit } from '../types';
+import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
 
 type CatalogKind = 'dds' | 'invests';
+type CatalogTableColumn = 'type' | 'name' | 'category' | 'unit' | 'active' | 'actions';
 
 type ManualRow = {
   id: string;
@@ -53,6 +56,9 @@ type CategoryRow = {
   name: string;
   is_active: boolean;
 };
+
+type CategoryTableColumn = 'name' | 'active' | 'actions';
+type ManualTableColumn = 'category' | 'name' | 'unit' | 'active' | 'actions';
 
 type CatalogDraft = {
   parent_id: string;
@@ -360,6 +366,128 @@ function CatalogManageDialog({
     '& .MuiInputBase-input': { py: 1, fontSize: 14 },
   };
 
+  const categoryTableColumns = useMemo<TableColumnDefinition<CategoryRow, CategoryTableColumn>[]>(() => [
+    { id: 'name', label: 'Категория', getValue: (row) => row.name },
+    {
+      id: 'active',
+      label: 'Активен',
+      getValue: (row) => row.is_active ? 'Да' : 'Нет',
+      getSortValue: (row) => row.is_active ? 1 : 0,
+    },
+    { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
+  ], []);
+  const {
+    clearColumnFilter: clearCategoryColumnFilter,
+    clearSort: clearCategorySort,
+    filterOptions: categoryFilterOptions,
+    filterSearchValues: categoryFilterSearchValues,
+    hasActiveFilters: hasActiveCategoryFilters,
+    resetFilters: resetCategoryFilters,
+    resetVisibility: resetCategoryVisibility,
+    rows: visibleCategoryRows,
+    selectedFilterValues: selectedCategoryFilterValues,
+    setAllFilterOptions: setAllCategoryFilterOptions,
+    setFilterSearchValue: setCategoryFilterSearchValue,
+    setSortAscending: setCategorySortAscending,
+    setSortDescending: setCategorySortDescending,
+    setVisibleFilterOptions: setCategoryVisibleFilterOptions,
+    sort: categorySort,
+    toggleFilterOption: toggleCategoryFilterOption,
+    toggleVisibility: toggleCategoryVisibility,
+    visibility: categoryVisibility,
+    visibleColumns: visibleCategoryColumns,
+  } = useTableColumnControls({
+    rows: categoryRows,
+    columns: categoryTableColumns,
+  });
+  const renderCategoryHeader = (
+    columnId: CategoryTableColumn,
+    label: string,
+    options?: { sortable?: boolean; filterable?: boolean },
+  ) => (
+    <TableColumnHeader
+      label={label}
+      sortable={options?.sortable}
+      filterable={options?.filterable}
+      sortDirection={categorySort?.column === columnId ? categorySort.direction : null}
+      onSortAscending={() => setCategorySortAscending(columnId)}
+      onSortDescending={() => setCategorySortDescending(columnId)}
+      onClearSort={() => clearCategorySort(columnId)}
+      filterOptions={categoryFilterOptions[columnId]}
+      selectedFilterValues={selectedCategoryFilterValues[columnId]}
+      filterSearchValue={categoryFilterSearchValues[columnId]}
+      onFilterSearchChange={(value) => setCategoryFilterSearchValue(columnId, value)}
+      onToggleFilterValue={(value) => toggleCategoryFilterOption(columnId, value)}
+      onSelectAllFilterValues={() => setAllCategoryFilterOptions(columnId)}
+      onClearColumnFilter={() => clearCategoryColumnFilter(columnId)}
+      onClearVisibleFilterValues={() => setCategoryVisibleFilterOptions(columnId, false)}
+    />
+  );
+
+  const manualTableColumns = useMemo<TableColumnDefinition<ManualRow, ManualTableColumn>[]>(() => [
+    { id: 'category', label: 'Категория', getValue: (row) => row.category },
+    { id: 'name', label: 'Наименование', getValue: (row) => row.name },
+    {
+      id: 'unit',
+      label: 'Подразделение',
+      getValue: (row) => departments.find((unit) => unit.id === row.unit_id)?.name || row.unit_id || '—',
+    },
+    {
+      id: 'active',
+      label: 'Активен',
+      getValue: (row) => row.is_active ? 'Да' : 'Нет',
+      getSortValue: (row) => row.is_active ? 1 : 0,
+    },
+    { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
+  ], [departments]);
+  const {
+    clearColumnFilter: clearManualColumnFilter,
+    clearSort: clearManualSort,
+    filterOptions: manualFilterOptions,
+    filterSearchValues: manualFilterSearchValues,
+    hasActiveFilters: hasActiveManualFilters,
+    resetFilters: resetManualFilters,
+    resetVisibility: resetManualVisibility,
+    rows: visibleManualRows,
+    selectedFilterValues: selectedManualFilterValues,
+    setAllFilterOptions: setAllManualFilterOptions,
+    setFilterSearchValue: setManualFilterSearchValue,
+    setSortAscending: setManualSortAscending,
+    setSortDescending: setManualSortDescending,
+    setVisibleFilterOptions: setManualVisibleFilterOptions,
+    sort: manualSort,
+    toggleFilterOption: toggleManualFilterOption,
+    toggleVisibility: toggleManualVisibility,
+    visibility: manualVisibility,
+    visibleColumns: visibleManualColumns,
+  } = useTableColumnControls({
+    rows,
+    columns: manualTableColumns,
+  });
+  const renderManualHeader = (
+    columnId: ManualTableColumn,
+    label: string,
+    options?: { sortable?: boolean; filterable?: boolean },
+  ) => (
+    <TableColumnHeader
+      label={label}
+      sortable={options?.sortable}
+      filterable={options?.filterable}
+      sortDirection={manualSort?.column === columnId ? manualSort.direction : null}
+      onSortAscending={() => setManualSortAscending(columnId)}
+      onSortDescending={() => setManualSortDescending(columnId)}
+      onClearSort={() => clearManualSort(columnId)}
+      filterOptions={manualFilterOptions[columnId]}
+      selectedFilterValues={selectedManualFilterValues[columnId]}
+      filterSearchValue={manualFilterSearchValues[columnId]}
+      onFilterSearchChange={(value) => setManualFilterSearchValue(columnId, value)}
+      onToggleFilterValue={(value) => toggleManualFilterOption(columnId, value)}
+      onSelectAllFilterValues={() => setAllManualFilterOptions(columnId)}
+      onClearColumnFilter={() => clearManualColumnFilter(columnId)}
+      onClearVisibleFilterValues={() => setManualVisibleFilterOptions(columnId, false)}
+    />
+  );
+
   return (
     <Dialog open={open} onClose={handleClose} fullWidth maxWidth="lg">
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pr: 6, flexWrap: 'wrap' }}>
@@ -408,52 +536,75 @@ function CatalogManageDialog({
               <Typography color="text.secondary" variant="body2" sx={{ mb: 1.5 }}>
                 Сначала сохраните категории здесь, а затем проверьте строки ниже.
               </Typography>
+              <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1.5 }}>
+                <TableColumnTools
+                  columns={categoryTableColumns}
+                  visibility={categoryVisibility}
+                  onToggleColumn={toggleCategoryVisibility}
+                  onResetColumns={resetCategoryVisibility}
+                  onResetFilters={resetCategoryFilters}
+                  hasActiveFilters={hasActiveCategoryFilters}
+                />
+              </Stack>
               <TableContainer component={Paper} variant="outlined" className="catalog-manual-table" sx={{ borderRadius: '8px', overflow: 'auto' }}>
                 <Table size="small">
                   <TableHead>
                     <TableRow sx={{ bgcolor: '#F8FAFC' }}>
-                      <TableCell sx={{ fontWeight: 700, minWidth: 260 }}>Категория</TableCell>
-                      <TableCell sx={{ fontWeight: 700, width: 120 }}>Активен</TableCell>
-                      <TableCell sx={{ width: 56 }} />
+                      {categoryVisibility.name && <TableCell sx={{ minWidth: 260 }}>{renderCategoryHeader('name', '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F')}</TableCell>}
+                      {categoryVisibility.active && <TableCell sx={{ width: 120 }}>{renderCategoryHeader('active', '\u0410\u043A\u0442\u0438\u0432\u0435\u043D')}</TableCell>}
+                      {categoryVisibility.actions && <TableCell sx={{ width: 56 }}>{renderCategoryHeader('actions', '\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F', { sortable: false, filterable: false })}</TableCell>}
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {categoryRows.map((row) => (
+                    {visibleCategoryRows.map((row) => (
                       <TableRow key={row.id} hover>
-                        <TableCell>
-                          <TextField
-                            size="small"
-                            value={row.name}
-                            onChange={(event) => updateCategoryRow(row.id, { name: event.target.value })}
-                            placeholder="Название категории"
-                            fullWidth
-                            sx={cellFieldSx}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <TextField
-                            select
-                            size="small"
-                            value={row.is_active ? 'да' : 'нет'}
-                            onChange={(event) => updateCategoryRow(row.id, { is_active: event.target.value === 'да' })}
-                            fullWidth
-                            sx={cellFieldSx}
-                          >
-                            <MenuItem value="да">да</MenuItem>
-                            <MenuItem value="нет">нет</MenuItem>
-                          </TextField>
-                        </TableCell>
-                        <TableCell align="center">
-                          <IconButton
-                            size="small"
-                            disabled={categoryRows.length === 1}
-                            onClick={() => setCategoryRows((prev) => prev.filter((item) => item.id !== row.id))}
-                          >
-                            <DeleteOutlineIcon fontSize="small" />
-                          </IconButton>
-                        </TableCell>
+                        {categoryVisibility.name && (
+                          <TableCell>
+                            <TextField
+                              size="small"
+                              value={row.name}
+                              onChange={(event) => updateCategoryRow(row.id, { name: event.target.value })}
+                              placeholder="\u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u0438"
+                              fullWidth
+                              sx={cellFieldSx}
+                            />
+                          </TableCell>
+                        )}
+                        {categoryVisibility.active && (
+                          <TableCell>
+                            <TextField
+                              select
+                              size="small"
+                              value={row.is_active ? '\u0434\u0430' : '\u043D\u0435\u0442'}
+                              onChange={(event) => updateCategoryRow(row.id, { is_active: event.target.value === '\u0434\u0430' })}
+                              fullWidth
+                              sx={cellFieldSx}
+                            >
+                              <MenuItem value="\u0434\u0430">\u0434\u0430</MenuItem>
+                              <MenuItem value="\u043D\u0435\u0442">\u043D\u0435\u0442</MenuItem>
+                            </TextField>
+                          </TableCell>
+                        )}
+                        {categoryVisibility.actions && (
+                          <TableCell align="center">
+                            <IconButton
+                              size="small"
+                              disabled={categoryRows.length === 1}
+                              onClick={() => setCategoryRows((prev) => prev.filter((item) => item.id !== row.id))}
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </TableCell>
+                        )}
                       </TableRow>
                     ))}
+                    {visibleCategoryRows.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={visibleCategoryColumns.length} align="center">
+                          \u0421\u0442\u0440\u043E\u043A\u0438 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u044B
+                        </TableCell>
+                      </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               </TableContainer>
@@ -470,83 +621,110 @@ function CatalogManageDialog({
             <Typography color="text.secondary" variant="body2" sx={{ mb: 1.5 }}>
               Таблица как в Excel: категория → название ({meta.leafLabel}). Строки из импорта попадают сюда, а новые категории указываются отдельно выше.
             </Typography>
+            <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1.5 }}>
+              <TableColumnTools
+                columns={manualTableColumns}
+                visibility={manualVisibility}
+                onToggleColumn={toggleManualVisibility}
+                onResetColumns={resetManualVisibility}
+                onResetFilters={resetManualFilters}
+                hasActiveFilters={hasActiveManualFilters}
+              />
+            </Stack>
             <TableContainer component={Paper} variant="outlined" className="catalog-manual-table" sx={{ borderRadius: '8px', overflow: 'auto' }}>
               <Table size="small">
                 <TableHead>
                   <TableRow sx={{ bgcolor: '#F8FAFC' }}>
-                    <TableCell sx={{ fontWeight: 700, minWidth: 180 }}>Категория</TableCell>
-                    <TableCell sx={{ fontWeight: 700, minWidth: 200 }}>Название</TableCell>
-                    <TableCell sx={{ fontWeight: 700, minWidth: 200 }}>Подразделение</TableCell>
-                    <TableCell sx={{ fontWeight: 700, width: 120 }}>Активен</TableCell>
-                    <TableCell sx={{ width: 56 }} />
+                    {manualVisibility.category && <TableCell sx={{ minWidth: 180 }}>{renderManualHeader('category', '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F')}</TableCell>}
+                    {manualVisibility.name && <TableCell sx={{ minWidth: 200 }}>{renderManualHeader('name', '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435')}</TableCell>}
+                    {manualVisibility.unit && <TableCell sx={{ minWidth: 200 }}>{renderManualHeader('unit', '\u041F\u043E\u0434\u0440\u0430\u0437\u0434\u0435\u043B\u0435\u043D\u0438\u0435')}</TableCell>}
+                    {manualVisibility.active && <TableCell sx={{ width: 120 }}>{renderManualHeader('active', '\u0410\u043A\u0442\u0438\u0432\u0435\u043D')}</TableCell>}
+                    {manualVisibility.actions && <TableCell sx={{ width: 56 }}>{renderManualHeader('actions', '\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F', { sortable: false, filterable: false })}</TableCell>}
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {rows.map((row) => (
+                  {visibleManualRows.map((row) => (
                     <TableRow key={row.id} hover>
-                      <TableCell>
-                        <Autocomplete
-                          options={categoryNames}
-                          value={row.category || null}
-                          onChange={(_, value) => updateRow(row.id, { category: value || '' })}
-                          renderInput={(params) => (
-                            <TextField
-                              {...params}
-                              size="small"
-                              placeholder="Выберите категорию"
-                              sx={cellFieldSx}
-                            />
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          size="small"
-                          placeholder={meta.leafLabel}
-                          value={row.name}
-                          onChange={(event) => updateRow(row.id, { name: event.target.value })}
-                          fullWidth
-                          sx={cellFieldSx}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          select
-                          size="small"
-                          value={departmentId}
-                          fullWidth
-                          sx={cellFieldSx}
-                          SelectProps={{ displayEmpty: true }}
-                        >
-                          {departments.filter((unit) => unit.id === departmentId).map((unit) => (
-                            <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>
-                          ))}
-                        </TextField>
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          select
-                          size="small"
-                          value={row.is_active ? 'да' : 'нет'}
-                          onChange={(event) => updateRow(row.id, { is_active: event.target.value === 'да' })}
-                          fullWidth
-                          sx={cellFieldSx}
-                        >
-                          <MenuItem value="да">да</MenuItem>
-                          <MenuItem value="нет">нет</MenuItem>
-                        </TextField>
-                      </TableCell>
-                      <TableCell align="center">
-                        <IconButton
-                          size="small"
-                          disabled={rows.length === 1}
-                          onClick={() => setRows((prev) => prev.filter((item) => item.id !== row.id))}
-                        >
-                          <DeleteOutlineIcon fontSize="small" />
-                        </IconButton>
-                      </TableCell>
+                      {manualVisibility.category && (
+                        <TableCell>
+                          <Autocomplete
+                            options={categoryNames}
+                            value={row.category || null}
+                            onChange={(_, value) => updateRow(row.id, { category: value || '' })}
+                            renderInput={(params) => (
+                              <TextField
+                                {...params}
+                                size="small"
+                                placeholder="\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044E"
+                                sx={cellFieldSx}
+                              />
+                            )}
+                          />
+                        </TableCell>
+                      )}
+                      {manualVisibility.name && (
+                        <TableCell>
+                          <TextField
+                            size="small"
+                            placeholder={meta.leafLabel}
+                            value={row.name}
+                            onChange={(event) => updateRow(row.id, { name: event.target.value })}
+                            fullWidth
+                            sx={cellFieldSx}
+                          />
+                        </TableCell>
+                      )}
+                      {manualVisibility.unit && (
+                        <TableCell>
+                          <TextField
+                            select
+                            size="small"
+                            value={departmentId}
+                            fullWidth
+                            sx={cellFieldSx}
+                            SelectProps={{ displayEmpty: true }}
+                          >
+                            {departments.filter((unit) => unit.id === departmentId).map((unit) => (
+                              <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>
+                            ))}
+                          </TextField>
+                        </TableCell>
+                      )}
+                      {manualVisibility.active && (
+                        <TableCell>
+                          <TextField
+                            select
+                            size="small"
+                            value={row.is_active ? '\u0434\u0430' : '\u043D\u0435\u0442'}
+                            onChange={(event) => updateRow(row.id, { is_active: event.target.value === '\u0434\u0430' })}
+                            fullWidth
+                            sx={cellFieldSx}
+                          >
+                            <MenuItem value="\u0434\u0430">\u0434\u0430</MenuItem>
+                            <MenuItem value="\u043D\u0435\u0442">\u043D\u0435\u0442</MenuItem>
+                          </TextField>
+                        </TableCell>
+                      )}
+                      {manualVisibility.actions && (
+                        <TableCell align="center">
+                          <IconButton
+                            size="small"
+                            disabled={rows.length === 1}
+                            onClick={() => setRows((prev) => prev.filter((item) => item.id !== row.id))}
+                          >
+                            <DeleteOutlineIcon fontSize="small" />
+                          </IconButton>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
+                  {visibleManualRows.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={visibleManualColumns.length} align="center">
+                        \u0421\u0442\u0440\u043E\u043A\u0438 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u044B
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </TableContainer>
@@ -644,6 +822,80 @@ function CatalogPanel({
     }
     return rows;
   }, [data]);
+  const catalogTableColumns = useMemo<TableColumnDefinition<CatalogItem, CatalogTableColumn>[]>(() => [
+    {
+      id: 'type',
+      label: 'Тип',
+      getValue: (item) => !item.parent_id ? 'Категория' : meta.leafLabel,
+    },
+    { id: 'name', label: 'Название', getValue: (item) => item.name },
+    {
+      id: 'category',
+      label: 'Категория',
+      getValue: (item) => data.find((entry) => entry.id === item.parent_id)?.name || '—',
+    },
+    {
+      id: 'unit',
+      label: 'Подразделение',
+      getValue: (item) => units.find((unit) => unit.id === item.unit_id)?.name || item.unit_id || '—',
+    },
+    {
+      id: 'active',
+      label: 'Активно',
+      getValue: (item) => item.is_active ? 'Да' : 'Нет',
+      getSortValue: (item) => item.is_active ? 1 : 0,
+    },
+    { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
+  ], [data, meta.leafLabel, units]);
+  const {
+    clearColumnFilter,
+    clearSort,
+    filterOptions: catalogFilterOptions,
+    filterSearchValues: catalogFilterSearchValues,
+    hasActiveFilters: hasActiveCatalogColumnFilters,
+    isColumnFiltered: isCatalogColumnFiltered,
+    resetFilters: resetCatalogColumnFilters,
+    resetVisibility: resetCatalogColumnVisibility,
+    rows: visibleCatalogRows,
+    selectedFilterValues: selectedCatalogFilterValues,
+    setAllFilterOptions: setAllCatalogFilterOptions,
+    setFilterSearchValue: setCatalogFilterSearchValue,
+    setSortAscending: setCatalogSortAscending,
+    setSortDescending: setCatalogSortDescending,
+    setVisibleFilterOptions: setCatalogVisibleFilterOptions,
+    sort: catalogSort,
+    toggleFilterOption: toggleCatalogFilterOption,
+    toggleVisibility: toggleCatalogColumnVisibility,
+    visibility: catalogColumnVisibility,
+    visibleColumns: visibleCatalogColumns,
+  } = useTableColumnControls({
+    rows: sorted,
+    columns: catalogTableColumns,
+  });
+
+  const renderCatalogHeader = (
+    columnId: CatalogTableColumn,
+    label: string,
+    options?: { sortable?: boolean; filterable?: boolean },
+  ) => (
+    <TableColumnHeader
+      label={label}
+      sortable={options?.sortable}
+      filterable={options?.filterable}
+      sortDirection={catalogSort?.column === columnId ? catalogSort.direction : null}
+      onSortAscending={() => setCatalogSortAscending(columnId)}
+      onSortDescending={() => setCatalogSortDescending(columnId)}
+      onClearSort={() => clearSort(columnId)}
+      filterOptions={catalogFilterOptions[columnId]}
+      selectedFilterValues={selectedCatalogFilterValues[columnId]}
+      filterSearchValue={catalogFilterSearchValues[columnId]}
+      onFilterSearchChange={(value) => setCatalogFilterSearchValue(columnId, value)}
+      onToggleFilterValue={(value) => toggleCatalogFilterOption(columnId, value)}
+      onSelectAllFilterValues={() => setAllCatalogFilterOptions(columnId)}
+      onClearColumnFilter={() => clearColumnFilter(columnId)}
+      onClearVisibleFilterValues={() => setCatalogVisibleFilterOptions(columnId, false)}
+    />
+  );
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<CatalogDraft>(emptyDraft());
@@ -701,141 +953,170 @@ function CatalogPanel({
 
   return (
     <Stack spacing={2.5}>
+      <Stack direction="row" justifyContent="flex-end">
+        <TableColumnTools
+          columns={catalogTableColumns}
+          visibility={catalogColumnVisibility}
+          onToggleColumn={toggleCatalogColumnVisibility}
+          onResetColumns={resetCatalogColumnVisibility}
+          onResetFilters={resetCatalogColumnFilters}
+          hasActiveFilters={hasActiveCatalogColumnFilters}
+        />
+      </Stack>
       <TableContainer component={Paper} className="table-surface">
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Тип</TableCell>
-              <TableCell>Название</TableCell>
-              <TableCell>Категория</TableCell>
-              <TableCell>Подразделение</TableCell>
-              <TableCell>Активно</TableCell>
-              <TableCell align="right">Действия</TableCell>
+              {catalogColumnVisibility.type && <TableCell>{renderCatalogHeader('type', '\u0422\u0438\u043F')}</TableCell>}
+              {catalogColumnVisibility.name && <TableCell>{renderCatalogHeader('name', '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435')}</TableCell>}
+              {catalogColumnVisibility.category && <TableCell>{renderCatalogHeader('category', '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F')}</TableCell>}
+              {catalogColumnVisibility.unit && <TableCell>{renderCatalogHeader('unit', '\u041F\u043E\u0434\u0440\u0430\u0437\u0434\u0435\u043B\u0435\u043D\u0438\u0435')}</TableCell>}
+              {catalogColumnVisibility.active && <TableCell>{renderCatalogHeader('active', '\u0410\u043A\u0442\u0438\u0432\u043D\u043E')}</TableCell>}
+              {catalogColumnVisibility.actions && <TableCell align="right">{renderCatalogHeader('actions', '\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F', { sortable: false, filterable: false })}</TableCell>}
             </TableRow>
           </TableHead>
           <TableBody>
-            {sorted.map((item) => {
+            {visibleCatalogRows.map((item) => {
               const isCategory = !item.parent_id;
               const parent = data.find((entry) => entry.id === item.parent_id);
               const editing = editingId === item.id;
               const parentOptions = rootCategories.filter((category) => category.id !== item.id);
               return (
                 <TableRow key={item.id} hover sx={{ bgcolor: isCategory ? 'rgba(47, 111, 237, 0.04)' : undefined }}>
-                  <TableCell>
-                    <Chip
-                      size="small"
-                      label={isCategory ? 'Категория' : meta.leafLabel}
-                      sx={{
-                        bgcolor: isCategory ? '#EAF1FF' : '#F3F4F6',
-                        color: isCategory ? '#2F6FED' : '#6B7280',
-                        fontWeight: 600,
-                      }}
-                    />
-                  </TableCell>
-                  <TableCell sx={{ fontWeight: isCategory ? 700 : 500, minWidth: 220 }}>
-                    <CatalogCellText
-                      editing={editing}
-                      value={editing ? draft.name : item.name}
-                      onChange={(value) => setDraft((prev) => ({ ...prev, name: value }))}
-                    />
-                  </TableCell>
-                  <TableCell sx={{ minWidth: 220 }}>
-                    {editing ? (
-                      <TextField
-                        select
+                  {catalogColumnVisibility.type && (
+                    <TableCell>
+                      <Chip
                         size="small"
-                        value={draft.parent_id}
-                        onChange={(event) => setDraft((prev) => ({ ...prev, parent_id: event.target.value }))}
-                        fullWidth
-                      >
-                        <MenuItem value="">Без категории</MenuItem>
-                        {parentOptions.map((category) => (
-                          <MenuItem key={category.id} value={category.id}>{category.name}</MenuItem>
-                        ))}
-                      </TextField>
-                    ) : (
-                      parent?.name || '—'
-                    )}
-                  </TableCell>
-                  <TableCell sx={{ minWidth: 220 }}>
-                    {editing ? (
-                      <TextField
-                        select
-                        size="small"
-                        value={draft.unit_id}
-                        onChange={(event) => setDraft((prev) => ({ ...prev, unit_id: event.target.value }))}
-                        fullWidth
-                      >
-                        <MenuItem value="">—</MenuItem>
-                        {departments.map((unit) => (
-                          <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>
-                        ))}
-                      </TextField>
-                    ) : (
-                      units.find((unit) => unit.id === item.unit_id)?.name || item.unit_id || '—'
-                    )}
-                  </TableCell>
-                  <TableCell sx={{ minWidth: 140 }}>
-                    {editing ? (
-                      <TextField
-                        select
-                        size="small"
-                        value={draft.is_active ? 'yes' : 'no'}
-                        onChange={(event) => setDraft((prev) => ({ ...prev, is_active: event.target.value === 'yes' }))}
-                        fullWidth
-                      >
-                        <MenuItem value="yes">Да</MenuItem>
-                        <MenuItem value="no">Нет</MenuItem>
-                      </TextField>
-                    ) : (
-                      item.is_active ? 'Да' : 'Нет'
-                    )}
-                  </TableCell>
-                  <TableCell align="right" sx={{ minWidth: 140 }}>
-                    {editing ? (
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                        <Tooltip title="Сохранить">
-                          <span>
-                            <IconButton
-                              color="primary"
-                              onClick={() => saveItem.mutate({ id: item.id, body: draft })}
-                              disabled={!draft.name.trim() || saveItem.isPending}
-                              aria-label="Сохранить"
-                            >
-                              <CheckIcon fontSize="small" />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                        <Tooltip title="Отменить">
-                          <span>
-                            <IconButton onClick={cancelEdit} disabled={saveItem.isPending} aria-label="Отменить">
-                              <CancelIcon fontSize="small" />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                      </Stack>
-                    ) : (
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                        <Tooltip title="Редактировать">
-                          <span>
-                            <IconButton onClick={() => startEdit(item)} aria-label="Редактировать запись">
-                              <EditOutlinedIcon fontSize="small" />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                        <Tooltip title="Удалить">
-                          <span>
-                            <IconButton onClick={() => setDeleteTarget(item)} aria-label="Удалить запись">
-                              <DeleteOutlineIcon fontSize="small" />
-                            </IconButton>
-                          </span>
-                        </Tooltip>
-                      </Stack>
-                    )}
-                  </TableCell>
+                        label={isCategory ? '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F' : meta.leafLabel}
+                        sx={{
+                          bgcolor: isCategory ? '#EAF1FF' : '#F3F4F6',
+                          color: isCategory ? '#2F6FED' : '#6B7280',
+                          fontWeight: 600,
+                        }}
+                      />
+                    </TableCell>
+                  )}
+                  {catalogColumnVisibility.name && (
+                    <TableCell sx={{ fontWeight: isCategory ? 700 : 500, minWidth: 220 }}>
+                      <CatalogCellText
+                        editing={editing}
+                        value={editing ? draft.name : item.name}
+                        onChange={(value) => setDraft((prev) => ({ ...prev, name: value }))}
+                      />
+                    </TableCell>
+                  )}
+                  {catalogColumnVisibility.category && (
+                    <TableCell sx={{ minWidth: 220 }}>
+                      {editing ? (
+                        <TextField
+                          select
+                          size="small"
+                          value={draft.parent_id}
+                          onChange={(event) => setDraft((prev) => ({ ...prev, parent_id: event.target.value }))}
+                          fullWidth
+                        >
+                          <MenuItem value="">??? ?????????</MenuItem>
+                          {parentOptions.map((category) => (
+                            <MenuItem key={category.id} value={category.id}>{category.name}</MenuItem>
+                          ))}
+                        </TextField>
+                      ) : (
+                        parent?.name || '?'
+                      )}
+                    </TableCell>
+                  )}
+                  {catalogColumnVisibility.unit && (
+                    <TableCell sx={{ minWidth: 220 }}>
+                      {editing ? (
+                        <TextField
+                          select
+                          size="small"
+                          value={draft.unit_id}
+                          onChange={(event) => setDraft((prev) => ({ ...prev, unit_id: event.target.value }))}
+                          fullWidth
+                        >
+                          <MenuItem value="">?</MenuItem>
+                          {departments.map((unit) => (
+                            <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>
+                          ))}
+                        </TextField>
+                      ) : (
+                        units.find((unit) => unit.id === item.unit_id)?.name || item.unit_id || '?'
+                      )}
+                    </TableCell>
+                  )}
+                  {catalogColumnVisibility.active && (
+                    <TableCell sx={{ minWidth: 140 }}>
+                      {editing ? (
+                        <TextField
+                          select
+                          size="small"
+                          value={draft.is_active ? 'yes' : 'no'}
+                          onChange={(event) => setDraft((prev) => ({ ...prev, is_active: event.target.value === 'yes' }))}
+                          fullWidth
+                        >
+                          <MenuItem value="yes">??</MenuItem>
+                          <MenuItem value="no">???</MenuItem>
+                        </TextField>
+                      ) : (
+                        item.is_active ? '??' : '???'
+                      )}
+                    </TableCell>
+                  )}
+                  {catalogColumnVisibility.actions && (
+                    <TableCell align="right" sx={{ minWidth: 140 }}>
+                      {editing ? (
+                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                          <Tooltip title="?????????">
+                            <span>
+                              <IconButton
+                                color="primary"
+                                onClick={() => saveItem.mutate({ id: item.id, body: draft })}
+                                disabled={!draft.name.trim() || saveItem.isPending}
+                                aria-label="?????????"
+                              >
+                                <CheckIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                          <Tooltip title="????????">
+                            <span>
+                              <IconButton onClick={cancelEdit} disabled={saveItem.isPending} aria-label="????????">
+                                <CancelIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </Stack>
+                      ) : (
+                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                          <Tooltip title="?????????????">
+                            <span>
+                              <IconButton onClick={() => startEdit(item)} aria-label="????????????? ??????">
+                                <EditOutlinedIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                          <Tooltip title="???????">
+                            <span>
+                              <IconButton onClick={() => setDeleteTarget(item)} aria-label="??????? ??????">
+                                <DeleteOutlineIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </Stack>
+                      )}
+                    </TableCell>
+                  )}
                 </TableRow>
               );
             })}
+            {visibleCatalogRows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={visibleCatalogColumns.length} align="center">
+                  ?????? ?? ???????
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
       </TableContainer>
@@ -902,3 +1183,4 @@ export default function CatalogsPage() {
     </Stack>
   );
 }
+
