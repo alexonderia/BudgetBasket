@@ -1,8 +1,10 @@
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import ViewColumnOutlinedIcon from '@mui/icons-material/ViewColumnOutlined';
 import Button from '@mui/material/Button';
+import Box from '@mui/material/Box';
 import Checkbox from '@mui/material/Checkbox';
 import Divider from '@mui/material/Divider';
 import IconButton from '@mui/material/IconButton';
@@ -11,11 +13,10 @@ import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Popover from '@mui/material/Popover';
 import Stack from '@mui/material/Stack';
-import TableSortLabel from '@mui/material/TableSortLabel';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
-import { useMemo, useState, type MouseEvent, type ReactNode } from 'react';
+import { useMemo, useState, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import type {
   TableColumnDefinition,
   TableFilterOption,
@@ -30,6 +31,7 @@ export function TableColumnTools<K extends string>({
   onToggleColumn,
   onResetColumns,
   onResetFilters,
+  onResetWidths,
   hasActiveFilters = false,
 }: {
   columns: ColumnMeta<K>[];
@@ -37,6 +39,7 @@ export function TableColumnTools<K extends string>({
   onToggleColumn: (columnId: K) => void;
   onResetColumns?: () => void;
   onResetFilters?: () => void;
+  onResetWidths?: () => void;
   hasActiveFilters?: boolean;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
@@ -51,6 +54,14 @@ export function TableColumnTools<K extends string>({
           color={hasActiveFilters || hasHiddenColumns ? 'primary' : 'default'}
           onClick={(event) => setAnchorEl(event.currentTarget)}
           aria-label="Настройки таблицы"
+          sx={{
+            width: 40,
+            height: 40,
+            border: '1px solid',
+            borderColor: 'divider',
+            borderRadius: '50%',
+            bgcolor: 'background.paper',
+          }}
         >
           <SettingsOutlinedIcon fontSize="small" />
         </IconButton>
@@ -70,16 +81,54 @@ export function TableColumnTools<K extends string>({
             </MenuItem>
           );
         })}
-        {(onResetColumns || onResetFilters) && (
+        {(onResetColumns || onResetFilters || onResetWidths) && (
           <>
             <Divider />
-            <MenuItem onClick={() => { onResetColumns?.(); onResetFilters?.(); setAnchorEl(null); }}>
+            <MenuItem onClick={() => { onResetColumns?.(); onResetFilters?.(); onResetWidths?.(); setAnchorEl(null); }}>
               <ListItemText>Сбросить настройки таблицы</ListItemText>
             </MenuItem>
           </>
         )}
       </Menu>
     </>
+  );
+}
+
+export function TableColumnResizeHandle({
+  onPointerDown,
+}: {
+  onPointerDown: (event: ReactPointerEvent<HTMLSpanElement>) => void;
+}) {
+  return (
+    <Tooltip title="Перетащите для изменения ширины столбца" placement="top">
+      <Box
+        component="span"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Изменить ширину столбца"
+        onPointerDown={onPointerDown}
+        sx={{
+          position: 'absolute',
+          top: 0,
+          right: -4,
+          zIndex: 2,
+          width: 8,
+          height: '100%',
+          cursor: 'col-resize',
+          touchAction: 'none',
+          '&:hover::after': {
+            content: '""',
+            position: 'absolute',
+            top: 8,
+            bottom: 8,
+            left: 3,
+            width: 2,
+            borderRadius: 1,
+            bgcolor: 'primary.main',
+          },
+        }}
+      />
+    </Tooltip>
   );
 }
 
@@ -100,8 +149,9 @@ export function TableColumnHeader({
   onClearColumnFilter,
   onClearVisibleFilterValues,
   endAdornment,
+  onResize,
 }: {
-  label: string;
+  label: ReactNode;
   sortable?: boolean;
   filterable?: boolean;
   sortDirection?: TableSortDirection | null;
@@ -117,6 +167,7 @@ export function TableColumnHeader({
   onClearColumnFilter?: () => void;
   onClearVisibleFilterValues?: () => void;
   endAdornment?: ReactNode;
+  onResize?: (event: ReactPointerEvent<HTMLSpanElement>) => void;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
@@ -125,6 +176,7 @@ export function TableColumnHeader({
   const columnFiltered = selectedFilterValues !== null;
   const columnSorted = !!sortDirection;
   const menuActive = columnFiltered;
+  const hasColumnControls = sortable || filterable;
 
   const filterSummary = useMemo(() => {
     if (!columnFiltered) return 'Все значения';
@@ -154,32 +206,52 @@ export function TableColumnHeader({
 
   return (
     <>
-      <Stack direction="row" spacing={0.25} alignItems="center" sx={{ minWidth: 0, pr: endAdornment ? 1.5 : 0 }}>
-        {sortable ? (
-          <TableSortLabel
-            active={columnSorted}
-            direction={sortDirection ?? 'asc'}
-            onClick={toggleSort}
-            sx={{ minWidth: 0, '& .MuiTableSortLabel-icon': { fontSize: 16 } }}
-          >
-            <Typography component="span" variant="body2" fontWeight={600} sx={{ whiteSpace: 'nowrap' }}>
-              {label}
-            </Typography>
-          </TableSortLabel>
-        ) : (
-          <Typography component="span" variant="body2" fontWeight={600} sx={{ whiteSpace: 'nowrap' }}>
-            {label}
-          </Typography>
-        )}
-        {filterable && (
-          <Tooltip title={menuActive ? filterSummary : 'Фильтр'}>
-            <IconButton size="small" color={menuActive ? 'primary' : 'default'} onClick={openFilterMenu} sx={{ ml: 'auto' }}>
-              {columnFiltered ? <FilterAltOutlinedIcon fontSize="inherit" /> : <ArrowDropDownIcon fontSize="inherit" />}
-            </IconButton>
-          </Tooltip>
-        )}
+      <Box sx={{ position: 'relative', width: '100%', minWidth: 0, pr: endAdornment || onResize ? 1.5 : 0, '&:hover .column-sort-button': { opacity: 1 } }}>
+        <Typography component="span" variant="body2" fontWeight={600} sx={{ display: 'block', minWidth: 0, overflow: 'hidden', pr: hasColumnControls ? 6 : 0, textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {label}
+        </Typography>
+        <Stack
+          direction="row"
+          spacing={0.25}
+          alignItems="center"
+          sx={{
+            position: 'absolute',
+            top: '50%',
+            right: onResize ? 4 : 0,
+            transform: 'translateY(-50%)',
+            zIndex: 1,
+          }}
+        >
+          {sortable && (
+            <Tooltip title={columnSorted ? 'Изменить направление сортировки' : 'Сортировать'}>
+              <IconButton
+                className="column-sort-button"
+                size="small"
+                color={columnSorted ? 'primary' : 'default'}
+                onClick={toggleSort}
+                sx={{ opacity: columnSorted ? 1 : 0, transition: 'opacity 120ms ease' }}
+              >
+                <ArrowDownwardIcon
+                  fontSize="inherit"
+                  sx={{
+                    opacity: columnSorted ? 1 : 0.6,
+                    transform: sortDirection === 'asc' ? 'rotate(180deg)' : 'none',
+                  }}
+                />
+              </IconButton>
+            </Tooltip>
+          )}
+          {filterable && (
+            <Tooltip title={menuActive ? filterSummary : 'Фильтр'}>
+              <IconButton size="small" color={menuActive ? 'primary' : 'default'} onClick={openFilterMenu}>
+                {columnFiltered ? <FilterAltOutlinedIcon fontSize="inherit" /> : <ArrowDropDownIcon fontSize="inherit" />}
+              </IconButton>
+            </Tooltip>
+          )}
+        </Stack>
         {endAdornment}
-      </Stack>
+        {onResize && <TableColumnResizeHandle onPointerDown={onResize} />}
+      </Box>
       <Popover
         open={!!anchorEl}
         anchorEl={anchorEl}

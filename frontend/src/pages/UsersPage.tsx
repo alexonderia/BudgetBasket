@@ -23,11 +23,11 @@ import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
-import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
+import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import type { Role, Unit, User } from '../types';
-import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
+import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { roleLabels } from '../utils/labels';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 
@@ -54,6 +54,30 @@ type UserDraft = {
   phone: string;
   email: string;
   max_link: string;
+};
+
+const USER_TABLE_COLUMN_WIDTHS: Record<UserTableColumn, number> = {
+  actions: 96,
+  login: 180,
+  role: 170,
+  last_name: 180,
+  name: 160,
+  second_name: 190,
+  phone: 180,
+  email: 260,
+  max_link: 240,
+};
+
+const USER_TABLE_COLUMN_MIN_WIDTHS: Record<UserTableColumn, number> = {
+  actions: 72,
+  login: 120,
+  role: 130,
+  last_name: 130,
+  name: 120,
+  second_name: 140,
+  phone: 140,
+  email: 180,
+  max_link: 160,
 };
 
 type UserTableColumn =
@@ -323,10 +347,12 @@ export default function UsersPage() {
     visibility,
     visibleColumns,
   } = useTableColumnControls({ rows: filteredUsers, columns: tableColumns });
+  const { columnWidths, resetColumnWidths, resizeColumn } = useTableColumnWidths(USER_TABLE_COLUMN_WIDTHS, USER_TABLE_COLUMN_MIN_WIDTHS);
+  const tableWidth = visibleColumns.reduce((sum, column) => sum + columnWidths[column.id], 0);
 
   const renderHeader = (columnId: UserTableColumn, label: string, options?: { sortable?: boolean; filterable?: boolean }) => (
     <TableColumnHeader
-      label={label}
+      label={columnId === 'actions' ? 'Действие' : label}
       sortable={options?.sortable}
       filterable={options?.filterable}
       sortDirection={sort?.column === columnId ? sort.direction : null}
@@ -376,16 +402,17 @@ export default function UsersPage() {
                 </MenuItem>
               ))}
             </TextField>
-          </Stack>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap justifyContent="flex-end">
             <TableColumnTools
               columns={tableColumns}
               visibility={visibility}
               onToggleColumn={toggleVisibility}
               onResetColumns={resetVisibility}
               onResetFilters={resetFilters}
+              onResetWidths={resetColumnWidths}
               hasActiveFilters={hasActiveFilters}
             />
+          </Stack>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap justifyContent="flex-end">
             <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDialogOpen(true)}>
               Добавить пользователя
             </Button>
@@ -394,18 +421,21 @@ export default function UsersPage() {
       </Paper>
 
       <TableContainer component={Paper} className="table-surface">
-        <Table size="small" sx={{ minWidth: 1200 }}>
+        <Table size="small" sx={{ width: tableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
+          <colgroup>
+            {visibleColumns.map((column) => <col key={column.id} style={{ width: columnWidths[column.id] }} />)}
+          </colgroup>
           <TableHead>
             <TableRow>
-              {visibility.actions && <TableCell>{renderHeader('actions', 'Действия', { sortable: false, filterable: false })}</TableCell>}
-              {visibility.login && <TableCell>{renderHeader('login', 'Логин')}</TableCell>}
-              {visibility.role && <TableCell>{renderHeader('role', 'Роль')}</TableCell>}
-              {visibility.last_name && <TableCell>{renderHeader('last_name', 'Фамилия')}</TableCell>}
-              {visibility.name && <TableCell>{renderHeader('name', 'Имя')}</TableCell>}
-              {visibility.second_name && <TableCell>{renderHeader('second_name', 'Отчество')}</TableCell>}
-              {visibility.phone && <TableCell>{renderHeader('phone', 'Телефон')}</TableCell>}
-              {visibility.email && <TableCell>{renderHeader('email', 'Электронная почта')}</TableCell>}
-              {visibility.max_link && <TableCell>{renderHeader('max_link', 'Max')}</TableCell>}
+              {visibility.actions && <TableCell sx={{ position: 'relative' }}>{renderHeader('actions', 'Действия', { sortable: false, filterable: false })}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('actions', event)} /></TableCell>}
+              {visibility.login && <TableCell sx={{ position: 'relative' }}>{renderHeader('login', 'Логин')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('login', event)} /></TableCell>}
+              {visibility.role && <TableCell sx={{ position: 'relative' }}>{renderHeader('role', 'Роль')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('role', event)} /></TableCell>}
+              {visibility.last_name && <TableCell sx={{ position: 'relative' }}>{renderHeader('last_name', 'Фамилия')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('last_name', event)} /></TableCell>}
+              {visibility.name && <TableCell sx={{ position: 'relative' }}>{renderHeader('name', 'Имя')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('name', event)} /></TableCell>}
+              {visibility.second_name && <TableCell sx={{ position: 'relative' }}>{renderHeader('second_name', 'Отчество')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('second_name', event)} /></TableCell>}
+              {visibility.phone && <TableCell sx={{ position: 'relative' }}>{renderHeader('phone', 'Телефон')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('phone', event)} /></TableCell>}
+              {visibility.email && <TableCell sx={{ position: 'relative' }}>{renderHeader('email', 'Электронная почта')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('email', event)} /></TableCell>}
+              {visibility.max_link && <TableCell sx={{ position: 'relative' }}>{renderHeader('max_link', 'Max')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('max_link', event)} /></TableCell>}
             </TableRow>
           </TableHead>
           <TableBody>

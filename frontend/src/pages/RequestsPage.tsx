@@ -9,7 +9,6 @@ import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import Alert from '@mui/material/Alert';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
-import Chip from '@mui/material/Chip';
 import Collapse from '@mui/material/Collapse';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
@@ -31,18 +30,18 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
-import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
+import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { RequestStatusBadge } from '../components/StatusBadge';
 import type { BudgetItem, BudgetRequest, CatalogItem, RequestStatus, Unit, User } from '../types';
 import { EXPORTABLE_REQUEST_STATUSES } from '../types';
 import { downloadBlob } from '../utils/download';
 import { money, requestStatusLabels } from '../utils/labels';
-import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
+import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 
 function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -57,6 +56,24 @@ type DeletePreviewRow = {
   kind: string;
   name: string;
   sum: number;
+};
+
+const REQUEST_TABLE_COLUMN_WIDTHS: Record<RequestTableColumn, number> = {
+  unit: 300,
+  status: 380,
+  planned: 160,
+  approved: 180,
+  items_count: 120,
+  actions: 160,
+};
+
+const REQUEST_TABLE_COLUMN_MIN_WIDTHS: Record<RequestTableColumn, number> = {
+  unit: 180,
+  status: 220,
+  planned: 130,
+  approved: 140,
+  items_count: 100,
+  actions: 100,
 };
 
 export default function RequestsPage({ user }: { user: User }) {
@@ -297,9 +314,11 @@ export default function RequestsPage({ user }: { user: User }) {
     visibility: requestVisibility,
     visibleColumns: visibleRequestColumns,
   } = useTableColumnControls({ rows: filteredRequests, columns: requestTableColumns });
+  const { columnWidths: requestColumnWidths, resetColumnWidths: resetRequestColumnWidths, resizeColumn: resizeRequestColumn } = useTableColumnWidths(REQUEST_TABLE_COLUMN_WIDTHS, REQUEST_TABLE_COLUMN_MIN_WIDTHS);
+  const requestTableWidth = visibleRequestColumns.reduce((sum, column) => sum + requestColumnWidths[column.id], 0);
   const renderRequestHeader = (
     columnId: RequestTableColumn,
-    label: string,
+    label: ReactNode,
     options?: { sortable?: boolean; filterable?: boolean },
   ) => (
     <TableColumnHeader
@@ -390,6 +409,15 @@ export default function RequestsPage({ user }: { user: User }) {
                 <MenuItem value="frozen">Зафиксированные</MenuItem>
                 <MenuItem value="unfrozen">Незафиксированные</MenuItem>
               </TextField>
+              <TableColumnTools
+                columns={requestTableColumns}
+                visibility={requestVisibility}
+                onToggleColumn={toggleRequestVisibility}
+                onResetColumns={resetRequestVisibility}
+                onResetFilters={resetRequestFilters}
+                onResetWidths={resetRequestColumnWidths}
+                hasActiveFilters={hasActiveRequestFilters}
+              />
             </Stack>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {user.role === 'employee' ? (
@@ -539,25 +567,18 @@ export default function RequestsPage({ user }: { user: User }) {
       </Dialog>
 
       <Paper className="table-surface" elevation={0}>
-        <Stack direction="row" justifyContent="flex-end" sx={{ px: 2, pt: 2 }}>
-          <TableColumnTools
-            columns={requestTableColumns}
-            visibility={requestVisibility}
-            onToggleColumn={toggleRequestVisibility}
-            onResetColumns={resetRequestVisibility}
-            onResetFilters={resetRequestFilters}
-            hasActiveFilters={hasActiveRequestFilters}
-          />
-        </Stack>
-        <Table size="small">
+        <Table size="small" sx={{ width: requestTableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
+          <colgroup>
+            {visibleRequestColumns.map((column) => <col key={column.id} style={{ width: requestColumnWidths[column.id] }} />)}
+          </colgroup>
           <TableHead>
             <TableRow>
-              {requestVisibility.unit && <TableCell>{renderRequestHeader('unit', 'Объединение заявки')}</TableCell>}
-              {requestVisibility.status && <TableCell>{renderRequestHeader('status', 'Статус')}</TableCell>}
-              {requestVisibility.planned && <TableCell>{renderRequestHeader('planned', 'План')}</TableCell>}
-              {requestVisibility.approved && <TableCell>{renderRequestHeader('approved', 'Утверждено')}</TableCell>}
-              {requestVisibility.items_count && <TableCell>{renderRequestHeader('items_count', 'Строк')}</TableCell>}
-              {requestVisibility.actions && <TableCell align="right">{renderRequestHeader('actions', 'Действия', { sortable: false, filterable: false })}</TableCell>}
+              {requestVisibility.unit && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('unit', 'Объединение заявки')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('unit', event)} /></TableCell>}
+              {requestVisibility.status && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('status', 'Статус')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('status', event)} /></TableCell>}
+              {requestVisibility.planned && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('planned', 'План')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('planned', event)} /></TableCell>}
+              {requestVisibility.approved && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('approved', 'Утверждено')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('approved', event)} /></TableCell>}
+              {requestVisibility.items_count && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('items_count', 'Строк')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('items_count', event)} /></TableCell>}
+              {requestVisibility.actions && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('actions', 'Действие', { sortable: false, filterable: false })}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('actions', event)} /></TableCell>}
             </TableRow>
           </TableHead>
           <TableBody>
@@ -579,7 +600,9 @@ export default function RequestsPage({ user }: { user: User }) {
                       <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
                         <RequestStatusBadge status={item.status} />
                         {item.frozen && (
-                          <Chip size="small" icon={<LockOutlinedIcon />} label="Зафиксирован" color="warning" variant="outlined" />
+                          <Tooltip title="Зафиксирован">
+                            <LockOutlinedIcon color="warning" fontSize="small" />
+                          </Tooltip>
                         )}
                       </Stack>
                     </TableCell>
@@ -588,17 +611,33 @@ export default function RequestsPage({ user }: { user: User }) {
                   {requestVisibility.approved && <TableCell>{money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum))}</TableCell>}
                   {requestVisibility.items_count && <TableCell>{item.summary?.items_count || 0}</TableCell>}
                   {requestVisibility.actions && (
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                    <TableCell>
+                      <Stack direction="row" spacing={0.5} justifyContent="flex-start">
                         {canWithdraw ? (
-                          <Button size="small" startIcon={<UndoIcon />} onClick={(event) => { event.stopPropagation(); setWithdrawTarget(item); }} disabled={withdrawRequest.isPending}>
-                            Отозвать
-                          </Button>
+                          <Tooltip title="Отозвать в черновик">
+                            <span>
+                              <IconButton
+                                size="small"
+                                onClick={(event) => { event.stopPropagation(); setWithdrawTarget(item); }}
+                                disabled={withdrawRequest.isPending}
+                                aria-label="Отозвать в черновик"
+                              >
+                                <UndoIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
                         ) : null}
                         {canDelete ? (
-                          <Button size="small" startIcon={<DeleteOutlineIcon />} color="error" onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }}>
-                            Удалить
-                          </Button>
+                          <Tooltip title="Удалить">
+                            <IconButton
+                              size="small"
+                              color="error"
+                              onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }}
+                              aria-label="Удалить"
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </Tooltip>
                         ) : null}
                       </Stack>
                     </TableCell>
@@ -646,7 +685,7 @@ export default function RequestsPage({ user }: { user: User }) {
               )}
               {deletePreviewRows.length > 0 && (
                 <Stack spacing={1}>
-                  <Stack direction="row" justifyContent="flex-end">
+                  <Stack direction="row" justifyContent="flex-start">
                     <TableColumnTools
                       columns={deletePreviewColumns}
                       visibility={deletePreviewVisibility}

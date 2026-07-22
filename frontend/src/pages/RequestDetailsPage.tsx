@@ -685,7 +685,7 @@ function ItemsTable({
     options?: { sortable?: boolean; filterable?: boolean },
   ) => (
     <TableColumnHeader
-      label={label}
+      label={columnId === 'actions' ? 'Действие' : label}
       sortable={options?.sortable}
       filterable={options?.filterable}
       sortDirection={itemSort?.column === columnId ? itemSort.direction : null}
@@ -885,8 +885,8 @@ function ItemsTable({
         );
       case 'actions':
         return (
-          <TableCell key={columnId} align="center" sx={bodyCellSx(columnId)}>
-            <Stack direction="row" spacing={0.5} justifyContent="center" alignItems="center">
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            <Stack direction="row" spacing={0.5} justifyContent="flex-start" alignItems="center">
               {isEmployeeEditing && !isDeleted && (
                 <FileAttachAction
                   disabled={saveEmployeeChanges.isPending}
@@ -1100,7 +1100,18 @@ function ItemsTable({
     <>
       <Stack spacing={1}>
         <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
-          <Typography variant="h6">{title}</Typography>
+          <Stack direction="row" spacing={0.5} alignItems="center">
+            <Typography variant="h6">{title}</Typography>
+            <TableColumnTools
+              columns={itemTableDefinitions}
+              visibility={itemVisibility}
+              onToggleColumn={toggleItemVisibility}
+              onResetColumns={resetItemVisibility}
+              onResetFilters={resetItemFilters}
+              onResetWidths={() => setColumnWidths(DEFAULT_ITEM_TABLE_COLUMN_WIDTHS)}
+              hasActiveFilters={hasActiveItemFilters}
+            />
+          </Stack>
           <Stack direction="row" spacing={0.5} alignItems="center">
             {employeeCanEdit && (isEmployeeEditing ? (
               <>
@@ -1140,14 +1151,6 @@ function ItemsTable({
                 <RestartAltIcon fontSize="small" />
               </IconButton>
             </Tooltip>
-            <TableColumnTools
-              columns={itemTableDefinitions}
-              visibility={itemVisibility}
-              onToggleColumn={toggleItemVisibility}
-              onResetColumns={resetItemVisibility}
-              onResetFilters={resetItemFilters}
-              hasActiveFilters={hasActiveItemFilters}
-            />
           </Stack>
         </Stack>
         <Typography color="text.secondary">
@@ -1848,10 +1851,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
         maxWidth="md"
         description={
           <Stack spacing={1.5}>
-            <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap>
-              <Typography variant="body2" color="text.secondary">
-                Проверьте строки перед удалением.
-              </Typography>
+            <Stack direction="row" spacing={1} justifyContent="flex-start" alignItems="center" flexWrap="wrap" useFlexGap>
               <TableColumnTools
                 columns={requestDeletePreviewDefinitions}
                 visibility={requestDeletePreviewVisibility}
@@ -1860,6 +1860,9 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 onResetFilters={resetRequestDeletePreviewFilters}
                 hasActiveFilters={hasActiveRequestDeletePreviewFilters}
               />
+              <Typography variant="body2" color="text.secondary">
+                Проверьте строки перед удалением.
+              </Typography>
             </Stack>
             <Table size="small" sx={{ width: '100%' }}>
               <TableHead>

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type PointerEvent } from 'react';
 
 export type TableSortDirection = 'asc' | 'desc';
 
@@ -24,6 +24,35 @@ export type TableColumnDefinition<T, K extends string> = {
   getFilterValue?: (row: T) => unknown;
   getSortValue?: (row: T) => string | number | boolean | null | undefined;
 };
+
+export function useTableColumnWidths<K extends string>(
+  initialWidths: Record<K, number>,
+  minimumWidths: Record<K, number>,
+) {
+  const [columnWidths, setColumnWidths] = useState<Record<K, number>>(() => ({ ...initialWidths }));
+
+  const resizeColumn = (columnId: K, event: PointerEvent<HTMLSpanElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = columnWidths[columnId];
+    const onMove = (moveEvent: globalThis.PointerEvent) => {
+      const nextWidth = Math.max(minimumWidths[columnId], startWidth + moveEvent.clientX - startX);
+      setColumnWidths((current) => ({ ...current, [columnId]: nextWidth }));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  return {
+    columnWidths,
+    resetColumnWidths: () => setColumnWidths({ ...initialWidths }),
+    resizeColumn,
+  };
+}
 
 type UseTableColumnControlsOptions<T, K extends string> = {
   rows: T[];

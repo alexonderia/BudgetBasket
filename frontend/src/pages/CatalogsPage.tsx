@@ -38,10 +38,28 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import { downloadBlob } from '../utils/download';
 import type { CatalogItem, Unit } from '../types';
-import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
+import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 
 type CatalogKind = 'dds' | 'invests';
 type CatalogTableColumn = 'type' | 'name' | 'category' | 'unit' | 'active' | 'actions';
+
+const CATALOG_TABLE_COLUMN_WIDTHS: Record<CatalogTableColumn, number> = {
+  type: 150,
+  name: 260,
+  category: 240,
+  unit: 240,
+  active: 140,
+  actions: 120,
+};
+
+const CATALOG_TABLE_COLUMN_MIN_WIDTHS: Record<CatalogTableColumn, number> = {
+  type: 110,
+  name: 170,
+  category: 160,
+  unit: 160,
+  active: 110,
+  actions: 90,
+};
 
 type ManualRow = {
   id: string;
@@ -406,7 +424,7 @@ function CatalogManageDialog({
     options?: { sortable?: boolean; filterable?: boolean },
   ) => (
     <TableColumnHeader
-      label={label}
+      label={columnId === 'actions' ? 'Действие' : label}
       sortable={options?.sortable}
       filterable={options?.filterable}
       sortDirection={categorySort?.column === columnId ? categorySort.direction : null}
@@ -470,7 +488,7 @@ function CatalogManageDialog({
     options?: { sortable?: boolean; filterable?: boolean },
   ) => (
     <TableColumnHeader
-      label={label}
+      label={columnId === 'actions' ? 'Действие' : label}
       sortable={options?.sortable}
       filterable={options?.filterable}
       sortDirection={manualSort?.column === columnId ? manualSort.direction : null}
@@ -536,7 +554,7 @@ function CatalogManageDialog({
               <Typography color="text.secondary" variant="body2" sx={{ mb: 1.5 }}>
                 Сначала сохраните категории здесь, а затем проверьте строки ниже.
               </Typography>
-              <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1.5 }}>
+              <Stack direction="row" justifyContent="flex-start" sx={{ mb: 1.5 }}>
                 <TableColumnTools
                   columns={categoryTableColumns}
                   visibility={categoryVisibility}
@@ -586,7 +604,7 @@ function CatalogManageDialog({
                           </TableCell>
                         )}
                         {categoryVisibility.actions && (
-                          <TableCell align="center">
+                          <TableCell>
                             <IconButton
                               size="small"
                               disabled={categoryRows.length === 1}
@@ -621,7 +639,7 @@ function CatalogManageDialog({
             <Typography color="text.secondary" variant="body2" sx={{ mb: 1.5 }}>
               Таблица как в Excel: категория → название ({meta.leafLabel}). Строки из импорта попадают сюда, а новые категории указываются отдельно выше.
             </Typography>
-            <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1.5 }}>
+            <Stack direction="row" justifyContent="flex-start" sx={{ mb: 1.5 }}>
               <TableColumnTools
                 columns={manualTableColumns}
                 visibility={manualVisibility}
@@ -706,7 +724,7 @@ function CatalogManageDialog({
                         </TableCell>
                       )}
                       {manualVisibility.actions && (
-                        <TableCell align="center">
+                        <TableCell>
                           <IconButton
                             size="small"
                             disabled={rows.length === 1}
@@ -780,14 +798,18 @@ function CatalogCellText({
 
 function CatalogPanel({
   kind,
+  onKindChange,
   units,
   departmentId,
+  onDepartmentChange,
   dialogOpen,
   onDialogOpenChange,
 }: {
   kind: CatalogKind;
+  onKindChange: (kind: CatalogKind) => void;
   units: Unit[];
   departmentId: string;
+  onDepartmentChange: (departmentId: string) => void;
   dialogOpen: boolean;
   onDialogOpenChange: (open: boolean) => void;
 }) {
@@ -872,6 +894,8 @@ function CatalogPanel({
     rows: sorted,
     columns: catalogTableColumns,
   });
+  const { columnWidths: catalogColumnWidths, resetColumnWidths: resetCatalogColumnWidths, resizeColumn: resizeCatalogColumn } = useTableColumnWidths(CATALOG_TABLE_COLUMN_WIDTHS, CATALOG_TABLE_COLUMN_MIN_WIDTHS);
+  const catalogTableWidth = visibleCatalogColumns.reduce((sum, column) => sum + catalogColumnWidths[column.id], 0);
 
   const renderCatalogHeader = (
     columnId: CatalogTableColumn,
@@ -879,7 +903,7 @@ function CatalogPanel({
     options?: { sortable?: boolean; filterable?: boolean },
   ) => (
     <TableColumnHeader
-      label={label}
+      label={columnId === 'actions' ? 'Действие' : label}
       sortable={options?.sortable}
       filterable={options?.filterable}
       sortDirection={catalogSort?.column === columnId ? catalogSort.direction : null}
@@ -894,6 +918,7 @@ function CatalogPanel({
       onSelectAllFilterValues={() => setAllCatalogFilterOptions(columnId)}
       onClearColumnFilter={() => clearColumnFilter(columnId)}
       onClearVisibleFilterValues={() => setCatalogVisibleFilterOptions(columnId, false)}
+      onResize={(event) => resizeCatalogColumn(columnId, event)}
     />
   );
 
@@ -953,18 +978,38 @@ function CatalogPanel({
 
   return (
     <Stack spacing={2.5}>
-      <Stack direction="row" justifyContent="flex-end">
-        <TableColumnTools
-          columns={catalogTableColumns}
-          visibility={catalogColumnVisibility}
-          onToggleColumn={toggleCatalogColumnVisibility}
-          onResetColumns={resetCatalogColumnVisibility}
-          onResetFilters={resetCatalogColumnFilters}
-          hasActiveFilters={hasActiveCatalogColumnFilters}
-        />
-      </Stack>
+      <Paper className="surface-pad" sx={{ py: { xs: 1, md: 0 }, px: 1.5 }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ md: 'center' }} justifyContent="space-between" spacing={1.5}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Tabs value={kind} onChange={(_, value: CatalogKind) => onKindChange(value)} sx={{ minHeight: 56 }}>
+              <Tab value="dds" label="Статьи ДДС" />
+              <Tab value="invests" label="Инвест-проекты" />
+            </Tabs>
+            <TableColumnTools
+              columns={catalogTableColumns}
+              visibility={catalogColumnVisibility}
+              onToggleColumn={toggleCatalogColumnVisibility}
+              onResetColumns={resetCatalogColumnVisibility}
+              onResetFilters={resetCatalogColumnFilters}
+              onResetWidths={resetCatalogColumnWidths}
+              hasActiveFilters={hasActiveCatalogColumnFilters}
+            />
+          </Stack>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
+            <TextField select size="small" label="Подразделение" value={departmentId} onChange={(event) => onDepartmentChange(event.target.value)} sx={{ minWidth: 280 }}>
+              {departments.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
+            </TextField>
+            <Button startIcon={<AddIcon />} variant="contained" onClick={() => onDialogOpenChange(true)} disabled={!departmentId}>
+              Добавить / импорт
+            </Button>
+          </Stack>
+        </Stack>
+      </Paper>
       <TableContainer component={Paper} className="table-surface">
-        <Table size="small">
+        <Table size="small" sx={{ width: catalogTableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
+          <colgroup>
+            {visibleCatalogColumns.map((column) => <col key={column.id} style={{ width: catalogColumnWidths[column.id] }} />)}
+          </colgroup>
           <TableHead>
             <TableRow>
               {catalogColumnVisibility.type && <TableCell>{renderCatalogHeader('type', '\u0422\u0438\u043F')}</TableCell>}
@@ -1015,13 +1060,13 @@ function CatalogPanel({
                           onChange={(event) => setDraft((prev) => ({ ...prev, parent_id: event.target.value }))}
                           fullWidth
                         >
-                          <MenuItem value="">??? ?????????</MenuItem>
+                          <MenuItem value="">Без категории</MenuItem>
                           {parentOptions.map((category) => (
                             <MenuItem key={category.id} value={category.id}>{category.name}</MenuItem>
                           ))}
                         </TextField>
                       ) : (
-                        parent?.name || '?'
+                        parent?.name || '—'
                       )}
                     </TableCell>
                   )}
@@ -1035,13 +1080,13 @@ function CatalogPanel({
                           onChange={(event) => setDraft((prev) => ({ ...prev, unit_id: event.target.value }))}
                           fullWidth
                         >
-                          <MenuItem value="">?</MenuItem>
+                          <MenuItem value="">—</MenuItem>
                           {departments.map((unit) => (
                             <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>
                           ))}
                         </TextField>
                       ) : (
-                        units.find((unit) => unit.id === item.unit_id)?.name || item.unit_id || '?'
+                        units.find((unit) => unit.id === item.unit_id)?.name || item.unit_id || '—'
                       )}
                     </TableCell>
                   )}
@@ -1055,50 +1100,50 @@ function CatalogPanel({
                           onChange={(event) => setDraft((prev) => ({ ...prev, is_active: event.target.value === 'yes' }))}
                           fullWidth
                         >
-                          <MenuItem value="yes">??</MenuItem>
-                          <MenuItem value="no">???</MenuItem>
+                          <MenuItem value="yes">Да</MenuItem>
+                          <MenuItem value="no">Нет</MenuItem>
                         </TextField>
                       ) : (
-                        item.is_active ? '??' : '???'
+                        item.is_active ? 'Да' : 'Нет'
                       )}
                     </TableCell>
                   )}
                   {catalogColumnVisibility.actions && (
-                    <TableCell align="right" sx={{ minWidth: 140 }}>
+                    <TableCell sx={{ minWidth: 140 }}>
                       {editing ? (
-                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                          <Tooltip title="?????????">
+                        <Stack direction="row" spacing={0.5} justifyContent="flex-start">
+                          <Tooltip title="Сохранить">
                             <span>
                               <IconButton
                                 color="primary"
                                 onClick={() => saveItem.mutate({ id: item.id, body: draft })}
                                 disabled={!draft.name.trim() || saveItem.isPending}
-                                aria-label="?????????"
+                                aria-label="Сохранить"
                               >
                                 <CheckIcon fontSize="small" />
                               </IconButton>
                             </span>
                           </Tooltip>
-                          <Tooltip title="????????">
+                          <Tooltip title="Отменить">
                             <span>
-                              <IconButton onClick={cancelEdit} disabled={saveItem.isPending} aria-label="????????">
+                              <IconButton onClick={cancelEdit} disabled={saveItem.isPending} aria-label="Отменить">
                                 <CancelIcon fontSize="small" />
                               </IconButton>
                             </span>
                           </Tooltip>
                         </Stack>
                       ) : (
-                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                          <Tooltip title="?????????????">
+                        <Stack direction="row" spacing={0.5} justifyContent="flex-start">
+                          <Tooltip title="Редактировать">
                             <span>
-                              <IconButton onClick={() => startEdit(item)} aria-label="????????????? ??????">
+                              <IconButton onClick={() => startEdit(item)} aria-label="Редактировать запись">
                                 <EditOutlinedIcon fontSize="small" />
                               </IconButton>
                             </span>
                           </Tooltip>
-                          <Tooltip title="???????">
+                          <Tooltip title="Удалить">
                             <span>
-                              <IconButton onClick={() => setDeleteTarget(item)} aria-label="??????? ??????">
+                              <IconButton onClick={() => setDeleteTarget(item)} aria-label="Удалить запись">
                                 <DeleteOutlineIcon fontSize="small" />
                               </IconButton>
                             </span>
@@ -1113,7 +1158,7 @@ function CatalogPanel({
             {visibleCatalogRows.length === 0 && (
               <TableRow>
                 <TableCell colSpan={visibleCatalogColumns.length} align="center">
-                  ?????? ?? ???????
+                  Строки не найдены
                 </TableCell>
               </TableRow>
             )}
@@ -1163,6 +1208,7 @@ export default function CatalogsPage() {
 
   return (
     <Stack spacing={3}>
+      {false && (
       <Paper className="surface-pad" sx={{ py: { xs: 1, md: 0 }, px: 1.5 }}>
         <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ md: 'center' }} justifyContent="space-between" spacing={1.5}>
           <Tabs value={tab} onChange={(_, value: CatalogKind) => setTab(value)} sx={{ minHeight: 56 }}>
@@ -1179,7 +1225,16 @@ export default function CatalogsPage() {
           </Stack>
         </Stack>
       </Paper>
-      <CatalogPanel kind={tab} units={units} departmentId={departmentId} dialogOpen={dialogOpen} onDialogOpenChange={setDialogOpen} />
+      )}
+      <CatalogPanel
+        kind={tab}
+        onKindChange={setTab}
+        units={units}
+        departmentId={departmentId}
+        onDepartmentChange={setDepartmentId}
+        dialogOpen={dialogOpen}
+        onDialogOpenChange={setDialogOpen}
+      />
     </Stack>
   );
 }
