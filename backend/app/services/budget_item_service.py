@@ -28,8 +28,13 @@ class BudgetItemService:
         return "invest" if unit.get("uses_invest_projects") else "dds"
 
     def _department_id_for_request(self, request: dict) -> str:
-        unit = get_required(self.repo, "units", request["unit_id"])
-        return unit.get("parent_id") or unit["id"]
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+        current = get_required(self.repo, "units", request["unit_id"])
+        visited: set[str] = set()
+        while current.get("parent_id") and current["id"] not in visited:
+            visited.add(current["id"])
+            current = units.get(current["parent_id"], current)
+        return current["id"]
 
     def _validate_article(self, request: dict, payload: dict) -> tuple[str, str]:
         kind = self._kind_for_request(request)

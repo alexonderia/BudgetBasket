@@ -35,7 +35,7 @@ export default function LoginPage({ onLogin }: { onLogin: (token: string, user: 
               <Box>
                 <Typography variant="h5">BudgetBasket</Typography>
                 <Typography color="text.secondary" variant="body2">
-                  Бюджетирование модулей
+                  Бюджетирование объединений
                 </Typography>
               </Box>
             </Stack>

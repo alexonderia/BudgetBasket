@@ -465,8 +465,8 @@ export default function RequestsPage({ user }: { user: User }) {
 
             <Stack spacing={0.75}>
               <Stack direction="row" spacing={0.5} alignItems="center">
-                <Typography fontWeight={700}>Подразделения и модули</Typography>
-                <Tooltip title="Отметьте подразделение, чтобы включить все его модули, или отметьте только нужные модули. Без выбора экспортируются все доступные подразделения.">
+                <Typography fontWeight={700}>Объединения</Typography>
+                <Tooltip title="Отметьте объединение, чтобы включить все его дочерние объединения, или отметьте только нужные. Без выбора экспортируются все доступные объединения.">
                   <IconButton size="small" aria-label="Нюансы выбора области экспорта"><InfoOutlinedIcon fontSize="small" /></IconButton>
                 </Tooltip>
               </Stack>
@@ -486,7 +486,7 @@ export default function RequestsPage({ user }: { user: User }) {
                         {modules.length > 0 && (
                           <IconButton
                             size="small"
-                            aria-label={`${modulesExpanded ? 'Скрыть' : 'Показать'} модули подразделения ${department.name}`}
+                            aria-label={`${modulesExpanded ? 'Скрыть' : 'Показать'} дочерние объединения ${department.name}`}
                             onClick={() => toggleExportDepartmentModules(department.id)}
                           >
                             <ExpandMoreIcon sx={{ transform: modulesExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />

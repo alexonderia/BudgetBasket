@@ -8,6 +8,7 @@ ADMIN_ID = "00000000-0000-0000-0000-000000000001"
 ECONOMIST_ID = "00000000-0000-0000-0000-000000000002"
 EMPLOYEE_ID = "00000000-0000-0000-0000-000000000003"
 DEPARTMENT_ID = "10000000-0000-0000-0000-000000000001"
+CFO_ID = "10000000-0000-0000-0000-000000000010"
 MODULE_ALPHA_ID = "10000000-0000-0000-0000-000000000002"
 MODULE_BETA_ID = "10000000-0000-0000-0000-000000000003"
 DDS_OPER_ID = "20000000-0000-0000-0000-000000000001"
@@ -36,8 +37,9 @@ def seed_data(repo: Repository) -> None:
     ])
     repo.save_all("units", [
         {"id": DEPARTMENT_ID, "parent_id": None, "name": "Департамент цифровых продуктов", "is_active": True, "uses_invest_projects": False, "annual_budget": 0},
-        {"id": MODULE_ALPHA_ID, "parent_id": DEPARTMENT_ID, "name": "Модуль клиентского кабинета", "is_active": True, "uses_invest_projects": False, "annual_budget": 0},
-        {"id": MODULE_BETA_ID, "parent_id": DEPARTMENT_ID, "name": "Модуль аналитики", "is_active": True, "uses_invest_projects": True, "annual_budget": 0},
+        {"id": CFO_ID, "parent_id": DEPARTMENT_ID, "name": "ЦФО цифровых продуктов", "is_active": True, "uses_invest_projects": False, "annual_budget": 0},
+        {"id": MODULE_ALPHA_ID, "parent_id": CFO_ID, "name": "Модуль клиентского кабинета", "is_active": True, "uses_invest_projects": False, "annual_budget": 0},
+        {"id": MODULE_BETA_ID, "parent_id": CFO_ID, "name": "Модуль аналитики", "is_active": True, "uses_invest_projects": True, "annual_budget": 0},
     ])
     repo.save_all("units_responsibles", [
         {"unit_id": MODULE_ALPHA_ID, "user_id": EMPLOYEE_ID, "is_active": True},

@@ -298,7 +298,7 @@ export function Layout({
                   BudgetBasket
                 </Typography>
                 <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: 12 }}>
-                  Бюджетирование модулей
+                  Бюджетирование объединений
                 </Typography>
               </Box>}
               <IconButton

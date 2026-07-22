@@ -394,8 +394,8 @@ export default function UsersPage() {
                 <MenuItem key={value} value={value}>{label}</MenuItem>
               ))}
             </TextField>
-            <TextField select label="Подразделение" value={unitFilter} onChange={(event) => setUnitFilter(event.target.value)} sx={{ minWidth: 260 }}>
-              <MenuItem value="">Все подразделения</MenuItem>
+            <TextField select label="Объединение" value={unitFilter} onChange={(event) => setUnitFilter(event.target.value)} sx={{ minWidth: 260 }}>
+              <MenuItem value="">Все объединения</MenuItem>
               {units.map((unit) => (
                 <MenuItem key={unit.id} value={unit.id}>
                   {unit.parent_id ? `${unitNames.get(unit.parent_id) || ''} / ${unit.name}` : unit.name}

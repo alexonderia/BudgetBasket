@@ -261,7 +261,7 @@ export default function DashboardPage({ user }: { user: User }) {
     <Stack spacing={2.5} className="dashboard-page">
       <Card className="dashboard-hero" elevation={0}>
         <Box>
-          <Typography variant="h5">Сводка модулей</Typography>
+          <Typography variant="h5">Сводка объединений</Typography>
           <Tabs
             value={mode}
             onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
@@ -272,14 +272,14 @@ export default function DashboardPage({ user }: { user: User }) {
             <Tab value="income" label="Доходы" />
           </Tabs>
         </Box>
-        <TextField select size="small" label="Подразделение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
-          <MenuItem value="">Все доступные подразделения</MenuItem>
+        <TextField select size="small" label="Объединение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
+          <MenuItem value="">Все доступные объединения</MenuItem>
           {data.scope.available_units.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
         </TextField>
       </Card>
 
       <Grid container spacing={2}>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={money(data.totals.planned)} hint="Запланированная модулями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={money(data.totals.planned)} hint="Запланированная объединениями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Корректировка" value={correction >= 0 ? `+${money(correction)}` : money(correction)} hint={correctionLabel} icon={<TrendingUpIcon fontSize="small" />} tone="purple" /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Утверждено" value={money(data.totals.approved)} hint={`${approvalRate}% от расчета`} icon={<AssignmentTurnedInIcon fontSize="small" />} tone="green" /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Зафиксировано" value={money(data.totals.frozen)} hint={`${data.totals.frozen_requests_count} заявок зафиксировано`} icon={<LockOutlinedIcon fontSize="small" />} tone="amber" /></Grid>
@@ -292,7 +292,7 @@ export default function DashboardPage({ user }: { user: User }) {
             <Box className="dashboard-panel-heading">
               <Box>
                 <Typography variant="h6">Структура {subject}</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>По категориям модульных сумм и решениям экономиста</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>По категориям сумм объединений и решениям экономиста</Typography>
               </Box>
               <PieChartOutlineIcon color="primary" />
             </Box>
@@ -303,12 +303,12 @@ export default function DashboardPage({ user }: { user: User }) {
           <Card className="surface dashboard-panel" elevation={0}>
             <Box className="dashboard-panel-heading">
               <Box>
-                <Typography variant="h6">Подразделения</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>Распределение плановых сумм по подразделениям</Typography>
+                <Typography variant="h6">Объединения</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>Распределение плановых сумм по объединениям</Typography>
               </Box>
               <PieChartOutlineIcon color="primary" />
             </Box>
-            <DonutChart rows={data.by_unit} total={data.totals.planned} ariaLabel={`Распределение ${subject} по подразделениям`} />
+            <DonutChart rows={data.by_unit} total={data.totals.planned} ariaLabel={`Распределение ${subject} по объединениям`} />
           </Card>
         </Grid>
         <Grid size={{ xs: 12, lg: 7 }}>

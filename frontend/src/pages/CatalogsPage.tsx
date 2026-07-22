@@ -7,10 +7,8 @@ import CheckIcon from '@mui/icons-material/Check';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import Alert from '@mui/material/Alert';
-import Autocomplete from '@mui/material/Autocomplete';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
-import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -41,21 +39,17 @@ import type { CatalogItem, Unit } from '../types';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 
 type CatalogKind = 'dds' | 'invests';
-type CatalogTableColumn = 'type' | 'name' | 'category' | 'unit' | 'active' | 'actions';
+type CatalogTableColumn = 'name' | 'unit' | 'active' | 'actions';
 
 const CATALOG_TABLE_COLUMN_WIDTHS: Record<CatalogTableColumn, number> = {
-  type: 150,
   name: 260,
-  category: 240,
   unit: 240,
   active: 140,
   actions: 120,
 };
 
 const CATALOG_TABLE_COLUMN_MIN_WIDTHS: Record<CatalogTableColumn, number> = {
-  type: 110,
   name: 170,
-  category: 160,
   unit: 160,
   active: 110,
   actions: 90,
@@ -63,23 +57,14 @@ const CATALOG_TABLE_COLUMN_MIN_WIDTHS: Record<CatalogTableColumn, number> = {
 
 type ManualRow = {
   id: string;
-  category: string;
   name: string;
   unit_id: string;
   is_active: boolean;
 };
 
-type CategoryRow = {
-  id: string;
-  name: string;
-  is_active: boolean;
-};
-
-type CategoryTableColumn = 'name' | 'active' | 'actions';
-type ManualTableColumn = 'category' | 'name' | 'unit' | 'active' | 'actions';
+type ManualTableColumn = 'name' | 'unit' | 'active' | 'actions';
 
 type CatalogDraft = {
-  parent_id: string;
   unit_id: string;
   name: string;
   is_active: boolean;
@@ -87,7 +72,6 @@ type CatalogDraft = {
 
 type ImportRow = {
   row: number;
-  category: string | null;
   name: string;
   unit_id: string | null;
   unit_name: string;
@@ -105,20 +89,12 @@ type ImportResult = {
 
 const emptyRow = (): ManualRow => ({
   id: crypto.randomUUID(),
-  category: '',
   name: '',
   unit_id: '',
   is_active: true,
 });
 
-const emptyCategoryRow = (): CategoryRow => ({
-  id: crypto.randomUUID(),
-  name: '',
-  is_active: true,
-});
-
 const emptyDraft = (): CatalogDraft => ({
-  parent_id: '',
   unit_id: '',
   name: '',
   is_active: true,
@@ -160,7 +136,6 @@ function CatalogManageDialog({
   kind,
   units,
   items,
-  categories,
   departmentId,
   onChanged,
 }: {
@@ -169,7 +144,6 @@ function CatalogManageDialog({
   kind: CatalogKind;
   units: Unit[];
   items: CatalogItem[];
-  categories: CatalogItem[];
   departmentId: string;
   onChanged: () => void;
 }) {
@@ -178,27 +152,12 @@ function CatalogManageDialog({
   const departments = units.filter((unit) => unit.type === 'department' || !unit.parent_id);
 
   const [rows, setRows] = useState<ManualRow[]>([emptyRow()]);
-  const [categoryRows, setCategoryRows] = useState<CategoryRow[]>([]);
   const [importPreview, setImportPreview] = useState<ImportResult | null>(null);
   const [createResult, setCreateResult] = useState<{ created: number; updated: number; errors: string[] } | null>(null);
-
-  const categoryNames = useMemo(() => {
-    const names = new Map<string, string>();
-    for (const item of categories) {
-      const key = item.name.trim().toLowerCase();
-      if (key) names.set(key, item.name.trim());
-    }
-    for (const row of categoryRows) {
-      const key = row.name.trim().toLowerCase();
-      if (key) names.set(key, row.name.trim());
-    }
-    return [...names.values()].sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [categories, categoryRows]);
 
   useEffect(() => {
     if (open) {
       setRows([{ ...emptyRow(), unit_id: departmentId }]);
-      setCategoryRows([]);
       setImportPreview(null);
       setCreateResult(null);
     }
@@ -208,60 +167,23 @@ function CatalogManageDialog({
     setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   };
 
-  const updateCategoryRow = (id: string, patch: Partial<CategoryRow>) => {
-    setCategoryRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
-  };
-
   const create = useMutation({
     mutationFn: async () => {
-      const prepared = rows.filter((row) => row.name.trim() || row.category.trim());
-      const preparedCategories = categoryRows.filter((row) => row.name.trim());
-      if (!prepared.length && !preparedCategories.length) {
+      const prepared = rows.filter((row) => row.name.trim());
+      if (!prepared.length) {
         throw new Error('Заполните хотя бы одну строку');
       }
       const errors: string[] = [];
       let created = 0;
       let updated = 0;
       const catalogItems = [...items];
-      const categoryIdByName = new Map<string, string>();
-      const findRootCategory = (name: string) =>
+      const findArticle = (name: string) =>
         catalogItems.find(
           (item) =>
-            !item.parent_id &&
+            item.parent_id === null &&
             item.unit_id === departmentId &&
             item.name.trim().toLowerCase() === name.trim().toLowerCase(),
         );
-      const findLeaf = (name: string, parentId: string | null) =>
-        catalogItems.find(
-          (item) =>
-            item.parent_id === parentId &&
-            item.unit_id === departmentId &&
-            item.name.trim().toLowerCase() === name.trim().toLowerCase(),
-        );
-      for (const item of catalogItems) {
-        if (!item.parent_id && item.unit_id === departmentId) {
-          categoryIdByName.set(item.name.trim().toLowerCase(), item.id);
-        }
-      }
-      for (const categoryRow of preparedCategories) {
-        const name = categoryRow.name.trim();
-        if (!name) continue;
-        const key = name.toLowerCase();
-        const existing = findRootCategory(name);
-        if (existing) {
-          categoryIdByName.set(key, existing.id);
-          continue;
-        }
-        const createdCategory = await api.post<CatalogItem>(meta.path, {
-          parent_id: null,
-          unit_id: departmentId,
-          name,
-          is_active: categoryRow.is_active,
-        });
-        catalogItems.push(createdCategory.data);
-        categoryIdByName.set(key, createdCategory.data.id);
-        created += 1;
-      }
       for (const [index, row] of prepared.entries()) {
         const line = index + 1;
         if (!row.name.trim()) {
@@ -269,19 +191,10 @@ function CatalogManageDialog({
           continue;
         }
         try {
-          let parentId: string | null = null;
-          if (row.category.trim()) {
-            const categoryId = categoryIdByName.get(row.category.trim().toLowerCase());
-            if (!categoryId) {
-              errors.push(`Строка ${line}: сначала добавьте категорию «${row.category.trim()}» в отдельном блоке`);
-              continue;
-            }
-            parentId = categoryId;
-          }
-          const existing = findLeaf(row.name.trim(), parentId);
+          const existing = findArticle(row.name.trim());
           if (existing) {
             await api.patch(`${meta.path}/${existing.id}`, {
-              parent_id: parentId,
+              parent_id: null,
               unit_id: departmentId,
               name: row.name.trim(),
               is_active: row.is_active,
@@ -289,7 +202,7 @@ function CatalogManageDialog({
             updated += 1;
           } else {
             const createdItem = await api.post<CatalogItem>(meta.path, {
-              parent_id: parentId,
+              parent_id: null,
               unit_id: departmentId,
               name: row.name.trim(),
               is_active: row.is_active,
@@ -308,7 +221,6 @@ function CatalogManageDialog({
       if (result.created > 0 || result.updated > 0) {
         toast(`Сохранено: создано ${result.created}, обновлено ${result.updated}`, 'success');
         setRows([emptyRow()]);
-        setCategoryRows([]);
         onChanged();
       }
       if (result.errors.length > 0) {
@@ -332,27 +244,8 @@ function CatalogManageDialog({
       return (await api.post<ImportResult>(`/catalog/${kind}/import`, body, { params: { preview: true } })).data;
     },
     onSuccess: (result) => {
-      const existingCategoryKeys = new Set(categories.map((item) => item.name.trim().toLowerCase()));
-      const importedCategoryNames = new Map<string, string>();
-      for (const row of result.rows) {
-        const categoryName = row.category?.trim();
-        if (!categoryName) continue;
-        const key = categoryName.toLowerCase();
-        if (existingCategoryKeys.has(key)) continue;
-        if (!importedCategoryNames.has(key)) {
-          importedCategoryNames.set(key, categoryName);
-        }
-      }
-      setCategoryRows(
-        [...importedCategoryNames.values()].map((name) => ({
-          id: crypto.randomUUID(),
-          name,
-          is_active: true,
-        })),
-      );
       const importedRows = result.rows.map((row) => ({
         id: crypto.randomUUID(),
-        category: row.category || '',
         name: row.name,
         unit_id: row.unit_id || departmentId,
         is_active: row.is_active,
@@ -384,6 +277,7 @@ function CatalogManageDialog({
     '& .MuiInputBase-input': { py: 1, fontSize: 14 },
   };
 
+  /*
   const categoryTableColumns = useMemo<TableColumnDefinition<CategoryRow, CategoryTableColumn>[]>(() => [
     { id: 'name', label: 'Категория', getValue: (row) => row.name },
     {
@@ -442,12 +336,12 @@ function CatalogManageDialog({
     />
   );
 
+  */
   const manualTableColumns = useMemo<TableColumnDefinition<ManualRow, ManualTableColumn>[]>(() => [
-    { id: 'category', label: 'Категория', getValue: (row) => row.category },
     { id: 'name', label: 'Наименование', getValue: (row) => row.name },
     {
       id: 'unit',
-      label: 'Подразделение',
+      label: 'Объединение',
       getValue: (row) => departments.find((unit) => unit.id === row.unit_id)?.name || row.unit_id || '—',
     },
     {
@@ -541,11 +435,12 @@ function CatalogManageDialog({
         <Stack spacing={3}>
           {importPreview && (
             <Alert severity={importPreview.errors.length ? 'warning' : 'info'}>
-              Импорт завершён: новые категории вынесены отдельно, а в таблицу ниже подставлено {importPreview.rows.length} строк.
+              Импорт завершён: в таблицу ниже подставлено {importPreview.rows.length} строк. Все статьи будут сохранены без родителя.
               {importPreview.errors.length > 0 && <BoxList items={importPreview.errors.slice(0, 8)} />}
             </Alert>
           )}
 
+          {/* Legacy parent/category controls are intentionally hidden; parent_id remains in the schema for future use.
           {categoryRows.length > 0 && (
             <Box>
               <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>
@@ -633,11 +528,12 @@ function CatalogManageDialog({
               </Stack>
             </Box>
           )}
+          */}
 
           <Box>
-            <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>Статьи / подкатегории</Typography>
+            <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 0.5 }}>Статьи</Typography>
             <Typography color="text.secondary" variant="body2" sx={{ mb: 1.5 }}>
-              Таблица как в Excel: категория → название ({meta.leafLabel}). Строки из импорта попадают сюда, а новые категории указываются отдельно выше.
+              Добавьте статьи вручную или импортируйте их из Excel. Родитель для новых статей не задаётся.
             </Typography>
             <Stack direction="row" justifyContent="flex-start" sx={{ mb: 1.5 }}>
               <TableColumnTools
@@ -653,7 +549,6 @@ function CatalogManageDialog({
               <Table size="small">
                 <TableHead>
                   <TableRow sx={{ bgcolor: '#F8FAFC' }}>
-                    {manualVisibility.category && <TableCell sx={{ minWidth: 180 }}>{renderManualHeader('category', '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F')}</TableCell>}
                     {manualVisibility.name && <TableCell sx={{ minWidth: 200 }}>{renderManualHeader('name', '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435')}</TableCell>}
                     {manualVisibility.unit && <TableCell sx={{ minWidth: 200 }}>{renderManualHeader('unit', '\u041F\u043E\u0434\u0440\u0430\u0437\u0434\u0435\u043B\u0435\u043D\u0438\u0435')}</TableCell>}
                     {manualVisibility.active && <TableCell sx={{ width: 120 }}>{renderManualHeader('active', '\u0410\u043A\u0442\u0438\u0432\u0435\u043D')}</TableCell>}
@@ -663,23 +558,6 @@ function CatalogManageDialog({
                 <TableBody>
                   {visibleManualRows.map((row) => (
                     <TableRow key={row.id} hover>
-                      {manualVisibility.category && (
-                        <TableCell>
-                          <Autocomplete
-                            options={categoryNames}
-                            value={row.category || null}
-                            onChange={(_, value) => updateRow(row.id, { category: value || '' })}
-                            renderInput={(params) => (
-                              <TextField
-                                {...params}
-                                size="small"
-                                placeholder="\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044E"
-                                sx={cellFieldSx}
-                              />
-                            )}
-                          />
-                        </TableCell>
-                      )}
                       {manualVisibility.name && (
                         <TableCell>
                           <TextField
@@ -770,7 +648,7 @@ function CatalogManageDialog({
           startIcon={<SaveOutlinedIcon />}
           variant="outlined"
           onClick={() => create.mutate()}
-          disabled={create.isPending || (!rows.some((row) => row.name.trim()) && !categoryRows.some((row) => row.name.trim()))}
+          disabled={create.isPending || !rows.some((row) => row.name.trim())}
         >
           Сохранить строки
         </Button>
@@ -821,44 +699,13 @@ function CatalogPanel({
     queryFn: async () => (await api.get<CatalogItem[]>(meta.path, { params: { unit_id: departmentId || undefined } })).data,
   });
 
-  const rootCategories = useMemo(() => data.filter((item) => !item.parent_id), [data]);
   const departments = useMemo(() => units.filter((unit) => unit.type === 'department' || !unit.parent_id), [units]);
-  const sorted = useMemo(() => {
-    const byParent = new Map<string | null, CatalogItem[]>();
-    for (const item of data) {
-      const key = item.parent_id;
-      const list = byParent.get(key) || [];
-      list.push(item);
-      byParent.set(key, list);
-    }
-    const roots = byParent.get(null) || [];
-    const rows: CatalogItem[] = [];
-    for (const root of roots) {
-      rows.push(root);
-      rows.push(...(byParent.get(root.id) || []));
-    }
-    for (const item of data) {
-      if (item.parent_id && !data.some((entry) => entry.id === item.parent_id) && !rows.includes(item)) {
-        rows.push(item);
-      }
-    }
-    return rows;
-  }, [data]);
+  const sorted = useMemo(() => [...data], [data]);
   const catalogTableColumns = useMemo<TableColumnDefinition<CatalogItem, CatalogTableColumn>[]>(() => [
-    {
-      id: 'type',
-      label: 'Тип',
-      getValue: (item) => !item.parent_id ? 'Категория' : meta.leafLabel,
-    },
     { id: 'name', label: 'Название', getValue: (item) => item.name },
     {
-      id: 'category',
-      label: 'Категория',
-      getValue: (item) => data.find((entry) => entry.id === item.parent_id)?.name || '—',
-    },
-    {
       id: 'unit',
-      label: 'Подразделение',
+      label: 'Объединение',
       getValue: (item) => units.find((unit) => unit.id === item.unit_id)?.name || item.unit_id || '—',
     },
     {
@@ -868,7 +715,7 @@ function CatalogPanel({
       getSortValue: (item) => item.is_active ? 1 : 0,
     },
     { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
-  ], [data, meta.leafLabel, units]);
+  ], [units]);
   const {
     clearColumnFilter,
     clearSort,
@@ -931,7 +778,6 @@ function CatalogPanel({
   const startEdit = (item: CatalogItem) => {
     setEditingId(item.id);
     setDraft({
-      parent_id: item.parent_id || '',
       unit_id: item.unit_id || '',
       name: item.name,
       is_active: item.is_active,
@@ -946,7 +792,7 @@ function CatalogPanel({
   const saveItem = useMutation({
     mutationFn: ({ id, body }: { id: string; body: CatalogDraft }) =>
       api.patch(`${meta.path}/${id}`, {
-        parent_id: body.parent_id || null,
+        parent_id: null,
         unit_id: body.unit_id || null,
         name: body.name.trim(),
         is_active: body.is_active,
@@ -996,7 +842,7 @@ function CatalogPanel({
             />
           </Stack>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
-            <TextField select size="small" label="Подразделение" value={departmentId} onChange={(event) => onDepartmentChange(event.target.value)} sx={{ minWidth: 280 }}>
+            <TextField select size="small" label="Объединение" value={departmentId} onChange={(event) => onDepartmentChange(event.target.value)} sx={{ minWidth: 280 }}>
               {departments.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
             </TextField>
             <Button startIcon={<AddIcon />} variant="contained" onClick={() => onDialogOpenChange(true)} disabled={!departmentId}>
@@ -1012,9 +858,7 @@ function CatalogPanel({
           </colgroup>
           <TableHead>
             <TableRow>
-              {catalogColumnVisibility.type && <TableCell>{renderCatalogHeader('type', '\u0422\u0438\u043F')}</TableCell>}
               {catalogColumnVisibility.name && <TableCell>{renderCatalogHeader('name', '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435')}</TableCell>}
-              {catalogColumnVisibility.category && <TableCell>{renderCatalogHeader('category', '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F')}</TableCell>}
               {catalogColumnVisibility.unit && <TableCell>{renderCatalogHeader('unit', '\u041F\u043E\u0434\u0440\u0430\u0437\u0434\u0435\u043B\u0435\u043D\u0438\u0435')}</TableCell>}
               {catalogColumnVisibility.active && <TableCell>{renderCatalogHeader('active', '\u0410\u043A\u0442\u0438\u0432\u043D\u043E')}</TableCell>}
               {catalogColumnVisibility.actions && <TableCell align="right">{renderCatalogHeader('actions', '\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F', { sortable: false, filterable: false })}</TableCell>}
@@ -1022,52 +866,16 @@ function CatalogPanel({
           </TableHead>
           <TableBody>
             {visibleCatalogRows.map((item) => {
-              const isCategory = !item.parent_id;
-              const parent = data.find((entry) => entry.id === item.parent_id);
               const editing = editingId === item.id;
-              const parentOptions = rootCategories.filter((category) => category.id !== item.id);
               return (
-                <TableRow key={item.id} hover sx={{ bgcolor: isCategory ? 'rgba(47, 111, 237, 0.04)' : undefined }}>
-                  {catalogColumnVisibility.type && (
-                    <TableCell>
-                      <Chip
-                        size="small"
-                        label={isCategory ? '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F' : meta.leafLabel}
-                        sx={{
-                          bgcolor: isCategory ? '#EAF1FF' : '#F3F4F6',
-                          color: isCategory ? '#2F6FED' : '#6B7280',
-                          fontWeight: 600,
-                        }}
-                      />
-                    </TableCell>
-                  )}
+                <TableRow key={item.id} hover>
                   {catalogColumnVisibility.name && (
-                    <TableCell sx={{ fontWeight: isCategory ? 700 : 500, minWidth: 220 }}>
+                    <TableCell sx={{ fontWeight: 500, minWidth: 220 }}>
                       <CatalogCellText
                         editing={editing}
                         value={editing ? draft.name : item.name}
                         onChange={(value) => setDraft((prev) => ({ ...prev, name: value }))}
                       />
-                    </TableCell>
-                  )}
-                  {catalogColumnVisibility.category && (
-                    <TableCell sx={{ minWidth: 220 }}>
-                      {editing ? (
-                        <TextField
-                          select
-                          size="small"
-                          value={draft.parent_id}
-                          onChange={(event) => setDraft((prev) => ({ ...prev, parent_id: event.target.value }))}
-                          fullWidth
-                        >
-                          <MenuItem value="">Без категории</MenuItem>
-                          {parentOptions.map((category) => (
-                            <MenuItem key={category.id} value={category.id}>{category.name}</MenuItem>
-                          ))}
-                        </TextField>
-                      ) : (
-                        parent?.name || '—'
-                      )}
                     </TableCell>
                   )}
                   {catalogColumnVisibility.unit && (
@@ -1172,14 +980,13 @@ function CatalogPanel({
         kind={kind}
         units={units}
         items={data}
-        categories={rootCategories}
         departmentId={departmentId}
         onChanged={refresh}
       />
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title={`Удалить ${deleteTarget && !deleteTarget.parent_id ? 'категорию' : meta.leafLabel}?`}
+        title={`Удалить ${meta.leafLabel}?`}
         description={`Запись «${deleteTarget?.name || ''}» будет удалена. Это действие нельзя отменить.`}
         pending={deleteItem.isPending}
         onClose={() => setDeleteTarget(null)}
@@ -1216,7 +1023,7 @@ export default function CatalogsPage() {
             <Tab value="invests" label="Инвест-проекты" />
           </Tabs>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
-            <TextField select size="small" label="Подразделение" value={departmentId} onChange={(event) => setDepartmentId(event.target.value)} sx={{ minWidth: 280 }}>
+            <TextField select size="small" label="Объединение" value={departmentId} onChange={(event) => setDepartmentId(event.target.value)} sx={{ minWidth: 280 }}>
               {departments.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
             </TextField>
             <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDialogOpen(true)} disabled={!departmentId}>

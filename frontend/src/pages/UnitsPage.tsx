@@ -5,6 +5,9 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import PersonRemoveOutlinedIcon from '@mui/icons-material/PersonRemoveOutlined';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
+import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
+import ZoomInIcon from '@mui/icons-material/ZoomIn';
+import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import Alert from '@mui/material/Alert';
 import Autocomplete from '@mui/material/Autocomplete';
 import Box from '@mui/material/Box';
@@ -24,7 +27,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { usePageChromeActions, usePageChromeLeading } from '../components/Layout';
@@ -48,8 +51,21 @@ interface Assignment {
 
 type UnitDialogMode =
   | { kind: 'create-root' }
-  | { kind: 'create-child'; parent: Unit }
-  | { kind: 'edit'; unit: Unit };
+  | { kind: 'create-child'; parent: Unit; level: number }
+  | { kind: 'edit'; unit: Unit; level: number };
+
+function unitLevel(unitId: string, units: Unit[]): number {
+  const byId = new Map(units.map((unit) => [unit.id, unit]));
+  let level = 1;
+  let current = byId.get(unitId);
+  const visited = new Set<string>();
+  while (current?.parent_id && !visited.has(current.id)) {
+    visited.add(current.id);
+    level += 1;
+    current = byId.get(current.parent_id);
+  }
+  return level;
+}
 
 function fullName(user?: User): string {
   if (!user) return 'не назначен';
@@ -178,13 +194,14 @@ function UnitFormDialog({
   if (!mode) return null;
 
   const isEdit = mode.kind === 'edit';
-  const isRoot = isEdit ? !mode.unit.parent_id : mode.kind === 'create-root';
+  const level = mode.kind === 'create-root' ? 1 : mode.level;
+  const canAssign = level === 3;
 
   const title = isEdit
     ? `Редактировать: ${mode.unit.name}`
     : mode.kind === 'create-child'
-    ? `Новый модуль в подразделении «${mode.parent.name}»`
-      : 'Новое подразделение';
+    ? `Новое объединение внутри «${mode.parent.name}»`
+      : 'Новое объединение';
 
   const parentId =
     mode.kind === 'create-child' ? mode.parent.id : mode.kind === 'edit' ? mode.unit.parent_id : null;
@@ -194,13 +211,13 @@ function UnitFormDialog({
       <DialogTitle sx={{ pr: isEdit && onDelete ? 7 : undefined }}>
         {title}
         {isEdit && onDelete && (
-          <Tooltip title="Удалить модуль">
+          <Tooltip title="Удалить объединение">
             <IconButton
               color="error"
               onClick={onDelete}
               disabled={pending || deletePending}
               sx={{ position: 'absolute', top: 18, right: 18 }}
-              aria-label="Удалить модуль"
+              aria-label="Удалить объединение"
             >
               <DeleteOutlineIcon />
             </IconButton>
@@ -209,8 +226,8 @@ function UnitFormDialog({
       </DialogTitle>
       <DialogContent dividers>
         <Stack spacing={2.5} sx={{ pt: 1 }}>
-          {mode.kind === 'create-child' && <Alert severity="info">Будет создан модуль внутри выбранного подразделения.</Alert>}
-          {mode.kind === 'create-root' && <Alert severity="info">Подразделение верхнего уровня без родителя.</Alert>}
+          {mode.kind === 'create-child' && <Alert severity="info">Будет создано объединение внутри выбранного объединения.</Alert>}
+          {mode.kind === 'create-root' && <Alert severity="info">Объединение верхнего уровня без родителя.</Alert>}
 
           <TextField label="Название" value={name} onChange={(event) => setName(event.target.value)} fullWidth autoFocus />
           <Alert severity="info">Годовой бюджет рассчитывается автоматически из одобренных строк закрытых заявок.</Alert>
@@ -218,22 +235,22 @@ function UnitFormDialog({
             <MenuItem value="dds">Статьи ДДС</MenuItem>
             <MenuItem value="invest">Инвестиционные проекты</MenuItem>
           </TextField>
-          {mode.kind === 'create-child' && (
+          {mode.kind === 'create-child' && canAssign && (
             <>
               <Divider />
-              <Typography variant="subtitle2" fontWeight={700}>Ответственные модуля</Typography>
+              <Typography variant="subtitle2" fontWeight={700}>Ответственные объединения</Typography>
               <UserAutocomplete users={employees} value={employeeId} label="Сотрудник" onChange={setEmployeeId} />
             </>
           )}
 
-          {mode.kind !== 'edit' && (
+          {mode.kind !== 'edit' && canAssign && (
             <>
               <Divider />
               <Typography variant="subtitle2" fontWeight={700}>Назначение экономиста</Typography>
               <UserAutocomplete
                 users={economists}
                 value={economistId}
-                label={isRoot ? 'Экономист (только просмотр)' : 'Экономист'}
+                label="Экономист"
                 onChange={setEconomistId}
               />
             </>
@@ -252,13 +269,12 @@ function UnitFormDialog({
             </TextField>
           )}
 
-          {isEdit && (
+          {isEdit && canAssign && (
             <>
               <Divider />
               <Typography variant="subtitle2" fontWeight={700}>Назначение ответственных</Typography>
 
-              {!isRoot && (
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}>
                   <UserAutocomplete users={employees} value={employeeId} label="Ответственный сотрудник" size="small" onChange={setEmployeeId} />
                   <Tooltip title={employeeId ? 'Сохранить назначение' : 'Снять ответственного'}>
                     <Button
@@ -272,10 +288,9 @@ function UnitFormDialog({
                     </Button>
                   </Tooltip>
                 </Stack>
-              )}
 
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}>
-                <UserAutocomplete users={economists} value={economistId} label={isRoot ? 'Экономист (только просмотр)' : 'Экономист'} size="small" onChange={setEconomistId} />
+                <UserAutocomplete users={economists} value={economistId} label="Экономист" size="small" onChange={setEconomistId} />
                 <Tooltip title={economistId ? 'Сохранить назначение' : 'Снять экономиста'}>
                   <Button
                     variant="outlined"
@@ -305,8 +320,8 @@ function UnitFormDialog({
             is_active: isActive,
             parent_id: parentId,
             uses_invest_projects: usesInvestProjects,
-            responsible_user_id: mode.kind === 'create-child' ? employeeId : undefined,
-            economist_id: mode.kind !== 'edit' ? economistId || undefined : undefined,
+            responsible_user_id: mode.kind === 'create-child' && canAssign ? employeeId || undefined : undefined,
+            economist_id: mode.kind !== 'edit' && canAssign ? economistId || undefined : undefined,
           })}
         >
           {isEdit ? 'Сохранить' : 'Создать'}
@@ -337,20 +352,22 @@ function OrgUnitCard({
 }) {
   const childCount = unit.children?.length || 0;
   const isRoot = !unit.parent_id;
+  const isAssignmentLevel = depth === 2;
+  const canCreateChild = depth < 2;
   const hasChildren = childCount > 0;
   const responsibleUser = users.find((user) => user.id === responsible?.user_id);
   const uniqueEconomists = dedupeUsers(linkedEconomists);
-  const missingResponsible = !isRoot && !responsibleUser;
-  const missingEconomists = !isRoot && uniqueEconomists.length === 0;
+  const missingResponsible = isAssignmentLevel && !responsibleUser;
+  const missingEconomists = isAssignmentLevel && uniqueEconomists.length === 0;
   const hasMissingAssignments = missingResponsible || missingEconomists;
   const [peopleExpanded, setPeopleExpanded] = useState(false);
   const peopleCount = (responsibleUser ? 1 : 0) + uniqueEconomists.length;
 
   return (
-    <Box className={`org-node ${depth === 0 ? 'org-node-root' : 'org-node-child'} ${hasChildren ? 'has-children' : ''}`}>
+    <Box data-depth={depth} className={`org-node ${depth === 0 ? 'org-node-root' : 'org-node-child'} ${hasChildren ? 'has-children' : ''}`}>
       <Box className={`org-unit-card ${isRoot ? 'is-root' : 'is-child'} ${unit.is_active ? '' : 'is-inactive'} ${hasMissingAssignments ? 'needs-attention' : ''}`}>
         <Tooltip title="Редактировать">
-          <IconButton className="org-edit-btn" size="small" onClick={onEdit} aria-label={isRoot ? 'Редактировать подразделение' : 'Редактировать модуль'}>
+        <IconButton className="org-edit-btn" size="small" onClick={onEdit} aria-label="Редактировать объединение">
             <EditOutlinedIcon fontSize="small" />
           </IconButton>
         </Tooltip>
@@ -363,7 +380,7 @@ function OrgUnitCard({
           <Chip size="small" label={unit.is_active ? 'Активен' : 'Неактивен'} color={unit.is_active ? 'success' : 'default'} variant={unit.is_active ? 'filled' : 'outlined'} />
         </Stack>
 
-        <Box className="org-people-section">
+        {isAssignmentLevel && <Box className="org-people-section">
           <Box className="org-card-meta">
             <Tooltip title={`Годовой бюджет: ${money(unit.annual_budget)}`}>
               <Typography className="org-unit-budget" variant="caption" color="text.secondary">{money(unit.annual_budget)}</Typography>
@@ -380,23 +397,25 @@ function OrgUnitCard({
           </Box>
           <Collapse in={peopleExpanded} timeout="auto">
             <Box className="org-people-grid in-card">
-              {!isRoot && (responsibleUser ? <PersonCard user={responsibleUser} role="Ответственный сотрудник" /> : <PersonCard role="Ответственный сотрудник" vacancy />)}
+              {responsibleUser ? <PersonCard user={responsibleUser} role="Ответственный сотрудник" /> : <PersonCard role="Ответственный сотрудник" vacancy />}
               {uniqueEconomists.map((user) => (
                 <PersonCard key={user.id} user={user} role="Экономист" />
               ))}
               {uniqueEconomists.length === 0 && <PersonCard role="Экономист" vacancy />}
             </Box>
           </Collapse>
-        </Box>
+        </Box>}
       </Box>
 
       <Box className={`org-connector ${hasChildren ? 'with-children' : 'leaf-end'}`}>
         <span className="org-connector-line org-connector-line-top" />
-        <Tooltip title="Добавить модуль">
-          <IconButton className="org-add-on-line" size="small" onClick={onCreateChild} aria-label="Добавить модуль">
-            <AddIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+        {canCreateChild && (
+          <Tooltip title="Добавить объединение">
+            <IconButton className="org-add-on-line" size="small" onClick={onCreateChild} aria-label="Добавить объединение">
+              <AddIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        )}
         {hasChildren && <span className="org-connector-line org-connector-line-bottom" />}
       </Box>
 
@@ -423,36 +442,40 @@ export default function UnitsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Unit | null>(null);
   const [orgSearch, setOrgSearch] = useState('');
   const [rootUnitId, setRootUnitId] = useState('');
+  const [orgZoom, setOrgZoom] = useState(0.6);
+  const [orgPan, setOrgPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const panStart = useRef({ pointerX: 0, pointerY: 0, x: 0, y: 0 });
 
-  const modules = units.filter((unit) => unit.parent_id);
+  const unitLevels = useMemo(() => new Map(units.map((unit) => [unit.id, unitLevel(unit.id, units)])), [units]);
+  const assignableUnits = units.filter((unit) => unitLevels.get(unit.id) === 3);
   const employees = users.filter((user) => user.role === 'employee');
   const economists = users.filter((user) => user.role === 'economist');
 
   const responsibleQueries = useQueries({
-    queries: modules.map((module) => ({
-      queryKey: ['responsible', module.id],
-      queryFn: async () => (await api.get<Responsible | null>(`/units/${module.id}/responsible`)).data,
+    queries: assignableUnits.map((unit) => ({
+      queryKey: ['responsible', unit.id],
+      queryFn: async () => (await api.get<Responsible | null>(`/units/${unit.id}/responsible`)).data,
     })),
   });
 
   const responsiblesByUnit = useMemo(() => {
     const result = new Map<string, Responsible | null>();
-    modules.forEach((module, index) => result.set(module.id, responsibleQueries[index]?.data ?? null));
+    assignableUnits.forEach((unit, index) => result.set(unit.id, responsibleQueries[index]?.data ?? null));
     return result;
-  }, [modules, responsibleQueries]);
+  }, [assignableUnits, responsibleQueries]);
 
   const economistsByUnit = useMemo(() => {
     const result = new Map<string, User[]>();
-    for (const unit of units) {
-      const isRoot = !unit.parent_id;
+    for (const unit of assignableUnits) {
       const matched = assignments
-        .filter((item) => item.is_active && item.unit_id === unit.id && item.assignment_type === (isRoot ? 'department' : 'module'))
+        .filter((item) => item.is_active && item.unit_id === unit.id && item.assignment_type === 'module')
         .map((item) => users.find((user) => user.id === item.economist_id))
         .filter(Boolean) as User[];
       result.set(unit.id, dedupeUsers(matched));
     }
     return result;
-  }, [units, assignments, users]);
+  }, [assignableUnits, assignments, users]);
 
   const visibleTree = useMemo(() => {
     const query = orgSearch.trim().toLocaleLowerCase('ru-RU');
@@ -500,7 +523,7 @@ export default function UnitsPage() {
         await api.post('/economist-assignments', {
           economist_id: payload.economist_id,
           unit_id: unit.id,
-          assignment_type: payload.parent_id ? 'module' : 'department',
+          assignment_type: 'module',
           is_active: true,
         });
       }
@@ -509,7 +532,7 @@ export default function UnitsPage() {
     onSuccess: (_data, payload) => {
       setDialog(null);
       refresh();
-      toast(payload.parent_id ? 'Модуль создан' : 'Подразделение создано', 'success');
+      toast('Объединение создано', 'success');
     },
     onError: (error) => {
       toast(getErrorMessage(error, 'Не удалось создать элемент оргструктуры'), 'error');
@@ -581,9 +604,9 @@ export default function UnitsPage() {
       api.patch(`/economist-assignments/${encodeURIComponent(`${economistId}:${unitId}`)}`),
     onSuccess: () => {
       refresh();
-      toast('Экономист снят с модуля', 'success');
+      toast('Экономист снят с объединения', 'success');
     },
-    onError: (error) => toast(getErrorMessage(error, 'Не удалось снять экономиста с модуля'), 'error'),
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось снять экономиста с объединения'), 'error'),
   });
 
   const submitDialog = (payload: {
@@ -607,7 +630,7 @@ export default function UnitsPage() {
   const addRootButton = useMemo(
     () => (
       <Button key="add-root" startIcon={<AddIcon />} variant="contained" onClick={() => setDialog({ kind: 'create-root' })}>
-        Подразделение
+        Объединение
       </Button>
     ),
     [],
@@ -620,11 +643,11 @@ export default function UnitsPage() {
         <TextField
           select
           size="small"
-          label="Подразделение"
+          label="Объединение"
           value={rootUnitId}
           onChange={(event) => setRootUnitId(event.target.value)}
         >
-          <MenuItem value="">Все подразделения</MenuItem>
+          <MenuItem value="">Все объединения</MenuItem>
           {tree.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
         </TextField>
         <TextField
@@ -649,11 +672,11 @@ export default function UnitsPage() {
         users={users}
         responsible={responsiblesByUnit.get(unit.id)}
         linkedEconomists={economistsByUnit.get(unit.id) || []}
-        onCreateChild={() => setDialog({ kind: 'create-child', parent: unit })}
-        onEdit={() => setDialog({ kind: 'edit', unit })}
+        onCreateChild={() => setDialog({ kind: 'create-child', parent: unit, level: depth + 2 })}
+        onEdit={() => setDialog({ kind: 'edit', unit, level: depth + 1 })}
       >
         {children.length > 0 ? (
-          <Box className="org-branches" data-count={children.length}>
+          <Box className="org-branches" data-count={children.length} data-depth={depth}>
             {children.map((child) => renderNode(child, depth + 1))}
           </Box>
         ) : null}
@@ -661,23 +684,77 @@ export default function UnitsPage() {
     );
   };
 
+  const changeOrgZoom = (delta: number) => {
+    setOrgZoom((current) => Math.min(1.8, Math.max(0.6, Number((current + delta).toFixed(2)))));
+  };
+
+  const resetOrgViewport = () => {
+    setOrgZoom(0.6);
+    setOrgPan({ x: 0, y: 0 });
+  };
+
+  const handleOrgPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || (event.target as HTMLElement).closest('button, a, input, textarea, select')) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    panStart.current = { pointerX: event.clientX, pointerY: event.clientY, ...orgPan };
+    setIsPanning(true);
+  };
+
+  const handleOrgPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (!isPanning) return;
+    setOrgPan({
+      x: panStart.current.x + event.clientX - panStart.current.pointerX,
+      y: panStart.current.y + event.clientY - panStart.current.pointerY,
+    });
+  };
+
+  const stopOrgPanning = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setIsPanning(false);
+  };
+
   return (
     <Stack spacing={3}>
       <Paper className={`org-chart-panel ${rootUnitId ? 'is-filtered' : ''}`} elevation={0}>
         {visibleTree.length > 0 ? (
-          <Box className="org-forest">
-            {visibleTree.map((root) => (
-              <Box key={root.id} className="org-chart">
-                {renderNode(root, 0)}
+          <>
+            <Stack className="org-chart-toolbar" direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+              <Typography className="org-chart-zoom-value" variant="caption">{Math.round(orgZoom * 100)}%</Typography>
+              <Tooltip title="Отдалить">
+                <span><IconButton size="small" onClick={() => changeOrgZoom(-0.1)} disabled={orgZoom <= 0.6} aria-label="Отдалить оргструктуру"><ZoomOutIcon fontSize="small" /></IconButton></span>
+              </Tooltip>
+              <Tooltip title="Приблизить">
+                <span><IconButton size="small" onClick={() => changeOrgZoom(0.1)} disabled={orgZoom >= 1.8} aria-label="Приблизить оргструктуру"><ZoomInIcon fontSize="small" /></IconButton></span>
+              </Tooltip>
+              <Tooltip title="Сбросить масштаб и положение">
+                <IconButton size="small" onClick={resetOrgViewport} aria-label="Сбросить масштаб и положение оргструктуры"><CenterFocusStrongIcon fontSize="small" /></IconButton>
+              </Tooltip>
+            </Stack>
+            <Box
+              className={`org-chart-viewport ${isPanning ? 'is-panning' : ''}`}
+              onPointerDown={handleOrgPointerDown}
+              onPointerMove={handleOrgPointerMove}
+              onPointerUp={stopOrgPanning}
+              onPointerCancel={stopOrgPanning}
+            >
+              <Box className="org-chart-stage" style={{ transform: `translate3d(${orgPan.x}px, ${orgPan.y}px, 0) scale(${orgZoom})` }}>
+                <Box className="org-forest">
+                  {visibleTree.map((root) => (
+                    <Box key={root.id} className="org-chart">
+                      {renderNode(root, 0)}
+                    </Box>
+                  ))}
+                </Box>
               </Box>
-            ))}
-          </Box>
+            </Box>
+            <Typography className="org-chart-pan-hint" variant="caption">Зажмите левую кнопку мыши и перетащите схему, чтобы переместить её</Typography>
+          </>
         ) : (
           <Stack spacing={2} alignItems="flex-start">
-            <Typography color="text.secondary">{orgSearch ? 'По запросу ничего не найдено.' : 'Пока нет подразделений. Создайте первое подразделение.'}</Typography>
+            <Typography color="text.secondary">{orgSearch ? 'По запросу ничего не найдено.' : 'Пока нет объединений. Создайте первое объединение.'}</Typography>
             {!orgSearch && (
               <Button startIcon={<AddIcon />} variant="contained" onClick={() => setDialog({ kind: 'create-root' })}>
-                Создать подразделение
+                Создать объединение
               </Button>
             )}
           </Stack>
@@ -709,7 +786,7 @@ export default function UnitsPage() {
           assign.mutate({
             unitId,
             economistId,
-            assignmentType: editingUnit.parent_id ? 'module' : 'department',
+            assignmentType: 'module',
           });
         }}
         onUnassignEconomist={(economistId) => {
@@ -721,8 +798,8 @@ export default function UnitsPage() {
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title={`Удалить ${deleteTarget?.parent_id ? 'модуль' : 'подразделение'}?`}
-        description={`${deleteTarget?.parent_id ? 'Модуль' : 'Подразделение'} «${deleteTarget?.name || ''}» будет удален${deleteTarget?.parent_id ? '' : 'о'}. Это действие нельзя отменить.`}
+        title="Удалить объединение?"
+        description={`Объединение «${deleteTarget?.name || ''}» будет удалено. Это действие нельзя отменить.`}
         pending={deleteUnit.isPending}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {

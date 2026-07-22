@@ -1670,7 +1670,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
         {counterparty ? (
           <Paper className="surface-pad" elevation={0}>
             <Stack spacing={0.75}>
-              <Typography variant="h6">{user.role === 'economist' ? 'Контакты сотрудника модуля' : 'Контакты экономиста'}</Typography>
+              <Typography variant="h6">{user.role === 'economist' ? 'Контакты сотрудника объединения' : 'Контакты экономиста'}</Typography>
               <Typography fontWeight={700}>{contactName(counterparty)}</Typography>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.5, sm: 3 }} flexWrap="wrap" useFlexGap>
                 <Typography color="text.secondary">Телефон: {counterparty.profile?.phone || 'не указан'}</Typography>
@@ -1824,7 +1824,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} />
         </Paper>
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
-          <ItemsTable title="Доходы модуля" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} />
+          <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} />
         </Paper>
       </Stack>
 

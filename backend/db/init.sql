@@ -180,9 +180,18 @@ DECLARE
     request_department_id uuid;
     catalog_department_id uuid;
 BEGIN
-    SELECT COALESCE(u.parent_id, u.id) INTO request_department_id
-    FROM requests r JOIN units u ON u.id = r.unit_id
-    WHERE r.id = NEW.request_id;
+    WITH RECURSIVE ancestry AS (
+        SELECT u.id, u.parent_id
+        FROM requests r JOIN units u ON u.id = r.unit_id
+        WHERE r.id = NEW.request_id
+        UNION ALL
+        SELECT parent.id, parent.parent_id
+        FROM units parent JOIN ancestry child ON child.parent_id = parent.id
+    )
+    SELECT id INTO request_department_id
+    FROM ancestry
+    WHERE parent_id IS NULL
+    LIMIT 1;
     SELECT unit_id INTO catalog_department_id FROM dds_catalog WHERE id = NEW.dds_id;
     IF catalog_department_id IS NULL THEN
         SELECT unit_id INTO catalog_department_id FROM invests_catalog WHERE id = NEW.invest_id;

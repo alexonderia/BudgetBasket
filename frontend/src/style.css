@@ -1140,14 +1140,60 @@
   }
 
   .org-chart-panel {
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
+    overflow: hidden;
     border-radius: 18px;
     border: 1px solid var(--bb-line);
     background: rgba(255, 255, 255, 0.95);
     box-shadow: var(--bb-shadow);
     padding: 20px;
+  }
+
+  .org-chart-toolbar {
+    min-height: 32px;
+    margin-bottom: 8px;
+  }
+
+  .org-chart-zoom-value {
+    min-width: 42px;
+    color: var(--bb-muted);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .org-chart-viewport {
+    position: relative;
+    min-height: 520px;
+    height: min(70vh, 760px);
+    overflow: hidden;
+    border: 1px solid rgba(215, 221, 231, 0.72);
+    border-radius: 14px;
+    background: rgba(248, 250, 253, 0.62);
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .org-chart-viewport.is-panning {
+    cursor: grabbing;
+  }
+
+  .org-chart-stage {
+    width: max-content;
+    min-width: 100%;
+    min-height: 100%;
+    transform-origin: top left;
+    transition: transform 180ms ease;
+  }
+
+  .org-chart-viewport.is-panning .org-chart-stage {
+    transition: none;
+  }
+
+  .org-chart-pan-hint {
+    display: block;
+    margin-top: 8px;
+    color: var(--bb-muted);
+    text-align: right;
   }
 
   .org-page-filters .MuiTextField-root {
@@ -1346,6 +1392,74 @@
 
   .org-branches[data-count="1"] {
     width: var(--org-leaf-width);
+  }
+
+  /* The third level is a vertical stack under each second-level unit. */
+  .org-branches[data-depth="1"] {
+    width: calc(var(--org-leaf-width) + 85px);
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 24px;
+    box-sizing: border-box;
+    padding-left: 85px;
+  }
+
+  .org-branches[data-depth="1"]::before {
+    display: none;
+  }
+
+  .org-branches[data-depth="1"]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: auto;
+    left: 29px;
+    width: 2px;
+    height: 38px;
+    background: #b7c0cd;
+    z-index: 0;
+  }
+
+  .org-branches[data-depth="1"] > .org-node-child {
+    width: calc(var(--org-leaf-width) + 85px);
+    flex: 0 0 auto;
+    align-items: flex-start;
+    z-index: 1;
+  }
+
+  .org-branches[data-depth="1"] > .org-node-child::before {
+    top: 38px;
+    left: -56px;
+    width: 56px;
+    height: 2px;
+  }
+
+  .org-branches[data-depth="1"] > .org-node-child:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    top: 38px;
+    left: -56px;
+    width: 2px;
+    height: calc(100% + 24px);
+    background: #b7c0cd;
+    z-index: 0;
+  }
+
+  .org-branches[data-depth="1"] > .org-node-child > .org-unit-card {
+    margin-top: 0;
+  }
+
+  .org-node-child[data-depth="1"].has-children {
+    align-items: flex-start;
+  }
+
+  .org-node-child[data-depth="1"].has-children > .org-connector {
+    align-self: flex-start;
+    margin-left: 18px;
+  }
+
+  .org-branches[data-depth="0"] {
+    gap: calc(var(--org-leaf-gap) + 85px);
   }
 
   .org-node-child::before {
