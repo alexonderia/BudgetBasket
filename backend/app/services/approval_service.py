@@ -250,7 +250,14 @@ class ApprovalService:
 
     def list_steps(self, user: dict) -> list[dict]:
         self.permissions.require_admin(user)
-        return self._public_steps(self.repo, self.repo.load_all("steps"))
+        steps = self.repo.load_all("steps")
+        public_steps = self._public_steps(self.repo, steps)
+        steps_by_id = {step["id"]: step for step in steps}
+        for public_step in public_steps:
+            status, active_count = self._step_progress(self.repo, steps_by_id[public_step["id"]])
+            public_step["status"] = status
+            public_step["active_requests_count"] = active_count
+        return public_steps
 
     def my_steps(self, user: dict) -> list[dict]:
         if user.get("role") not in {"economist", "approver", "zgd"}:
@@ -664,6 +671,9 @@ class ApprovalService:
         with self.repo.transaction() as repo:
             parent = repo.lock_by_id("steps", parent_id)
             child = repo.lock_by_id("steps", child_id)
+            parent_user = repo.get_by_id("users", parent.get("user_id")) if parent else None
+            if parent_user and parent_user.get("role") == "zgd":
+                raise HTTPException(status_code=400, detail="\u041f\u043e\u0441\u043b\u0435 \u0417\u0413\u0414 \u043d\u0435 \u043c\u043e\u0436\u0435\u0442 \u0431\u044b\u0442\u044c \u0443\u0437\u043b\u043e\u0432 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0430")
             if not parent or not child:
                 raise HTTPException(status_code=404, detail="Шаг не найден")
             if parent.get("unit_id") is not None:
@@ -1638,6 +1648,12 @@ class ApprovalService:
 
     def _request_step_state(self, repo: Repository, step: dict, request_id: str) -> dict:
         state = self._state_row(repo, request_id, step["id"])
+        request = repo.get_by_id("requests", request_id)
+        if request and request.get("status") == RequestStatus.draft and step.get("unit_id") is not None:
+            return {
+                "status": StepStatus.on_revision,
+                "child_step_id": self._direct_child_for_request(repo, step, request_id),
+            }
         return {
             "status": state.get("status", StepStatus.waiting) if state else StepStatus.waiting,
             "child_step_id": self._direct_child_for_request(repo, step, request_id),

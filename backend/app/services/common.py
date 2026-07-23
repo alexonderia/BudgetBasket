@@ -1,9 +1,22 @@
 from datetime import datetime, timezone
+import re
 from typing import Any
 
 from fastapi import HTTPException
 
 from app.repositories.base import Repository
+
+
+_CORRUPTED_ITEM_SUFFIX = re.compile(r"[MМ]-\d+,\s+\?{3,}\s*\d+")
+
+
+def clean_request_item_name(name: Any) -> Any:
+    if not isinstance(name, str):
+        return name
+    prefix, separator, suffix = name.rpartition(" — ")
+    if separator and _CORRUPTED_ITEM_SUFFIX.fullmatch(suffix):
+        return prefix
+    return name
 
 
 def now_iso() -> str:

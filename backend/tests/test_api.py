@@ -90,3 +90,28 @@ def test_draft_request_shows_module_economist_contact(tmp_path):
     assert response.status_code == 200
     assert response.json()["role"] == "economist"
     assert response.json()["login"] == "economist"
+
+
+def test_request_history_hides_corrupted_import_suffix(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    item = client.post(
+        f"/requests/{request['id']}/items",
+        json={
+            "dds_id": DDS_LICENSE_ID,
+            "name": "Юридические услуги (списание) — M-1, ????? 1",
+            "sum_plan": 100,
+            "justification": "Проверка",
+        },
+        headers=employee,
+    )
+    assert item.status_code == 200
+
+    logs = client.get(f"/requests/{request['id']}/logs", headers=employee)
+    assert logs.status_code == 200
+    line_log = next(entry for entry in logs.json() if entry["subject"])
+    assert line_log["subject"]["name"] == "Юридические услуги (списание)"
+    items = client.get(f"/requests/{request['id']}/items", headers=employee)
+    assert items.status_code == 200
+    assert items.json()[0]["name"] == "Юридические услуги (списание)"

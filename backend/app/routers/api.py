@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.dependencies import current_user
+from app.services.common import clean_request_item_name
 from app.models import (
     AssignmentCreate,
     CatalogCreate,
@@ -565,7 +566,7 @@ def request_logs(request: Request, request_id: str, user: User):
         category = catalogs[article_field].get(article.get("parent_id"), {})
         return {
             "type": "request_line",
-            "name": item.get("name") or changes.get("name", {}).get("to") or changes.get("name", {}).get("from"),
+            "name": clean_request_item_name(item.get("name")) or changes.get("name", {}).get("to") or changes.get("name", {}).get("from"),
             "article": article.get("name"),
             "category": category.get("name"),
         }

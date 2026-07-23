@@ -24,6 +24,19 @@ def finalize_by_economist(client, request_id, item_id, economist):
     return finalized.json()
 
 
+def test_draft_request_is_on_revision_at_economist_step_until_submission(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    admin = auth(client, "admin", "admin")
+    draft = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee)
+    assert draft.status_code == 200
+
+    route = client.get(f"/requests/{draft.json()['id']}/approval-route", headers=employee).json()
+    assert [item["step"]["request_status"] for item in route] == ["on_revision", "waiting", "waiting"]
+    graph_steps = client.get("/steps", headers=admin).json()
+    assert next(step for step in graph_steps if step["id"] == LEAF_STEP_ID)["status"] == "on_revision"
+
+
 def test_submission_creates_independent_step_states_and_economist_task(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
@@ -38,6 +51,17 @@ def test_submission_creates_independent_step_states_and_economist_task(tmp_path)
     ]
     tasks = client.get("/steps/my", headers=economist).json()
     assert [(step["id"], step["active_requests_count"]) for step in tasks] == [(LEAF_STEP_ID, 1)]
+
+
+def test_zgd_step_cannot_have_following_nodes(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    response = client.post(
+        "/step-edges",
+        json={"parent_step_id": ROOT_STEP_ID, "child_step_id": LEAF_STEP_ID},
+        headers=admin,
+    )
+    assert response.status_code == 400
 
 
 def test_economist_freezes_and_sends_request_to_next_step(tmp_path):

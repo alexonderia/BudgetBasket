@@ -1754,8 +1754,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           </CardContent>
         </Card>
 
-        {request.status !== 'draft' && (
-          <Paper className="surface-pad" elevation={0}>
+        <Paper className="surface-pad" elevation={0}>
             <Stack spacing={2}>
               <Box>
                 <Typography variant="h6">Маршрут согласования заявки</Typography>
@@ -1800,8 +1799,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 </Stack>
               )}
             </Stack>
-          </Paper>
-        )}
+        </Paper>
 
         {counterparty ? (
           <Paper className="surface-pad" elevation={0}>

@@ -344,6 +344,7 @@ function ApprovalGraph({
         {steps.map((step) => {
           const position = layout.positions.get(step.id)!;
           const isLeaf = Boolean(step.unit_id);
+          const isFinal = !isLeaf && step.user?.role === 'zgd';
           const isSelected = step.id === selectedStepId;
           return (
             <Card
@@ -368,7 +369,7 @@ function ApprovalGraph({
                   <Chip
                     size="small"
                     variant="outlined"
-                    label={isLeaf ? 'Проверка экономистом' : step.user?.role === 'zgd' ? 'Финальное утверждение' : 'Согласование'}
+                    label={stepStatusLabels[step.status]}
                   />
                 </Stack>
                 {isLeaf ? (
@@ -402,7 +403,8 @@ function ApprovalGraph({
                 <Tooltip title="Потяните стрелку на проверяющего или ЗГД, чтобы создать связь">
                   <Box
                     className={`approval-graph-link-handle ${draggedChildId === step.id ? 'is-dragging' : ''}`}
-                    draggable
+                    sx={{ display: isFinal ? 'none' : undefined }}
+                    draggable={!isFinal}
                     onDragStart={(event) => {
                       event.stopPropagation();
                       event.dataTransfer.effectAllowed = 'link';

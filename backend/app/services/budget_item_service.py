@@ -2,7 +2,7 @@ from fastapi import HTTPException
 
 from app.models import ItemStatus, RequestStatus
 from app.repositories.base import Repository
-from app.services.common import get_required
+from app.services.common import clean_request_item_name, get_required
 from app.services.permission_service import PermissionService
 from app.services.request_service import RequestService
 
@@ -14,6 +14,10 @@ class BudgetItemService:
         self.requests = requests
 
     @staticmethod
+    def _public_item(item: dict) -> dict:
+        return {**item, "name": clean_request_item_name(item.get("name"))}
+
+    @staticmethod
     def catalog_collection(kind: str) -> str:
         return "dds_catalog" if kind == "dds" else "invests_catalog"
 
@@ -21,7 +25,8 @@ class BudgetItemService:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_view_request(user, request)
         items = [item for item in self.repo.load_all("req_items") if item["request_id"] == request_id]
-        return items if include_deleted else [item for item in items if item.get("status") != ItemStatus.deleted]
+        visible_items = items if include_deleted else [item for item in items if item.get("status") != ItemStatus.deleted]
+        return [self._public_item(item) for item in visible_items]
 
     def _kind_for_request(self, request: dict) -> str:
         unit = get_required(self.repo, "units", request["unit_id"])
@@ -73,7 +78,7 @@ class BudgetItemService:
         created = self.repo.create("req_items", item)
         self.requests.recalculate_total(request_id)
         self.requests.log(user, request_id, "line_created", entity="req_item", entity_id=created["id"], after=created)
-        return created
+        return self._public_item(created)
 
     def _find_item(self, item_id: str) -> dict:
         return get_required(self.repo, "req_items", item_id)
@@ -137,15 +142,15 @@ class BudgetItemService:
             if "justification" in normalized:
                 normalized["justification"] = normalized["justification"].strip()
         if not normalized:
-            return item
+            return self._public_item(item)
         effective = {key: value for key, value in normalized.items() if item.get(key) != value}
         if not effective:
-            return item
+            return self._public_item(item)
         updated = self.repo.update("req_items", item_id, effective)
         self.requests.recalculate_total(item["request_id"])
         action = "line_deleted" if updated.get("status") == ItemStatus.deleted else "line_updated"
         self.requests.log(user, item["request_id"], action, entity="req_item", entity_id=item_id, before=item, after=updated)
-        return updated
+        return self._public_item(updated)
 
     def delete_item(self, user: dict, item_id: str) -> dict:
         item = self._find_item(item_id)
@@ -153,8 +158,8 @@ class BudgetItemService:
         self.permissions.require_request_unfrozen(request)
         self.permissions.require_employee_edit_request(user, request)
         if item.get("status") == ItemStatus.deleted:
-            return item
+            return self._public_item(item)
         updated = self.repo.update("req_items", item_id, {"status": ItemStatus.deleted, "sum_plan": 0, "sum_fact": 0})
         self.requests.recalculate_total(item["request_id"])
         self.requests.log(user, item["request_id"], "line_deleted", entity="req_item", entity_id=item_id, before=item, after=updated)
-        return updated
+        return self._public_item(updated)
