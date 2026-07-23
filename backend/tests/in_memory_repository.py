@@ -75,7 +75,7 @@ class InMemoryRepository:
             if collection in self._next_ids:
                 created["id"] = self._next_ids[collection]
                 self._next_ids[collection] += 1
-            elif collection not in {"profiles", "units_responsibles", "req_item_files", "chats_participants", "step_edges"}:
+            elif collection not in {"profiles", "units_responsibles", "req_item_files", "chats_participants", "step_edges", "request_step_states"}:
                 created["id"] = str(uuid4())
         if collection == "requests":
             created.setdefault("frozen", False)

@@ -285,12 +285,10 @@ class RequestService:
         return self.public_request(updated, self.summary(request_id))
 
     def start_review(self, user: dict, request_id: str) -> dict:
-        request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_unfrozen(request)
-        self.permissions.require_economist_review_request(user, request)
-        updated = self.repo.update("requests", request_id, {"status": RequestStatus.on_review, "economist_id": user["id"]})
-        self.log(user, request_id, "review_started", before=request, after=updated)
-        return self.public_request(updated, self.summary(request_id))
+        raise HTTPException(
+            status_code=400,
+            detail="Заявка поступает на рассмотрение только после отправки сотрудником",
+        )
 
     @staticmethod
     def status_from_items(items: list[dict]) -> RequestStatus:
@@ -328,53 +326,37 @@ class RequestService:
             )
             sync_annual_budgets(repo)
             self.log(user, request_id, "finalized", before=request, after=updated, repo=repo)
+            if self.approval_service:
+                self.approval_service.complete_economist_review(
+                    user,
+                    request_id,
+                    repo=repo,
+                )
         return self.public_request(updated, self.summary(request_id))
 
     def fix(self, user: dict, request_id: str) -> dict:
         return self.finalize(user, request_id)
 
     def reopen(self, user: dict, request_id: str) -> dict:
-        request = get_required(self.repo, "requests", request_id)
-        if request.get("fixed"):
-            raise HTTPException(status_code=400, detail="Заявка окончательно зафиксирована ЗГД")
-        self.permissions.require_economist_review_request(user, request)
-        if request["status"] not in {RequestStatus.approved, RequestStatus.approved_with_changes, RequestStatus.partially_approved, RequestStatus.rejected}:
-            raise HTTPException(status_code=400, detail="Вернуть на рассмотрение можно только завершённую заявку")
-        with self.repo.transaction() as repo:
-            updated = repo.update("requests", request_id, {"status": RequestStatus.on_review, "frozen": False})
-            sync_annual_budgets(repo)
-            self.log(user, request_id, "reopened", before=request, after=updated, repo=repo)
-            if self.approval_service:
-                self.approval_service.open_leaf_for_request(
-                    user,
-                    request["unit_id"],
-                    request_id,
-                    repo=repo,
-                )
-        return self.public_request(updated, self.summary(request_id))
+        raise HTTPException(
+            status_code=400,
+            detail="Возврат на доработку выполняется только по маршруту согласования",
+        )
 
     def unfreeze(self, user: dict, request_id: str) -> dict:
         return self.reopen(user, request_id)
 
     def freeze_budget(self, user: dict, request_id: str) -> dict:
-        request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_budget_control_access(user, request)
-        if request.get("fixed"):
-            raise HTTPException(status_code=400, detail="Заявка окончательно зафиксирована ЗГД")
-        if request.get("frozen") or request.get("status") not in {RequestStatus.approved, RequestStatus.approved_with_changes}:
-            raise HTTPException(status_code=400, detail="Зафиксировать можно только незаблокированную утверждённую заявку")
-        updated = self.repo.update("requests", request_id, {"frozen": True})
-        self.log(user, request_id, "frozen", before=request, after=updated)
-        return self.public_request(updated, self.summary(request_id))
+        raise HTTPException(
+            status_code=400,
+            detail="Заявка замораживается автоматически, когда экономист завершает проверку и передаёт её по маршруту",
+        )
 
     def unfreeze_budget(self, user: dict, request_id: str) -> dict:
-        request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_budget_control_access(user, request)
-        if request.get("fixed"):
-            raise HTTPException(status_code=400, detail="Заявка окончательно зафиксирована ЗГД")
-        if not request.get("frozen"):
-            raise HTTPException(status_code=400, detail="Бюджет уже разморожен")
-        return self.reopen(user, request_id)
+        raise HTTPException(
+            status_code=400,
+            detail="Разморозить заявку можно только через возврат на доработку по маршруту согласования",
+        )
 
     def approve_all_items(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)

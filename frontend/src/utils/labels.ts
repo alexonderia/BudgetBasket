@@ -9,7 +9,7 @@ export const roleLabels: Record<Role, string> = {
 };
 
 export const stepStatusLabels = {
-  waiting: 'Ожидает дочерние шаги',
+  waiting: 'Ожидает согласования предыдущих этапов',
   on_approval: 'На согласовании',
   on_revision: 'На доработке',
   approved: 'Согласован',

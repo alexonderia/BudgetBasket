@@ -81,7 +81,6 @@ export default function RequestsPage({ user }: { user: User }) {
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const [filters, setFilters] = useState({ status: '', frozen: '' });
-  const [withdrawTarget, setWithdrawTarget] = useState<BudgetRequest | null>(null);
   const [createError, setCreateError] = useState('');
   const [exportError, setExportError] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
@@ -202,15 +201,6 @@ export default function RequestsPage({ user }: { user: User }) {
     onError: (error) => {
       toast(getErrorMessage(error, 'Не удалось удалить заявку'), 'error');
     },
-  });
-
-  const withdrawRequest = useMutation({
-    mutationFn: (requestId: string) => api.post(`/requests/${requestId}/withdraw`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['requests'] });
-      toast('Заявка отозвана в черновик', 'success');
-    },
-    onError: (error) => toast(getErrorMessage(error, 'Не удалось отозвать заявку'), 'error'),
   });
 
   const exportClosed = async () => {
@@ -595,7 +585,6 @@ export default function RequestsPage({ user }: { user: User }) {
           <TableBody>
             {visibleRequests.map((item) => {
               const canDelete = item.status === 'draft' && user.role === 'employee';
-              const canWithdraw = item.status === 'on_review' && user.role === 'employee';
               const unitName = formatUnitName(item.unit_id);
               return (
                 <TableRow
@@ -624,20 +613,6 @@ export default function RequestsPage({ user }: { user: User }) {
                   {requestVisibility.actions && (
                     <TableCell>
                       <Stack direction="row" spacing={0.5} justifyContent="flex-start">
-                        {canWithdraw ? (
-                          <Tooltip title="Отозвать в черновик">
-                            <span>
-                              <IconButton
-                                size="small"
-                                onClick={(event) => { event.stopPropagation(); setWithdrawTarget(item); }}
-                                disabled={withdrawRequest.isPending}
-                                aria-label="Отозвать в черновик"
-                              >
-                                <UndoIcon fontSize="small" />
-                              </IconButton>
-                            </span>
-                          </Tooltip>
-                        ) : null}
                         {canDelete ? (
                           <Tooltip title="Удалить">
                             <IconButton
@@ -664,19 +639,6 @@ export default function RequestsPage({ user }: { user: User }) {
           </TableBody>
         </Table>
       </Paper>
-
-      <ConfirmDialog
-        open={!!withdrawTarget}
-        title="Отозвать заявку в черновик?"
-        description="Заявка вернётся в черновик, и её строки снова станут доступны для редактирования."
-        confirmLabel="Отозвать"
-        pending={withdrawRequest.isPending}
-        onClose={() => setWithdrawTarget(null)}
-        onConfirm={() => {
-          if (!withdrawTarget) return;
-          withdrawRequest.mutate(withdrawTarget.id, { onSuccess: () => setWithdrawTarget(null) });
-        }}
-      />
 
       <ConfirmDialog
         open={!!deleteTarget}

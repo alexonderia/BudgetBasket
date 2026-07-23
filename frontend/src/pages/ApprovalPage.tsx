@@ -39,7 +39,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAppToast } from '../components/Layout';
-import { StepStatusBadge } from '../components/StatusBadge';
+import { RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
 import type {
   ApprovalStep,
   StepLog,
@@ -144,6 +144,18 @@ function personName(user: User | null) {
   const profile = user.profile;
   const fullName = [profile?.last_name, profile?.name, profile?.second_name].filter(Boolean).join(' ');
   return fullName || user.login;
+}
+
+function moduleName(step: ApprovalStep) {
+  const cfoName = step.cfo?.name || step.unit_path.at(-2);
+  const module = step.unit?.name || step.unit_path.at(-1);
+  return [cfoName, module].filter(Boolean).join(' \\ ') || 'Модуль не указан';
+}
+
+function stepName(step: ApprovalStep) {
+  if (step.unit_id) return moduleName(step);
+  if (step.user?.role === 'zgd') return `ЗГД · ${personName(step.user)}`;
+  return personName(step.user);
 }
 
 function ApprovalGraph({
@@ -349,12 +361,15 @@ function ApprovalGraph({
               sx={{ left: position.x, top: position.y, width: layout.nodeWidth, height: layout.nodeHeight, overflow: 'visible' }}
             >
               <Stack spacing={0.75} sx={{ p: 1.5, height: '100%' }}>
-                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
-                  <Box minWidth={0}>
-                    <Typography variant="subtitle2" fontWeight={800} noWrap>{isLeaf ? `${step.cfo?.name || 'ЦФО'} / ${step.unit?.name || 'Модуль'}` : step.user?.role === 'zgd' ? 'ЗГД' : 'Проверяющий'}</Typography>
-                    <Typography variant="caption" color="text.secondary">Шаг {step.id.slice(0, 8)}</Typography>
-                  </Box>
-                  <StepStatusBadge status={step.status} />
+                <Stack spacing={0.5} alignItems="flex-start">
+                  <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.3 }}>
+                    {isLeaf ? moduleName(step) : step.user?.role === 'zgd' ? 'ЗГД' : 'Проверяющий'}
+                  </Typography>
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={isLeaf ? 'Проверка экономистом' : step.user?.role === 'zgd' ? 'Финальное утверждение' : 'Согласование'}
+                  />
                 </Stack>
                 {isLeaf ? (
                   <>
@@ -527,13 +542,7 @@ function AdminApprovalPage() {
   });
 
   const eligibleUsers = users.filter((item) => ['approver', 'zgd'].includes(item.role));
-  const stepNames = useMemo(
-    () => new Map(steps.map((step) => [
-      step.id,
-      step.unit?.name || `${step.user?.login || step.id.slice(0, 8)} · ${step.id.slice(0, 8)}`,
-    ])),
-    [steps],
-  );
+  const stepNames = useMemo(() => new Map(steps.map((step) => [step.id, stepName(step)])), [steps]);
   const edges = steps.flatMap((parent) => parent.child_step_ids.map((child) => ({
     parent_step_id: parent.id,
     child_step_id: child,
@@ -588,12 +597,10 @@ function AdminApprovalPage() {
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Шаг</TableCell>
               <TableCell>Назначенный пользователь</TableCell>
               <TableCell>Роль</TableCell>
               <TableCell>Подразделение</TableCell>
               <TableCell>Ответственный</TableCell>
-              <TableCell>Статус</TableCell>
               <TableCell>Родители</TableCell>
               <TableCell>Дети</TableCell>
               <TableCell align="right">Действия</TableCell>
@@ -602,7 +609,6 @@ function AdminApprovalPage() {
           <TableBody>
             {steps.map((step) => (
               <TableRow key={step.id} selected={step.id === selectedStepId} onClick={() => setSelectedStepId(step.id)} sx={{ cursor: 'pointer' }}>
-                <TableCell><Typography variant="body2">{step.id.slice(0, 8)}</Typography></TableCell>
                 <TableCell sx={{ minWidth: 210 }}>
                   {step.unit_id ? (
                     <Typography variant="body2">{personName(step.user)}</Typography>
@@ -615,15 +621,14 @@ function AdminApprovalPage() {
                       fullWidth
                     >
                       {eligibleUsers.map((item) => (
-                        <MenuItem key={item.id} value={item.id}>{item.login}</MenuItem>
+                        <MenuItem key={item.id} value={item.id}>{personName(item)}</MenuItem>
                       ))}
                     </TextField>
                   )}
                 </TableCell>
                 <TableCell>{step.user ? roleLabels[step.user.role] : '—'}</TableCell>
-                <TableCell>{step.unit?.name || '—'}</TableCell>
+                <TableCell>{step.unit_id ? moduleName(step) : '—'}</TableCell>
                 <TableCell>{step.unit_id ? personName(step.responsible) : '—'}</TableCell>
-                <TableCell><StepStatusBadge status={step.status} /></TableCell>
                 <TableCell>{step.parent_step_ids.map((id) => stepNames.get(id) || id.slice(0, 8)).join(', ') || '—'}</TableCell>
                 <TableCell>{step.child_step_ids.map((id) => stepNames.get(id) || id.slice(0, 8)).join(', ') || '—'}</TableCell>
                 <TableCell align="right">
@@ -705,7 +710,7 @@ function AdminApprovalPage() {
           </TextField>
           <TextField select label="Пользователь" value={logUserId} onChange={(event) => setLogUserId(event.target.value)} sx={{ minWidth: 240 }}>
             <MenuItem value="">Все пользователи</MenuItem>
-            {users.map((item) => <MenuItem key={item.id} value={item.id}>{item.login}</MenuItem>)}
+            {users.map((item) => <MenuItem key={item.id} value={item.id}>{personName(item)}</MenuItem>)}
           </TextField>
           <Button startIcon={<RefreshIcon />} onClick={refresh}>Обновить</Button>
         </Stack>
@@ -856,14 +861,17 @@ function UserApprovalPage({ user }: { user: User }) {
     onError: (error) => toast(errorMessage(error, 'Не удалось вернуть заявки'), 'error'),
   });
 
-  const childLabels = useMemo(
-    () => new Map(steps.map((step) => [step.id, step.unit?.name || step.user?.login || step.id.slice(0, 8)])),
-    [steps],
-  );
-  const allSelected = requests.length > 0 && selectedRequestIds.length === requests.length;
+  const childLabels = useMemo(() => new Map(steps.map((step) => [step.id, stepName(step)])), [steps]);
+  const returnableRequests = requests.filter((item) => ['on_approval', 'on_revision'].includes(item.approval_status));
+  const allSelected = returnableRequests.length > 0 && selectedRequestIds.length === returnableRequests.length;
   const returnReady = selectedRequestIds.length > 0
     && comment.trim().length > 0
     && (!!selectedStep?.unit_id || !!childStepId);
+  const isLeaf = Boolean(selectedStep?.unit_id);
+  const isFinal = selectedStep?.user?.role === 'zgd';
+  const allDelivered = requests.length > 0 && requests.every((item) => item.approval_status === 'on_approval');
+  const allReviewed = allDelivered && requests.every((item) => item.reviewed_at_step);
+  const canForwardPackage = !isLeaf && !isFinal && allDelivered && allReviewed;
 
   if (isLoading) return <CircularProgress />;
   if (!steps.length) {
@@ -874,7 +882,7 @@ function UserApprovalPage({ user }: { user: User }) {
     <Stack spacing={3}>
       <Box>
         <Typography variant="h5">
-          {user.role === 'economist' ? 'Передача бюджета дальше' : 'Согласование бюджета'}
+          {user.role === 'economist' ? 'Проверка заявок' : 'Согласование бюджета'}
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 0.5 }}>
           Согласование бюджета организаций на 2027 год
@@ -892,7 +900,7 @@ function UserApprovalPage({ user }: { user: User }) {
           >
             {steps.map((step) => (
               <MenuItem key={step.id} value={step.id}>
-                {step.unit?.name || step.user?.login || step.id.slice(0, 8)} · {stepStatusLabels[step.status]}
+                {stepName(step)} · {stepStatusLabels[step.status]}
               </MenuItem>
             ))}
           </TextField>
@@ -905,27 +913,32 @@ function UserApprovalPage({ user }: { user: User }) {
           >
             Экспорт
           </Button>
-          <Button
-            variant="contained"
-            startIcon={<FactCheckIcon />}
-            disabled={selectedStep?.status !== 'on_approval' || approve.isPending}
-            onClick={() => {
-              if (user.role !== 'zgd' || window.confirm('Закрыть весь маршрут и необратимо зафиксировать бюджет?')) {
-                approve.mutate();
-              }
-            }}
-          >
-            {user.role === 'zgd' ? 'Зафиксировать бюджет' : 'Согласовать шаг'}
-          </Button>
+          {!isLeaf && !isFinal && (
+            <Button
+              variant="contained"
+              startIcon={<FactCheckIcon />}
+              disabled={!canForwardPackage || approve.isPending}
+              onClick={() => approve.mutate()}
+            >
+              Передать проверенный пакет дальше
+            </Button>
+          )}
         </Stack>
       </Paper>
 
       {selectedStep?.status === 'waiting' && (
-        <Alert severity="info">Шаг откроется после согласования всех непосредственных дочерних шагов.</Alert>
+        <Alert severity="info">На этот этап пока не переданы заявки. Проверка станет доступна после их поступления.</Alert>
       )}
       {selectedStep?.status === 'on_revision' && (
         <Alert severity="warning">
           Шаг находится на доработке. Передайте выбранные заявки дальше вниз с комментарием.
+        </Alert>
+      )}
+      {!isLeaf && !isFinal && requests.length > 0 && (
+        <Alert severity={canForwardPackage ? 'success' : 'info'}>
+          {canForwardPackage
+            ? 'Все заявки маршрута поступили и подтверждены. Их можно передать дальше одним пакетом.'
+            : `Передача пакета пока недоступна: поступило ${requests.filter((item) => item.approval_status === 'on_approval').length} из ${requests.length}, подтверждено ${requests.filter((item) => item.reviewed_at_step).length} из ${requests.length}.`}
         </Alert>
       )}
 
@@ -953,7 +966,7 @@ function UserApprovalPage({ user }: { user: User }) {
               <Checkbox
                 checked={allSelected}
                 indeterminate={selectedRequestIds.length > 0 && !allSelected}
-                onChange={(_, checked) => setSelectedRequestIds(checked ? requests.map((item) => item.id) : [])}
+                onChange={(_, checked) => setSelectedRequestIds(checked ? returnableRequests.map((item) => item.id) : [])}
               />
             )}
             label="Выбрать все"
@@ -967,6 +980,8 @@ function UserApprovalPage({ user }: { user: User }) {
                 <TableCell>Заявка</TableCell>
                 <TableCell>Подразделение</TableCell>
                 <TableCell>Статус</TableCell>
+                <TableCell>На этом этапе</TableCell>
+                <TableCell>Проверка</TableCell>
                 <TableCell align="right">План</TableCell>
                 <TableCell align="right">Утверждено</TableCell>
                 <TableCell>Проверка строк</TableCell>
@@ -979,6 +994,7 @@ function UserApprovalPage({ user }: { user: User }) {
                   <TableCell padding="checkbox">
                     <Checkbox
                       checked={selectedRequestIds.includes(item.id)}
+                      disabled={!returnableRequests.some((request) => request.id === item.id)}
                       onChange={(_, checked) => setSelectedRequestIds((current) => (
                         checked ? [...current, item.id] : current.filter((id) => id !== item.id)
                       ))}
@@ -991,6 +1007,8 @@ function UserApprovalPage({ user }: { user: User }) {
                   </TableCell>
                   <TableCell>{item.unit?.name || '—'}</TableCell>
                   <TableCell>{item.status}</TableCell>
+                  <TableCell><StepStatusBadge status={item.approval_status} /></TableCell>
+                  <TableCell>{item.reviewed_at_step ? 'Подтверждена' : item.approval_status === 'on_approval' ? 'Ожидает проверки' : '—'}</TableCell>
                   <TableCell align="right">{money(item.sum_plan)}</TableCell>
                   <TableCell align="right">{money(item.sum_fact)}</TableCell>
                   <TableCell>{item.reviewed_items_count} / {item.items_count}</TableCell>
@@ -1004,7 +1022,7 @@ function UserApprovalPage({ user }: { user: User }) {
               ))}
               {!requests.length && (
                 <TableRow>
-                  <TableCell colSpan={8} align="center">Для шага пока нет доступных заявок</TableCell>
+                  <TableCell colSpan={10} align="center">Для шага пока нет доступных заявок</TableCell>
                 </TableRow>
               )}
             </TableBody>
@@ -1057,6 +1075,83 @@ function UserApprovalPage({ user }: { user: User }) {
         <Typography variant="h6">История шага</Typography>
         <StepLogsTable logs={logs} />
       </Stack>
+    </Stack>
+  );
+}
+
+function ApprovalTaskStep({ step }: { step: ApprovalStep }) {
+  const { data: requests = [], isLoading } = useQuery({
+    queryKey: ['step-requests', step.id],
+    queryFn: async () => (await api.get<StepRequest[]>(`/steps/${step.id}/requests`)).data,
+  });
+  const stepName = step.unit?.name || step.user?.login || step.id.slice(0, 8);
+
+  return (
+    <Paper className="surface-pad" elevation={0}>
+      <Stack spacing={1.5}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ sm: 'center' }}>
+          <Box>
+            <Typography variant="h6">{stepName}</Typography>
+            <Typography variant="body2" color="text.secondary">
+              {step.active_requests_count || 0} {step.active_requests_count === 1 ? 'заявка ожидает' : 'заявок ожидают'} вашего решения
+            </Typography>
+          </Box>
+          <StepStatusBadge status={step.status} />
+        </Stack>
+        {isLoading ? <CircularProgress size={24} /> : (
+          <TableContainer>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Заявка</TableCell>
+                  <TableCell>Подразделение</TableCell>
+                  <TableCell>Результат экономиста</TableCell>
+                  <TableCell>Ваш шаг</TableCell>
+                  <TableCell align="right">План</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {requests.map((request) => (
+                  <TableRow key={request.id} hover component={Link} to={`/requests/${request.id}`} sx={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
+                    <TableCell><Typography color="primary">{request.id.slice(0, 8)}</Typography></TableCell>
+                    <TableCell>{request.unit?.name || '—'}</TableCell>
+                    <TableCell><RequestStatusBadge status={request.status} /></TableCell>
+                    <TableCell><StepStatusBadge status={request.approval_status} /></TableCell>
+                    <TableCell align="right">{money(request.sum_plan)}</TableCell>
+                  </TableRow>
+                ))}
+                {!requests.length && (
+                  <TableRow><TableCell colSpan={5} align="center">Заявок, ожидающих действий, нет</TableCell></TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </Stack>
+    </Paper>
+  );
+}
+
+function SimpleUserApprovalPage({ user }: { user: User }) {
+  const { data: steps = [], isLoading } = useQuery({
+    queryKey: ['my-approval-steps'],
+    queryFn: async () => (await api.get<ApprovalStep[]>('/steps/my')).data,
+  });
+
+  if (isLoading) return <CircularProgress />;
+  return (
+    <Stack spacing={3}>
+      <Box>
+        <Typography variant="h5">Мои задачи</Typography>
+        <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+          Здесь только заявки, которые сейчас ожидают вашей проверки или возврата на доработку.
+        </Typography>
+      </Box>
+      {!steps.length ? (
+        <Alert severity="success">Нет заявок, ожидающих ваших действий.</Alert>
+      ) : (
+        steps.map((step) => <ApprovalTaskStep key={step.id} step={step} />)
+      )}
     </Stack>
   );
 }

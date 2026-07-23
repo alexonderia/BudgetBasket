@@ -42,6 +42,6 @@ export function ItemStatusBadge({ status }: { status: ItemStatus }) {
   return <StatusChip status={status} label={itemStatusLabels[status]} />;
 }
 
-export function StepStatusBadge({ status }: { status: StepStatus }) {
-  return <StatusChip status={status} label={stepStatusLabels[status]} />;
+export function StepStatusBadge({ status, label }: { status: StepStatus; label?: string }) {
+  return <StatusChip status={status} label={label || stepStatusLabels[status]} />;
 }

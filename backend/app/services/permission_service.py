@@ -253,15 +253,14 @@ class PermissionService:
         self.require_request_unfrozen(request)
         if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
             raise HTTPException(status_code=403, detail="Отменить заявку может только ответственный сотрудник")
-        if request.get("status") not in {RequestStatus.draft, RequestStatus.on_review}:
-            raise HTTPException(status_code=400, detail="Заявку можно отменить только в черновике или на рассмотрении")
+        if request.get("status") != RequestStatus.draft:
+            raise HTTPException(status_code=400, detail="Заявку можно отменить только в черновике")
 
     def require_employee_withdraw_request(self, user: dict, request: dict) -> None:
-        self.require_request_unfrozen(request)
-        if user["role"] != "employee" or request.get("unit_id") not in self.employee_module_ids(user["id"]):
-            raise HTTPException(status_code=403, detail="Отозвать заявку может только ответственный сотрудник")
-        if request.get("status") != RequestStatus.on_review:
-            raise HTTPException(status_code=400, detail="Отозвать можно только заявку на рассмотрении")
+        raise HTTPException(
+            status_code=400,
+            detail="Отзыв заявки не используется: отмена доступна только в черновике, возврат выполняется по маршруту",
+        )
 
     def require_employee_upload_file(self, user: dict, request: dict) -> None:
         self.require_request_unfrozen(request)

@@ -205,6 +205,19 @@ step_edges = Table(
     Index("idx_step_edges_child", "child_step_id"),
 )
 
+request_step_states = Table(
+    "request_step_states", metadata,
+    Column("request_id", PgUUID(as_uuid=True), ForeignKey("requests.id", ondelete="CASCADE"), nullable=False),
+    Column("step_id", PgUUID(as_uuid=True), ForeignKey("steps.id", ondelete="CASCADE"), nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'waiting'")),
+    CheckConstraint(
+        "status IN ('waiting', 'on_approval', 'on_revision', 'approved', 'closed')",
+        name="request_step_states_status_chk",
+    ),
+    PrimaryKeyConstraint("request_id", "step_id"),
+    Index("idx_request_step_states_step_status", "step_id", "status"),
+)
+
 step_logs = Table(
     "step_logs", metadata,
     Column("id", BigInteger, primary_key=True, autoincrement=True),

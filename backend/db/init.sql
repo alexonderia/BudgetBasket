@@ -114,6 +114,15 @@ CREATE TABLE step_edges (
     PRIMARY KEY (parent_step_id, child_step_id),
     CONSTRAINT step_edges_no_self_chk CHECK (parent_step_id <> child_step_id)
 );
+CREATE TABLE request_step_states (
+    request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    step_id uuid NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    status text NOT NULL DEFAULT 'waiting',
+    PRIMARY KEY (request_id, step_id),
+    CONSTRAINT request_step_states_status_chk CHECK (
+        status IN ('waiting', 'on_approval', 'on_revision', 'approved', 'closed')
+    )
+);
 CREATE TABLE step_logs (
     id bigserial PRIMARY KEY,
     step_id uuid REFERENCES steps(id) ON DELETE SET NULL,
@@ -153,6 +162,7 @@ CREATE INDEX idx_req_logs_user_id ON req_logs(user_id);
 CREATE INDEX idx_steps_user_status ON steps(user_id, status);
 CREATE UNIQUE INDEX ux_steps_unit_not_null ON steps(unit_id) WHERE unit_id IS NOT NULL;
 CREATE INDEX idx_step_edges_child ON step_edges(child_step_id);
+CREATE INDEX idx_request_step_states_step_status ON request_step_states(step_id, status);
 CREATE INDEX idx_step_logs_step_created_at ON step_logs(step_id, created_at DESC);
 CREATE INDEX idx_step_logs_user_id ON step_logs(user_id);
 CREATE INDEX idx_step_logs_action ON step_logs((log->>'action'));

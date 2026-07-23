@@ -98,10 +98,13 @@ export interface ApprovalStep {
   parent_step_ids: string[];
   child_step_ids: string[];
   request_status?: StepStatus;
+  active_requests_count?: number;
 }
 
 export interface StepRequest extends BudgetRequest {
   unit: Unit | null;
+  approval_status: StepStatus;
+  reviewed_at_step?: boolean;
   items_count: number;
   reviewed_items_count: number;
   sum_plan: number;

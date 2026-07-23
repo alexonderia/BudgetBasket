@@ -43,6 +43,7 @@ COLLECTIONS = (
     "req_logs",
     "steps",
     "step_edges",
+    "request_step_states",
     "step_logs",
 )
 
@@ -112,55 +113,9 @@ def seed_data(repo: Repository) -> None:
         ],
     )
     repo.save_all(
-        "requests",
-        [
-            {
-                "id": REQUEST_ID,
-                "economist_id": ECONOMIST_ID,
-                "unit_id": MODULE_ALPHA_ID,
-                "sum_plan": 120000,
-                "sum_fact": 0,
-                "status": "on_review",
-                "frozen": False,
-                "fixed": False,
-            }
-        ],
-    )
-    repo.save_all(
-        "req_items",
-        [
-            {
-                "id": "80000000-0000-0000-0000-000000000001",
-                "request_id": REQUEST_ID,
-                "dds_id": DDS_LICENSE_ID,
-                "invest_id": None,
-                "is_income": False,
-                "name": "Продление лицензий",
-                "sum_plan": 120000,
-                "sum_fact": 0,
-                "justification": "Поддержка рабочих сервисов",
-                "status": "on_review",
-                "comment": "",
-            },
-            {
-                "id": "90000000-0000-0000-0000-000000000001",
-                "request_id": REQUEST_ID,
-                "dds_id": None,
-                "invest_id": INVEST_PLATFORM_ID,
-                "is_income": False,
-                "name": "Развитие платформы",
-                "sum_plan": 0,
-                "sum_fact": 0,
-                "justification": "Историческая строка до v1-17",
-                "status": "deleted",
-                "comment": "Archived during v1-17 migration: unit uses DDS lines.",
-            },
-        ],
-    )
-    repo.save_all(
         "steps",
         [
-            {"id": LEAF_STEP_ID, "user_id": ECONOMIST_ID, "unit_id": MODULE_ALPHA_ID, "status": "on_approval"},
+            {"id": LEAF_STEP_ID, "user_id": ECONOMIST_ID, "unit_id": MODULE_ALPHA_ID, "status": "waiting"},
             {"id": APPROVER_STEP_ID, "user_id": APPROVER_ID, "unit_id": None, "status": "waiting"},
             {"id": ROOT_STEP_ID, "user_id": ZGD_ID, "unit_id": None, "status": "waiting"},
         ],

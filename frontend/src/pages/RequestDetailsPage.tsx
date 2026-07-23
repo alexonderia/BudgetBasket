@@ -9,7 +9,6 @@ import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
-import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
@@ -1309,7 +1308,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [confirmAction, setConfirmAction] = useState<'withdraw' | 'approve-all-items' | null>(null);
+  const [confirmAction, setConfirmAction] = useState<'approve-all-items' | null>(null);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnComment, setReturnComment] = useState('');
 
@@ -1462,19 +1461,13 @@ export default function RequestDetailsPage({ user }: { user: User }) {
 
   const lifecycle = useMutation({
     mutationFn: (action: string) => api.post(`/requests/${id}/${action}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: detailsKey }),
-  });
-  const forwardForApproval = useMutation({
-    mutationFn: (stepId: string) => api.post(`/steps/${stepId}/approve`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: detailsKey });
-      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-action'] });
-      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-route'] });
       queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
-      queryClient.invalidateQueries({ queryKey: ['approval-steps'] });
-      toast('Пакет заявок передан на следующий этап согласования', 'success');
+      queryClient.invalidateQueries({ queryKey: ['step-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['requests'] });
     },
-    onError: (error) => toast(getErrorMessage(error, 'Не удалось передать заявку на согласование'), 'error'),
   });
   const approveRequestAtStep = useMutation({
     mutationFn: () => api.post(`/steps/${approvalAction?.step.id}/requests/${id}/approve`),
@@ -1483,7 +1476,15 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-action'] });
       queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-route'] });
       queryClient.invalidateQueries({ queryKey: ['requests'] });
-      toast(approvalAction?.is_final ? 'Заявка окончательно зафиксирована ЗГД' : 'Заявка согласована на текущем шаге', 'success');
+      queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+      queryClient.invalidateQueries({ queryKey: ['step-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
+      toast(
+        approvalAction?.is_final
+          ? 'Заявка окончательно зафиксирована ЗГД'
+          : 'Проверка заявки подтверждена. Её можно будет передать дальше только в составе полного пакета.',
+        'success',
+      );
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось согласовать заявку'), 'error'),
   });
@@ -1502,6 +1503,8 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-route'] });
       queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
       queryClient.invalidateQueries({ queryKey: ['approval-steps'] });
+      queryClient.invalidateQueries({ queryKey: ['step-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
       toast('Заявка возвращена на доработку', 'success');
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось вернуть заявку на доработку'), 'error'),
@@ -1602,25 +1605,15 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     />
   );
   const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.frozen && allItems.length > 0;
-  const canWithdraw = user.role === 'employee' && request && request.status === 'on_review' && !request.frozen;
-  const canCancel = user.role === 'employee' && request && request.status === 'on_review' && !request.frozen;
+  const canCancel = user.role === 'employee' && request && request.status === 'draft' && !request.frozen;
   const canFinalize = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && allItems.length > 0 && allItems.every((item) => item.status !== 'on_review');
   const canApproveAllItems = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && allItems.some((item) => item.status === 'on_review');
-  const canFreezeBudget = user.role === 'economist' && request && !request.frozen && ['approved', 'approved_with_changes'].includes(request.status);
-  const canUnfreezeBudget = user.role === 'economist' && request && request.frozen && !request.fixed;
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
   const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
   const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.frozen;
-  const canReopen =
-    user.role === 'economist' &&
-    !!request &&
-    !request.frozen &&
-    ['approved', 'approved_with_changes', 'partially_approved', 'rejected'].includes(request.status);
   const canApproveRequest = !!request && !!approvalAction?.can_approve;
-  const canForwardForApproval = !!request && !!approvalAction?.can_forward;
   const canReturnForRevision = !!request && !!approvalAction?.can_return;
-  const approvalRequestLabel = approvalAction?.is_final ? 'Зафиксировать заявку' : 'Согласовать заявку';
-  const forwardApprovalLabel = approvalAction?.step.unit_id ? 'Отправить на согласование' : 'Отправить пакет дальше';
+  const approvalRequestLabel = approvalAction?.is_final ? 'Зафиксировать заявку' : 'Подтвердить проверку';
 
   const exportRequest = async () => {
     const response = await api.get(`/requests/${id}/export`, { responseType: 'blob' });
@@ -1647,26 +1640,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ width: { xs: '100%', sm: 'auto' } }}>
                   <Stack className="request-summary-actions" direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
                     <Button startIcon={<HistoryOutlinedIcon />} variant="outlined" onClick={() => setHistoryOpen(true)}>
-                      История изменений
+                      История содержимого
                     </Button>
-                    {canFreezeBudget && (
-                      <Button startIcon={<LockOutlinedIcon />} variant="outlined" onClick={() => lifecycle.mutate('freeze-budget')}>
-                        Зафиксировать бюджет
-                      </Button>
-                    )}
-                    {canUnfreezeBudget && (
-                      <Button startIcon={<LockOpenOutlinedIcon />} variant="outlined" onClick={() => lifecycle.mutate('unfreeze-budget')}>
-                        Разморозить бюджет
-                      </Button>
-                    )}
                     {canApproveAllItems && (
                       <Button startIcon={<DoneAllIcon />} variant="contained" onClick={() => setConfirmAction('approve-all-items')}>
                         Зафиксировать все строки
-                      </Button>
-                    )}
-                    {canWithdraw && (
-                      <Button startIcon={<UndoIcon />} variant="outlined" onClick={() => setConfirmAction('withdraw')}>
-                        Отозвать в черновик
                       </Button>
                     )}
                     {canCancel && (
@@ -1703,7 +1681,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                     )}
                     {canFinalize && (
                       <Button startIcon={<DoneAllIcon />} variant="contained" onClick={() => lifecycle.mutate('finalize')}>
-                        Завершить проверку
+                        Согласовать и отправить
                       </Button>
                     )}
                     {canApproveRequest && approvalAction && (
@@ -1716,31 +1694,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                         {approvalRequestLabel}
                       </Button>
                     )}
-                    {canForwardForApproval && approvalAction && (
-                      <Tooltip title="Передать на следующий этап весь проверенный пакет этого шага">
-                        <Button
-                          startIcon={<SendIcon />}
-                          variant="contained"
-                          onClick={() => forwardForApproval.mutate(approvalAction.step.id)}
-                          disabled={forwardForApproval.isPending}
-                        >
-                          {forwardApprovalLabel}
-                        </Button>
-                      </Tooltip>
-                    )}
                     {canReturnForRevision && (
                       <Button startIcon={<UndoIcon />} variant="outlined" color="warning" onClick={() => setReturnDialogOpen(true)}>
-                        Вернуть на доработку
+                        {approvalAction?.step.unit_id ? 'Вернуть сотруднику на доработку' : 'Вернуть на доработку'}
                       </Button>
                     )}
                     {isClosed && (
                       <Button startIcon={<FileDownloadIcon />} variant="outlined" onClick={exportRequest}>
                         Экспорт Excel
-                      </Button>
-                    )}
-                    {canReopen && (
-                      <Button startIcon={<UndoIcon />} variant="outlined" onClick={() => lifecycle.mutate('reopen')}>
-                        Вернуть на рассмотрение
                       </Button>
                     )}
                   </Stack>
@@ -1750,7 +1711,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 <Alert severity="warning" variant="outlined">
                   {request.fixed
                     ? 'Заявка окончательно зафиксирована ЗГД. Данные, строки и файлы больше нельзя изменить.'
-                    : 'Заявка заморожена после проверки экономистом. Изменения недоступны, пока экономист сам её не разморозит.'}
+                    : 'Заявка заморожена после проверки экономистом и передана по маршруту. Изменения доступны только после возврата на доработку.'}
                 </Alert>
               )}
               <Box className="request-summary-context">
@@ -1795,50 +1756,48 @@ export default function RequestDetailsPage({ user }: { user: User }) {
 
         {request.status !== 'draft' && (
           <Paper className="surface-pad" elevation={0}>
-            <Stack spacing={1.5}>
+            <Stack spacing={2}>
               <Box>
                 <Typography variant="h6">Маршрут согласования заявки</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Заявка доступна согласующему сразу после передачи на его шаг. Передать дальше можно только весь проверенный пакет шага.
+                  Статус заявки показывает результат проверки экономиста, а ниже — её состояние на каждом шаге маршрута.
                 </Typography>
               </Box>
-              {approvalRoute.map(({ step, logs: stepLogs }, index) => {
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} useFlexGap>
+              {approvalRoute.map(({ step }) => {
                 const stepTitle = step.unit_id
-                  ? `Экономист · ${step.cfo?.name || step.unit?.name || 'Модуль'}`
+                  ? `Экономист · ${[step.cfo?.name || step.unit_path.at(-2), step.unit?.name || step.unit_path.at(-1)].filter(Boolean).join(' \\ ') || 'Модуль'}`
                   : step.user?.role === 'zgd'
                     ? 'ЗГД'
                     : `Согласующий · ${approvalUserName(step.user)}`;
                 return (
-                  <Accordion key={step.id} disableGutters elevation={0} sx={{ border: 1, borderColor: 'divider', borderRadius: '10px !important', '&:before': { display: 'none' } }}>
-                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ width: '100%', pr: 1 }}>
-                        <Typography fontWeight={700}>{index + 1}. {stepTitle}</Typography>
-                        <StepStatusBadge status={step.request_status || step.status} />
-                      </Stack>
-                    </AccordionSummary>
-                    <AccordionDetails>
-                      <Stack spacing={1}>
-                        <Typography variant="body2" color="text.secondary">
-                          Назначен: {approvalUserName(step.user)}
-                        </Typography>
-                        <Typography variant="subtitle2">Журнал шага по этой заявке</Typography>
-                        {stepLogs.map((entry) => (
-                          <Box key={entry.id} sx={{ pl: 1.25, borderLeft: 2, borderColor: 'divider' }}>
-                            <Typography variant="body2" fontWeight={600}>{approvalRouteActionLabels[entry.log.action] || entry.log.action}</Typography>
-                            <Typography variant="caption" color="text.secondary">
-                              {new Date(entry.created_at).toLocaleString('ru-RU')} · {approvalUserName(entry.user)}
-                            </Typography>
-                            {entry.log.comment && <Typography variant="body2" sx={{ mt: 0.25 }}>{entry.log.comment}</Typography>}
-                          </Box>
-                        ))}
-                        {!stepLogs.length && <Typography variant="body2" color="text.secondary">Событий по этой заявке на шаге пока нет.</Typography>}
-                      </Stack>
-                    </AccordionDetails>
-                  </Accordion>
+                  <Stack key={step.id} spacing={0.75} sx={{ flex: 1, minWidth: 190, p: 1.5, border: 1, borderColor: 'divider', borderRadius: 2 }}>
+                    <Typography fontWeight={700}>{stepTitle}</Typography>
+                    <StepStatusBadge status={step.request_status || step.status} />
+                    <Typography variant="caption" color="text.secondary">{approvalUserName(step.user)}</Typography>
+                  </Stack>
                 );
               })}
+              </Stack>
               {!approvalRoute.length && (
                 <Typography variant="body2" color="text.secondary">Для заявки пока не создан маршрут согласования.</Typography>
+              )}
+              {approvalRoute.length > 0 && (
+                <Stack spacing={1}>
+                  <Typography variant="subtitle1" fontWeight={700}>История согласования</Typography>
+                  {approvalRoute
+                    .flatMap(({ step, logs: stepLogs }) => stepLogs.map((entry) => ({ step, entry })))
+                    .sort((left, right) => new Date(right.entry.created_at).getTime() - new Date(left.entry.created_at).getTime())
+                    .map(({ step, entry }) => (
+                      <Box key={`${step.id}:${entry.id}`} sx={{ pl: 1.25, borderLeft: 2, borderColor: 'divider' }}>
+                        <Typography variant="body2" fontWeight={600}>{approvalRouteActionLabels[entry.log.action] || entry.log.action}</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {new Date(entry.created_at).toLocaleString('ru-RU')} · {approvalUserName(entry.user)}
+                        </Typography>
+                        {entry.log.comment && <Typography variant="body2" sx={{ mt: 0.25 }}>{entry.log.comment}</Typography>}
+                      </Box>
+                    ))}
+                </Stack>
               )}
             </Stack>
           </Paper>
@@ -2041,13 +2000,9 @@ export default function RequestDetailsPage({ user }: { user: User }) {
 
       <ConfirmDialog
         open={!!confirmAction}
-        title={confirmAction === 'withdraw' ? 'Отозвать заявку в черновик?' : 'Зафиксировать все строки?'}
-        description={
-          confirmAction === 'withdraw'
-            ? 'Заявка вернётся в черновик, и сотрудник снова сможет изменять строки и файлы.'
-            : 'Все ещё не рассмотренные строки будут утверждены. Фактическая сумма для них будет принята равной плановой, после чего проверка завершится.'
-        }
-        confirmLabel={confirmAction === 'withdraw' ? 'Отозвать' : 'Зафиксировать все'}
+        title="Зафиксировать все строки?"
+        description="Все ещё не рассмотренные строки будут утверждены. Фактическая сумма для них будет принята равной плановой, после чего проверка завершится."
+        confirmLabel="Зафиксировать все"
         pending={lifecycle.isPending}
         onClose={() => setConfirmAction(null)}
         onConfirm={() => {

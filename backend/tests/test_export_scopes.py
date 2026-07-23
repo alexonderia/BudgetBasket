@@ -20,7 +20,19 @@ def test_export_can_select_a_department_modules_and_fixed_requests(tmp_path):
     client = make_client(tmp_path)
     admin = auth(client, "admin", "admin")
     repo = client.app.state.repo
-    repo.update("requests", REQUEST_ID, {"status": "approved", "frozen": True})
+    repo.create(
+        "requests",
+        {
+            "id": REQUEST_ID,
+            "economist_id": None,
+            "unit_id": MODULE_ALPHA_ID,
+            "sum_plan": 0,
+            "sum_fact": 0,
+            "status": "approved",
+            "frozen": True,
+            "fixed": True,
+        },
+    )
     beta_request_id = "40000000-0000-0000-0000-000000000099"
     repo.create(
         "requests",

@@ -1,4 +1,4 @@
-from app.seed import DEPARTMENT_ID, DDS_LICENSE_ID, MODULE_ALPHA_ID
+from app.seed import APPROVER_STEP_ID, DEPARTMENT_ID, DDS_LICENSE_ID, LEAF_STEP_ID, MODULE_ALPHA_ID
 from tests.test_api import auth, make_client
 
 
@@ -6,6 +6,7 @@ def test_annual_budget_is_formed_from_approved_closed_request_lines(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
 
     request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
     line = client.post(
@@ -35,7 +36,19 @@ def test_annual_budget_is_formed_from_approved_closed_request_lines(tmp_path):
     assert units[MODULE_ALPHA_ID]["annual_budget"] == 750
     assert units[DEPARTMENT_ID]["annual_budget"] == 750
 
-    assert client.post(f"/requests/{request['id']}/reopen", headers=economist).status_code == 200
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/return",
+        json={
+            "targets": [{"child_step_id": LEAF_STEP_ID, "request_ids": [request["id"]]}],
+            "comment": "Нужна доработка",
+        },
+        headers=approver,
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{LEAF_STEP_ID}/return",
+        json={"request_ids": [request["id"]], "comment": "Возвращаю сотруднику"},
+        headers=economist,
+    ).status_code == 200
     units = {unit["id"]: unit for unit in client.get("/units", headers=employee).json()}
     assert units[MODULE_ALPHA_ID]["annual_budget"] == 0
     assert units[DEPARTMENT_ID]["annual_budget"] == 0
