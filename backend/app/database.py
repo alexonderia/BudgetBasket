@@ -32,13 +32,18 @@ def uuid_pk() -> Column:
     return Column("id", PgUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
 
 
+roles = Table(
+    "roles", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("name", Text, nullable=False, unique=True),
+)
+
 users = Table(
     "users", metadata, uuid_pk(),
     Column("login", Text, nullable=False, unique=True),
     Column("password", Text, nullable=False),
-    Column("role", Text, nullable=False),
-    CheckConstraint("role IN ('admin', 'economist', 'employee')", name="users_role_chk"),
-    Index("idx_users_role", "role"),
+    Column("id_role", BigInteger, ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False),
+    Index("idx_users_id_role", "id_role"),
 )
 
 profiles = Table(
@@ -78,6 +83,7 @@ requests = Table(
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()),
     Column("frozen", Boolean, nullable=False, server_default=text("false")),
+    Column("fixed", Boolean, nullable=False, server_default=text("false")),
     CheckConstraint("sum_plan >= 0", name="requests_sum_plan_chk"),
     CheckConstraint("sum_fact >= 0", name="requests_sum_fact_chk"),
     CheckConstraint("status IN ('draft', 'on_review', 'approved', 'approved_with_changes', 'partially_approved', 'rejected', 'cancelled')", name="requests_status_chk"),
@@ -171,6 +177,45 @@ req_logs = Table(
     Column("log", JSONB, nullable=False), Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Index("idx_req_logs_req_id_created_at", "req_id", "created_at"), Index("idx_req_logs_user_id", "user_id"),
 )
+
+steps = Table(
+    "steps", metadata, uuid_pk(),
+    Column("user_id", PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False),
+    Column("unit_id", PgUUID(as_uuid=True), ForeignKey("units.id", ondelete="RESTRICT")),
+    Column("status", Text, nullable=False, server_default=text("'waiting'")),
+    CheckConstraint(
+        "status IN ('waiting', 'on_approval', 'on_revision', 'approved', 'closed')",
+        name="steps_status_chk",
+    ),
+    Index("idx_steps_user_status", "user_id", "status"),
+    Index(
+        "ux_steps_unit_not_null",
+        "unit_id",
+        unique=True,
+        postgresql_where=text("unit_id IS NOT NULL"),
+    ),
+)
+
+step_edges = Table(
+    "step_edges", metadata,
+    Column("parent_step_id", PgUUID(as_uuid=True), ForeignKey("steps.id", ondelete="CASCADE"), nullable=False),
+    Column("child_step_id", PgUUID(as_uuid=True), ForeignKey("steps.id", ondelete="CASCADE"), nullable=False),
+    PrimaryKeyConstraint("parent_step_id", "child_step_id"),
+    CheckConstraint("parent_step_id <> child_step_id", name="step_edges_no_self_chk"),
+    Index("idx_step_edges_child", "child_step_id"),
+)
+
+step_logs = Table(
+    "step_logs", metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("step_id", PgUUID(as_uuid=True), ForeignKey("steps.id", ondelete="SET NULL")),
+    Column("user_id", PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False),
+    Column("log", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Index("idx_step_logs_user_id", "user_id"),
+)
+Index("idx_step_logs_step_created_at", step_logs.c.step_id, step_logs.c.created_at.desc())
+Index("idx_step_logs_action", step_logs.c.log["action"].astext)
 
 TABLES = {table.name: table for table in metadata.sorted_tables}
 

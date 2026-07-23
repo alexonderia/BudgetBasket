@@ -1,10 +1,14 @@
--- BudgetBasket v1-17 reference schema (PostgreSQL)
+-- BudgetBasket v2-22 reference schema (PostgreSQL)
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+CREATE TABLE roles (
+    id bigserial PRIMARY KEY,
+    name text NOT NULL UNIQUE
+);
 CREATE TABLE users (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), login text NOT NULL UNIQUE,
-    password text NOT NULL, role text NOT NULL,
-    CONSTRAINT users_role_chk CHECK (role IN ('admin', 'economist', 'employee'))
+    password text NOT NULL,
+    id_role bigint NOT NULL REFERENCES roles(id) ON DELETE RESTRICT
 );
 CREATE TABLE profiles (
     user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -41,6 +45,7 @@ CREATE TABLE requests (
     sum_fact numeric(14,2) NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
     frozen boolean NOT NULL DEFAULT false,
+    fixed boolean NOT NULL DEFAULT false,
     CONSTRAINT requests_sum_plan_chk CHECK (sum_plan >= 0),
     CONSTRAINT requests_sum_fact_chk CHECK (sum_fact >= 0),
     CONSTRAINT requests_status_chk CHECK (status IN ('draft', 'on_review', 'approved', 'approved_with_changes', 'partially_approved', 'rejected', 'cancelled'))
@@ -94,7 +99,30 @@ CREATE TABLE req_logs (
     log jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_users_role ON users(role);
+CREATE TABLE steps (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    unit_id uuid REFERENCES units(id) ON DELETE RESTRICT,
+    status text NOT NULL DEFAULT 'waiting',
+    CONSTRAINT steps_status_chk CHECK (
+        status IN ('waiting', 'on_approval', 'on_revision', 'approved', 'closed')
+    )
+);
+CREATE TABLE step_edges (
+    parent_step_id uuid NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    child_step_id uuid NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
+    PRIMARY KEY (parent_step_id, child_step_id),
+    CONSTRAINT step_edges_no_self_chk CHECK (parent_step_id <> child_step_id)
+);
+CREATE TABLE step_logs (
+    id bigserial PRIMARY KEY,
+    step_id uuid REFERENCES steps(id) ON DELETE SET NULL,
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    log jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_users_id_role ON users(id_role);
 CREATE INDEX idx_units_parent_id ON units(parent_id);
 CREATE INDEX idx_units_is_active ON units(is_active);
 CREATE INDEX idx_units_responsibles_user_id ON units_responsibles(user_id);
@@ -122,6 +150,12 @@ CREATE INDEX idx_chat_messages_reply_to ON chat_messages(reply_to);
 CREATE INDEX idx_chats_participants_user_id ON chats_participants(user_id);
 CREATE INDEX idx_req_logs_req_id_created_at ON req_logs(req_id, created_at);
 CREATE INDEX idx_req_logs_user_id ON req_logs(user_id);
+CREATE INDEX idx_steps_user_status ON steps(user_id, status);
+CREATE UNIQUE INDEX ux_steps_unit_not_null ON steps(unit_id) WHERE unit_id IS NOT NULL;
+CREATE INDEX idx_step_edges_child ON step_edges(child_step_id);
+CREATE INDEX idx_step_logs_step_created_at ON step_logs(step_id, created_at DESC);
+CREATE INDEX idx_step_logs_user_id ON step_logs(user_id);
+CREATE INDEX idx_step_logs_action ON step_logs((log->>'action'));
 CREATE UNIQUE INDEX ux_dds_catalog_scope_name ON dds_catalog (unit_id, parent_id, lower(name)) NULLS NOT DISTINCT;
 CREATE UNIQUE INDEX ux_invests_catalog_scope_name ON invests_catalog (unit_id, parent_id, lower(name)) NULLS NOT DISTINCT;
 

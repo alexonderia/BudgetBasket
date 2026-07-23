@@ -20,6 +20,10 @@ from app.models import (
     RequestCreate,
     RequestPatch,
     ResponsibleIn,
+    StepCreate,
+    StepEdgeIn,
+    StepPatch,
+    StepReturnIn,
     UnitCreate,
     UnitPatch,
     UserCreate,
@@ -39,6 +43,148 @@ def login(request: Request, payload: LoginIn):
 @router.get("/auth/me")
 def me(user: User):
     return user
+
+
+@router.get("/steps")
+def list_steps(request: Request, user: User):
+    return request.app.state.approval_service.list_steps(user)
+
+
+@router.post("/steps")
+def create_step(request: Request, payload: StepCreate, user: User):
+    return request.app.state.approval_service.create_step(user, payload.model_dump())
+
+
+@router.get("/steps/my")
+def my_steps(request: Request, user: User):
+    return request.app.state.approval_service.my_steps(user)
+
+
+@router.get("/requests/{request_id}/approval-step")
+def request_approval_step(request: Request, request_id: str, user: User):
+    return request.app.state.approval_service.request_approval_step(user, request_id)
+
+
+@router.get("/requests/{request_id}/approval-route")
+def request_approval_route(request: Request, request_id: str, user: User):
+    return request.app.state.approval_service.request_approval_route(user, request_id)
+
+
+@router.post("/steps/validate")
+def validate_steps(request: Request, user: User):
+    return request.app.state.approval_service.validate_graph(user)
+
+
+@router.post("/steps/bootstrap-reviewed")
+def bootstrap_reviewed_steps(request: Request, user: User):
+    return request.app.state.approval_service.bootstrap_reviewed_leaf_steps(user)
+
+
+@router.get("/step-logs")
+def all_step_logs(
+    request: Request,
+    user: User,
+    step_id: str | None = None,
+    user_id: str | None = None,
+    action: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+):
+    return request.app.state.approval_service.all_step_logs(
+        user,
+        step_id=step_id,
+        user_id=user_id,
+        action=action,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+@router.post("/step-edges")
+def create_step_edge(request: Request, payload: StepEdgeIn, user: User):
+    return request.app.state.approval_service.create_edge(user, payload.model_dump())
+
+
+@router.delete("/step-edges")
+def delete_step_edge(request: Request, payload: StepEdgeIn, user: User):
+    request.app.state.approval_service.delete_edge(user, payload.model_dump())
+    return {"ok": True}
+
+
+@router.get("/steps/{step_id}")
+def get_step(request: Request, step_id: str, user: User):
+    return request.app.state.approval_service.get_step(user, step_id)
+
+
+@router.patch("/steps/{step_id}")
+def update_step(request: Request, step_id: str, payload: StepPatch, user: User):
+    return request.app.state.approval_service.update_step(
+        user,
+        step_id,
+        clean_patch(payload),
+    )
+
+
+@router.delete("/steps/{step_id}")
+def delete_step(request: Request, step_id: str, user: User):
+    request.app.state.approval_service.delete_step(user, step_id)
+    return {"ok": True}
+
+
+@router.get("/steps/{step_id}/requests")
+def step_requests(request: Request, step_id: str, user: User):
+    return request.app.state.approval_service.list_step_requests(user, step_id)
+
+
+@router.get("/steps/{step_id}/dashboard")
+def step_dashboard(request: Request, step_id: str, user: User):
+    return request.app.state.approval_service.step_dashboard(user, step_id)
+
+
+@router.post("/steps/{step_id}/approve")
+def approve_step(request: Request, step_id: str, user: User):
+    return request.app.state.approval_service.approve_step(user, step_id)
+
+
+@router.post("/steps/{step_id}/requests/{request_id}/approve")
+def approve_request_at_step(request: Request, step_id: str, request_id: str, user: User):
+    return request.app.state.approval_service.approve_request_at_step(
+        user,
+        step_id,
+        request_id,
+    )
+
+
+@router.post("/steps/{step_id}/return")
+def return_step_requests(request: Request, step_id: str, payload: StepReturnIn, user: User):
+    return request.app.state.approval_service.return_requests(
+        user,
+        step_id,
+        payload.model_dump(),
+    )
+
+
+@router.get("/steps/{step_id}/logs")
+def step_logs(request: Request, step_id: str, user: User):
+    return request.app.state.approval_service.step_logs(user, step_id=step_id)
+
+
+@router.get("/steps/{step_id}/export")
+def export_step_requests(request: Request, step_id: str, user: User):
+    request_ids = {
+        item["id"]
+        for item in request.app.state.approval_service.list_step_requests(user, step_id)
+    }
+    path = request.app.state.excel_service.export_closed_requests(
+        user,
+        statuses=request.app.state.excel_service.CLOSED_STATUSES,
+        request_ids=request_ids,
+    )
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @router.get("/users")

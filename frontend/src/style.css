@@ -1189,6 +1189,100 @@
     transition: none;
   }
 
+  .approval-chart-viewport {
+    position: relative;
+    overflow: hidden;
+    min-height: 420px;
+    height: min(70vh, 760px);
+    border: 1px solid rgba(215, 221, 231, 0.72);
+    border-radius: 14px;
+    background: rgba(248, 250, 253, 0.62);
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+  }
+
+  .approval-chart-viewport.is-panning {
+    cursor: grabbing;
+  }
+
+  .approval-chart-stage {
+    position: relative;
+    min-width: 100%;
+    transform-origin: top left;
+    transition: transform 180ms ease;
+  }
+
+  .approval-chart-viewport.is-panning .approval-chart-stage {
+    transition: none;
+  }
+
+  .approval-chart-lines {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+  }
+
+  .approval-graph-card {
+    position: absolute;
+    z-index: 2;
+    box-sizing: border-box;
+    border: 1px solid var(--bb-line);
+    border-radius: 14px !important;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05) !important;
+    cursor: pointer;
+    transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease;
+  }
+
+  .approval-graph-card:hover {
+    border-color: var(--bb-primary);
+    box-shadow: 0 5px 16px rgba(17, 24, 39, 0.1) !important;
+    transform: translateY(-1px);
+  }
+
+  .approval-graph-card.is-leaf {
+    border-left: 4px solid #2e7d32;
+  }
+
+  .approval-graph-card.is-review {
+    border-left: 4px solid #1976d2;
+  }
+
+  .approval-graph-card.is-selected {
+    border-color: var(--bb-primary);
+    box-shadow: 0 0 0 2px var(--bb-primary-soft), 0 5px 16px rgba(17, 24, 39, 0.1) !important;
+  }
+
+  .approval-graph-link-handle {
+    position: absolute;
+    z-index: 4;
+    top: 50%;
+    right: -18px;
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    transform: translateY(-50%);
+    border: 1px solid var(--bb-primary);
+    border-radius: 50%;
+    color: var(--bb-primary);
+    background: #ffffff;
+    box-shadow: 0 1px 4px rgba(17, 24, 39, 0.18);
+    cursor: grab;
+  }
+
+  .approval-graph-link-handle:hover,
+  .approval-graph-link-handle.is-dragging {
+    color: #ffffff;
+    background: var(--bb-primary);
+  }
+
+  .approval-graph-link-handle:active {
+    cursor: grabbing;
+  }
+
   .org-chart-pan-hint {
     display: block;
     margin-top: 8px;

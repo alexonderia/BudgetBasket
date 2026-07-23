@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import { api } from './api/client';
 import { Layout } from './components/Layout';
 import CatalogsPage from './pages/CatalogsPage';
+import ApprovalPage from './pages/ApprovalPage';
 import DashboardPage from './pages/DashboardPage';
 import LoginPage from './pages/LoginPage';
 import RequestDetailsPage from './pages/RequestDetailsPage';
@@ -10,6 +11,7 @@ import RequestsPage from './pages/RequestsPage';
 import UnitsPage from './pages/UnitsPage';
 import UsersPage from './pages/UsersPage';
 import type { User } from './types';
+import { canAccessApproval, defaultRouteForRole } from './utils/roles';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(() => {
@@ -34,7 +36,7 @@ export default function App() {
   function handleLogin(token: string, nextUser: User) {
     localStorage.setItem('budgetbasket_token', token);
     persistUser(nextUser);
-    navigate(nextUser.role === 'employee' ? '/requests' : '/');
+    navigate(defaultRouteForRole(nextUser.role));
   }
 
   function logout() {
@@ -63,6 +65,7 @@ export default function App() {
         <Route path="/users" element={user.role === 'admin' ? <UsersPage /> : <Navigate to="/" replace />} />
         <Route path="/units" element={user.role === 'admin' ? <UnitsPage /> : <Navigate to="/" replace />} />
         <Route path="/catalogs" element={user.role === 'admin' ? <CatalogsPage /> : <Navigate to="/" replace />} />
+        <Route path="/approval" element={canAccessApproval(user.role) ? <ApprovalPage user={user} /> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

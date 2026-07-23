@@ -1,6 +1,7 @@
-export type Role = 'admin' | 'economist' | 'employee';
+export type Role = 'admin' | 'economist' | 'employee' | 'approver' | 'zgd';
 export type RequestStatus = 'draft' | 'on_review' | 'approved' | 'approved_with_changes' | 'partially_approved' | 'rejected' | 'cancelled';
 export type ItemStatus = 'on_review' | 'rejected' | 'approved_with_changes' | 'approved' | 'deleted';
+export type StepStatus = 'waiting' | 'on_approval' | 'on_revision' | 'approved' | 'closed';
 
 export interface User {
   id: string;
@@ -46,6 +47,7 @@ export interface BudgetRequest {
   sum: number;
   status: RequestStatus;
   frozen: boolean;
+  fixed: boolean;
   total_approved_sum?: number;
   summary?: RequestSummary;
 }
@@ -80,6 +82,49 @@ export interface FileAttachment {
   id: number;
   id_storage_object: number;
   original_name: string;
+}
+
+export interface ApprovalStep {
+  id: string;
+  user_id: string;
+  unit_id: string | null;
+  status: StepStatus;
+  user: User | null;
+  unit: Unit | null;
+  cfo: Unit | null;
+  department: Unit | null;
+  unit_path: string[];
+  responsible: User | null;
+  parent_step_ids: string[];
+  child_step_ids: string[];
+  request_status?: StepStatus;
+}
+
+export interface StepRequest extends BudgetRequest {
+  unit: Unit | null;
+  items_count: number;
+  reviewed_items_count: number;
+  sum_plan: number;
+  sum_fact: number;
+}
+
+export interface StepLog {
+  id: number;
+  step_id: string | null;
+  user_id: string;
+  created_at: string;
+  user: User | null;
+  log: {
+    action: string;
+    entity: string;
+    entity_id: string;
+    event_id: string;
+    changes?: Record<string, { from: unknown; to: unknown }>;
+    comment?: string | null;
+    child_step_id?: string;
+    request_ids?: string[];
+    targets?: { child_step_id: string; request_ids: string[] }[];
+  };
 }
 
 export const CLOSED_REQUEST_STATUSES: RequestStatus[] = ['approved', 'approved_with_changes', 'partially_approved', 'rejected', 'cancelled'];

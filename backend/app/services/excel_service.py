@@ -478,6 +478,7 @@ class ExcelService:
         module_ids: set[str] | None = None,
         fixed_only: bool = False,
         export_kind: str = "all",
+        request_ids: set[str] | None = None,
     ) -> Path:
         selected_statuses = self.DEFAULT_EXPORT_STATUSES if statuses is None else statuses
         if not selected_statuses or not selected_statuses.issubset(self.CLOSED_STATUSES):
@@ -490,6 +491,8 @@ class ExcelService:
         requests = []
         for status in selected_statuses:
             for item in self.requests.list_requests(user, status=status):
+                if request_ids is not None and item.get("id") not in request_ids:
+                    continue
                 if selected_unit_ids is not None and item.get("unit_id") not in selected_unit_ids:
                     continue
                 if fixed_only and not item.get("frozen"):

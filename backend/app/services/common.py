@@ -23,4 +23,4 @@ def get_required(repo: Repository, collection: str, item_id: str) -> dict[str, A
 
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in user.items() if key != "password"}
+    return {key: value for key, value in user.items() if key not in {"password", "id_role"}}

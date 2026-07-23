@@ -14,12 +14,27 @@ class RequestService:
     def __init__(self, repo: Repository, permissions: PermissionService):
         self.repo = repo
         self.permissions = permissions
+        self.approval_service = None
 
     def _items(self, request_id: str, *, include_deleted: bool = False) -> list[dict]:
         items = [item for item in self.repo.load_all("req_items") if item["request_id"] == request_id]
         return items if include_deleted else [item for item in items if item.get("status") != ItemStatus.deleted]
 
-    def log(self, user: dict, request_id: str, action: str, *, entity: str = "request", entity_id: str | None = None, before: dict | None = None, after: dict | None = None) -> None:
+    def log(
+        self,
+        user: dict,
+        request_id: str,
+        action: str,
+        *,
+        entity: str = "request",
+        entity_id: str | None = None,
+        before: dict | None = None,
+        after: dict | None = None,
+        event_id: str | None = None,
+        comment: str | None = None,
+        repo: Repository | None = None,
+        **extra,
+    ) -> None:
         before = before or {}
         after = after or {}
         changed = {
@@ -27,13 +42,21 @@ class RequestService:
             for key in set(before) | set(after)
             if before.get(key) != after.get(key)
         }
-        self.repo.create(
+        (repo or self.repo).create(
             "req_logs",
             {
                 "req_id": request_id,
                 "user_id": user["id"],
                 "log": jsonable_encoder(
-                    {"action": action, "entity": entity, "entity_id": entity_id or request_id, "changes": changed}
+                    {
+                        "action": action,
+                        "entity": entity,
+                        "entity_id": entity_id or request_id,
+                        "event_id": event_id,
+                        "changes": changed,
+                        "comment": comment,
+                        **extra,
+                    }
                 ),
             },
         )
@@ -210,7 +233,7 @@ class RequestService:
     def create_request(self, user: dict, payload: dict) -> dict:
         if user["role"] != "employee" or payload["unit_id"] not in self.permissions.employee_module_ids(user["id"]):
             raise HTTPException(status_code=403, detail="Создать заявку может только ответственный сотрудник")
-        created = self.repo.create("requests", {"economist_id": self._assigned_economist_id(payload["unit_id"]), "unit_id": payload["unit_id"], "sum_plan": 0, "sum_fact": 0, "status": RequestStatus.draft})
+        created = self.repo.create("requests", {"economist_id": self._assigned_economist_id(payload["unit_id"]), "unit_id": payload["unit_id"], "sum_plan": 0, "sum_fact": 0, "status": RequestStatus.draft, "frozen": False, "fixed": False})
         self.log(user, created["id"], "created", after=created)
         return self.public_request(created, self.summary(created["id"]))
 
@@ -235,8 +258,16 @@ class RequestService:
         economist_id = request.get("economist_id") or self._assigned_economist_id(request["unit_id"])
         if not economist_id:
             raise HTTPException(status_code=400, detail="К подразделению не назначен экономист")
-        updated = self.repo.update("requests", request_id, {"status": RequestStatus.on_review, "economist_id": economist_id})
-        self.log(user, request_id, "submitted", before=request, after=updated)
+        with self.repo.transaction() as repo:
+            updated = repo.update("requests", request_id, {"status": RequestStatus.on_review, "economist_id": economist_id})
+            self.log(user, request_id, "submitted", before=request, after=updated, repo=repo)
+            if self.approval_service:
+                self.approval_service.open_leaf_for_request(
+                    user,
+                    request["unit_id"],
+                    request_id,
+                    repo=repo,
+                )
         return self.public_request(updated, self.summary(request_id))
 
     def withdraw(self, user: dict, request_id: str) -> dict:
@@ -279,10 +310,24 @@ class RequestService:
         items = self._items(request_id)
         if not items or any(item["status"] == ItemStatus.on_review for item in items):
             raise HTTPException(status_code=400, detail="Перед завершением необходимо рассмотреть все строки заявки")
-        self.recalculate_total(request_id)
-        updated = self.repo.update("requests", request_id, {"status": self.status_from_items(items)})
-        sync_annual_budgets(self.repo)
-        self.log(user, request_id, "finalized", before=request, after=updated)
+        expense_items = [item for item in items if not item.get("is_income", False)]
+        with self.repo.transaction() as repo:
+            updated = repo.update(
+                "requests",
+                request_id,
+                {
+                    "sum_plan": sum(float(item.get("sum_plan") or 0) for item in expense_items),
+                    "sum_fact": sum(
+                        float(item.get("sum_fact") or 0)
+                        for item in expense_items
+                        if item["status"] in APPROVED_ITEM_STATUSES
+                    ),
+                    "status": self.status_from_items(items),
+                    "frozen": True,
+                },
+            )
+            sync_annual_budgets(repo)
+            self.log(user, request_id, "finalized", before=request, after=updated, repo=repo)
         return self.public_request(updated, self.summary(request_id))
 
     def fix(self, user: dict, request_id: str) -> dict:
@@ -290,13 +335,22 @@ class RequestService:
 
     def reopen(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_request_unfrozen(request)
+        if request.get("fixed"):
+            raise HTTPException(status_code=400, detail="Заявка окончательно зафиксирована ЗГД")
         self.permissions.require_economist_review_request(user, request)
         if request["status"] not in {RequestStatus.approved, RequestStatus.approved_with_changes, RequestStatus.partially_approved, RequestStatus.rejected}:
             raise HTTPException(status_code=400, detail="Вернуть на рассмотрение можно только завершённую заявку")
-        updated = self.repo.update("requests", request_id, {"status": RequestStatus.on_review})
-        sync_annual_budgets(self.repo)
-        self.log(user, request_id, "reopened", before=request, after=updated)
+        with self.repo.transaction() as repo:
+            updated = repo.update("requests", request_id, {"status": RequestStatus.on_review, "frozen": False})
+            sync_annual_budgets(repo)
+            self.log(user, request_id, "reopened", before=request, after=updated, repo=repo)
+            if self.approval_service:
+                self.approval_service.open_leaf_for_request(
+                    user,
+                    request["unit_id"],
+                    request_id,
+                    repo=repo,
+                )
         return self.public_request(updated, self.summary(request_id))
 
     def unfreeze(self, user: dict, request_id: str) -> dict:
@@ -305,6 +359,8 @@ class RequestService:
     def freeze_budget(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_budget_control_access(user, request)
+        if request.get("fixed"):
+            raise HTTPException(status_code=400, detail="Заявка окончательно зафиксирована ЗГД")
         if request.get("frozen") or request.get("status") not in {RequestStatus.approved, RequestStatus.approved_with_changes}:
             raise HTTPException(status_code=400, detail="Зафиксировать можно только незаблокированную утверждённую заявку")
         updated = self.repo.update("requests", request_id, {"frozen": True})
@@ -314,11 +370,11 @@ class RequestService:
     def unfreeze_budget(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_budget_control_access(user, request)
+        if request.get("fixed"):
+            raise HTTPException(status_code=400, detail="Заявка окончательно зафиксирована ЗГД")
         if not request.get("frozen"):
             raise HTTPException(status_code=400, detail="Бюджет уже разморожен")
-        updated = self.repo.update("requests", request_id, {"frozen": False})
-        self.log(user, request_id, "unfrozen", before=request, after=updated)
-        return self.public_request(updated, self.summary(request_id))
+        return self.reopen(user, request_id)
 
     def approve_all_items(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)

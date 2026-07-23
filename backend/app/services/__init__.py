@@ -1,4 +1,5 @@
 from app.services.auth_service import AuthService
+from app.services.approval_service import ApprovalService
 from app.services.budget_item_service import BudgetItemService
 from app.services.catalog_service import CatalogService
 from app.services.chat_connection_manager import ChatConnectionManager
@@ -12,6 +13,7 @@ from app.services.user_service import UserService
 
 __all__ = [
     "AuthService",
+    "ApprovalService",
     "BudgetItemService",
     "CatalogService",
     "ChatConnectionManager",

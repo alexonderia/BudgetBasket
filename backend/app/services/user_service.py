@@ -82,6 +82,11 @@ class UserService:
         user = self.repo.get_by_id("users", user_id)
         if not user:
             raise HTTPException(status_code=404, detail="Запись не найдена")
+        if any(step.get("user_id") == user_id for step in self.repo.load_all("steps")):
+            raise HTTPException(
+                status_code=400,
+                detail="Сначала переназначьте шаги согласования пользователя",
+            )
 
         for item in self.repo.load_all("requests"):
             if item.get("economist_id") == user_id:

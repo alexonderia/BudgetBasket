@@ -4,7 +4,17 @@ export const roleLabels: Record<Role, string> = {
   admin: 'Администратор',
   economist: 'Экономист',
   employee: 'Сотрудник',
+  approver: 'Согласующий',
+  zgd: 'ЗГД',
 };
+
+export const stepStatusLabels = {
+  waiting: 'Ожидает дочерние шаги',
+  on_approval: 'На согласовании',
+  on_revision: 'На доработке',
+  approved: 'Согласован',
+  closed: 'Закрыт',
+} as const;
 
 export const requestStatusLabels: Record<RequestStatus, string> = {
   draft: 'Черновик',

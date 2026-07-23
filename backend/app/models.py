@@ -8,6 +8,16 @@ class Role(StrEnum):
     admin = "admin"
     economist = "economist"
     employee = "employee"
+    approver = "approver"
+    zgd = "zgd"
+
+
+class StepStatus(StrEnum):
+    waiting = "waiting"
+    on_approval = "on_approval"
+    on_revision = "on_revision"
+    approved = "approved"
+    closed = "closed"
 
 
 class UnitType(StrEnum):
@@ -168,6 +178,35 @@ class ChatMessageCreate(StrictModel):
 
 class ChatReadPatch(StrictModel):
     last_read_message_id: str | None = None
+
+
+class StepCreate(StrictModel):
+    user_id: str
+    unit_id: str | None = None
+    status: StepStatus = StepStatus.waiting
+    child_step_id: str | None = None
+
+
+class StepPatch(StrictModel):
+    user_id: str | None = None
+    unit_id: str | None = None
+    status: StepStatus | None = None
+
+
+class StepEdgeIn(StrictModel):
+    parent_step_id: str
+    child_step_id: str
+
+
+class StepReturnTarget(StrictModel):
+    child_step_id: str
+    request_ids: list[str] = Field(min_length=1)
+
+
+class StepReturnIn(StrictModel):
+    targets: list[StepReturnTarget] = Field(default_factory=list)
+    request_ids: list[str] = Field(default_factory=list)
+    comment: str = Field(min_length=1)
 
 
 def clean_patch(model: BaseModel) -> dict[str, Any]:

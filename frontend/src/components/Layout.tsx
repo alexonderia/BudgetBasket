@@ -3,6 +3,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import FolderIcon from '@mui/icons-material/Folder';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import FactCheckIcon from '@mui/icons-material/FactCheck';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import LogoutIcon from '@mui/icons-material/Logout';
 import MenuIcon from '@mui/icons-material/Menu';
@@ -133,10 +134,11 @@ export function Layout({
     setToast({ message, severity, key: Date.now() });
   }, []);
   const toastCtx = useMemo(() => ({ showToast }), [showToast]);
+  const canUseChat = user.role === 'employee' || user.role === 'economist';
 
   useEffect(() => {
     const token = localStorage.getItem('budgetbasket_token');
-    if (user.role === 'admin' || !token) return;
+    if (!canUseChat || !token) return;
 
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
@@ -173,7 +175,7 @@ export function Layout({
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [queryClient, showToast, user.role]);
+  }, [canUseChat, queryClient, showToast]);
 
   useEffect(() => {
     setActions(null);
@@ -197,7 +199,7 @@ export function Layout({
   const { data: chats = [] } = useQuery<{ unread_count: number }[]>({
     queryKey: ['chats'],
     queryFn: async () => (await api.get('/chats')).data,
-    enabled: user.role !== 'admin',
+    enabled: canUseChat,
   });
   const unreadChatsCount = useMemo(() => chats.reduce((total, chat) => total + chat.unread_count, 0), [chats]);
 
@@ -245,6 +247,13 @@ export function Layout({
   const items = [
     ...(user.role !== 'employee' ? [{ label: 'Сводка', to: '/', icon: <DashboardIcon /> }] : []),
     { label: 'Заявки', to: '/requests', icon: <FolderIcon /> },
+    ...(user.role === 'admin'
+      ? [{
+          label: 'Маршрут согласования',
+          to: '/approval',
+          icon: <FactCheckIcon />,
+        }]
+      : []),
     ...(user.role === 'admin'
       ? [
           { label: 'Пользователи', to: '/users', icon: <PeopleIcon /> },
@@ -392,7 +401,7 @@ export function Layout({
       </Drawer>
 
       <UserGuideDialog role={user.role} open={guideOpen} onClose={() => setGuideOpen(false)} />
-      {user.role !== 'admin' && (
+      {canUseChat && (
         <>
           <Box className="global-chat-launcher">
             <Tooltip title={unreadChatsCount ? `Непрочитанные сообщения: ${unreadChatsCount}` : 'Открыть чаты'}>

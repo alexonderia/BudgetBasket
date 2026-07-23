@@ -143,7 +143,12 @@ export default function RequestsPage({ user }: { user: User }) {
       ).data,
   });
   const filteredRequests = useMemo(
-    () => data.filter((request) => !filters.frozen || request.frozen === (filters.frozen === 'frozen')),
+    () => data.filter((request) => {
+      if (!filters.frozen) return true;
+      if (filters.frozen === 'fixed') return request.fixed;
+      if (filters.frozen === 'frozen') return request.frozen && !request.fixed;
+      return !request.frozen;
+    }),
     [data, filters.frozen],
   );
 
@@ -404,10 +409,11 @@ export default function RequestsPage({ user }: { user: User }) {
                   </MenuItem>
                 ))}
               </TextField>
-              <TextField select label="Фиксация бюджета" value={filters.frozen} onChange={(event) => setFilters((current) => ({ ...current, frozen: event.target.value }))} sx={{ minWidth: 220 }}>
+              <TextField select label="Блокировка заявки" value={filters.frozen} onChange={(event) => setFilters((current) => ({ ...current, frozen: event.target.value }))} sx={{ minWidth: 220 }}>
                 <MenuItem value="">Все заявки</MenuItem>
-                <MenuItem value="frozen">Зафиксированные</MenuItem>
-                <MenuItem value="unfrozen">Незафиксированные</MenuItem>
+                <MenuItem value="frozen">Замороженные экономистом</MenuItem>
+                <MenuItem value="fixed">Зафиксированные ЗГД</MenuItem>
+                <MenuItem value="unfrozen">Доступные для изменения</MenuItem>
               </TextField>
               <TableColumnTools
                 columns={requestTableColumns}
@@ -433,6 +439,11 @@ export default function RequestsPage({ user }: { user: User }) {
           {user.role === 'employee' ? (
             <Alert severity="info" variant="outlined">
               Объединение сотрудника: {employeeUnitNames.length ? employeeUnitNames.join(', ') : 'не назначено'}
+            </Alert>
+          ) : null}
+          {['economist', 'approver', 'zgd'].includes(user.role) ? (
+            <Alert severity="info" variant="outlined">
+              Здесь собраны заявки вашего маршрута. Откройте заявку, чтобы просмотреть её шаги и выполнить доступное действие согласования.
             </Alert>
           ) : null}
         </Stack>
@@ -600,8 +611,8 @@ export default function RequestsPage({ user }: { user: User }) {
                       <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
                         <RequestStatusBadge status={item.status} />
                         {item.frozen && (
-                          <Tooltip title="Зафиксирован">
-                            <LockOutlinedIcon color="warning" fontSize="small" />
+                          <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}>
+                            <LockOutlinedIcon color={item.fixed ? 'success' : 'warning'} fontSize="small" />
                           </Tooltip>
                         )}
                       </Stack>
