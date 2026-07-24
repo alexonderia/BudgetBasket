@@ -693,6 +693,11 @@
     align-self: flex-end;
   }
 
+  .request-chat-message-system {
+    align-self: center;
+    max-width: min(82%, 460px);
+  }
+
   .request-chat-avatar {
     width: 30px;
     height: 30px;
@@ -1146,6 +1151,24 @@
     background: rgba(255, 255, 255, 0.95);
     box-shadow: var(--bb-shadow);
     padding: 20px;
+  }
+
+  .request-chat-message-system .request-chat-bubble {
+    border-color: #dbe3ee;
+    border-radius: 12px;
+    background: #f8fafc;
+    text-align: center;
+  }
+
+  .request-chat-system-label {
+    display: block;
+    margin-bottom: 3px;
+    color: #64748b;
+    font-weight: 700;
+  }
+
+  .request-chat-message-system .request-chat-time {
+    text-align: center;
   }
 
   .org-chart-toolbar {

@@ -156,8 +156,9 @@ chat_messages = Table(
     "chat_messages", metadata, uuid_pk(),
     Column("chat_id", PgUUID(as_uuid=True), ForeignKey("req_chats.id", ondelete="CASCADE"), nullable=False),
     Column("reply_to", PgUUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL")),
-    Column("sender_id", PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False),
-    Column("text", Text, nullable=False), Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("sender_id", PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT")),
+    Column("text", Text, nullable=False), Column("is_system", Boolean, nullable=False, server_default=text("false")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Index("idx_chat_messages_chat_id_created_at", "chat_id", "created_at"), Index("idx_chat_messages_reply_to", "reply_to"),
 )
 

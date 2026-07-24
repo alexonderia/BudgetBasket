@@ -37,6 +37,8 @@ import TableCell from '@mui/material/TableCell';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TableContainer from '@mui/material/TableContainer';
+import Tab from '@mui/material/Tab';
+import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
@@ -53,7 +55,7 @@ import { ItemStatusBadge, RequestStatusBadge, StepStatusBadge } from '../compone
 import type { ApprovalStep, BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, Profile, StepLog, StepStatus, Unit, User } from '../types';
 import { CLOSED_REQUEST_STATUSES } from '../types';
 import { downloadAuthorized, downloadBlob } from '../utils/download';
-import { itemStatusLabels, money, requestStatusLabels } from '../utils/labels';
+import { itemStatusLabels, money, requestStatusLabels, stepStatusLabels } from '../utils/labels';
 import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
 import { normalizePositiveAmount } from '../utils/validation';
 
@@ -210,7 +212,8 @@ type ChatMessage = {
   id: string;
   text: string;
   created_at: string;
-  sender: { id: string; login: string; role: 'economist' | 'employee'; profile?: Profile | null };
+  is_system?: boolean;
+  sender: { id: string; login: string; role: 'economist' | 'employee'; profile?: Profile | null } | null;
 };
 type RequestChat = {
   participants: { user_id: string; last_read_message_id: string | null }[];
@@ -244,6 +247,7 @@ const historyActionLabels: Record<string, string> = {
   file_attached: 'Добавлен файл',
   file_deleted: 'Удалён файл',
   chat_message_sent: 'Отправлено сообщение в чат',
+  system_message_sent: 'Отправлено системное сообщение в чат',
 };
 
 const historyFieldLabels: Record<string, string> = {
@@ -260,16 +264,28 @@ const historyFieldLabels: Record<string, string> = {
 };
 
 const approvalRouteActionLabels: Record<string, string> = {
-  step_created: 'Шаг создан',
-  step_reopened: 'Шаг открыт повторно',
-  step_opened: 'Шаг открыт для согласования',
-  step_approved: 'Шаг согласован',
+  step_created: 'Этап создан',
+  step_reopened: 'Этап открыт повторно',
+  step_opened: 'Этап открыт для согласования',
+  step_approved: 'Этап согласован',
   step_returned: 'Заявка возвращена на доработку',
-  step_status_changed: 'Статус шага изменён',
+  step_status_changed: 'Статус этапа изменён',
   approval_graph_closed: 'Маршрут закрыт после фиксации ЗГД',
-  approval_request_step_approved: 'Заявка согласована на шаге',
+  approval_request_step_approved: 'Заявка согласована на этапе',
   approval_request_fixed: 'Заявка зафиксирована ЗГД',
+  approval_step_opened: 'Этап открыт для согласования',
+  approval_step_waiting: 'Этап ожидает предыдущий этап',
+  approval_request_forwarded: 'Заявка передана на следующий этап',
+  approval_request_returned: 'Заявка возвращена на доработку',
+  approval_request_returned_to_employee: 'Заявка возвращена сотруднику на доработку',
+  approval_request_reopened_for_revision: 'Заявка направлена на доработку',
+  approval_request_revision_accepted: 'Заявка принята после доработки',
+  approval_economist_review_resumed: 'Экономист возобновил рассмотрение заявки',
 };
+
+function approvalActionLabel(action: string) {
+  return approvalRouteActionLabels[action] || 'Состояние согласования изменено';
+}
 
 const technicalHistoryFields = new Set([
   'id', 'item_id', 'request_id', 'req_id', 'unit_id', 'economist_id', 'created_at', 'updated_at',
@@ -287,13 +303,24 @@ function approvalUserName(user: User | null) {
   return [profile?.last_name, profile?.name, profile?.second_name].filter(Boolean).join(' ') || user.login;
 }
 
-function historyValue(value: unknown, field: string, entity: string) {
+function approvalStepTitle(step: ApprovalStep) {
+  if (step.unit_id) {
+    const unitName = [step.cfo?.name || step.unit_path.at(-2), step.unit?.name || step.unit_path.at(-1)]
+      .filter(Boolean)
+      .join(' / ') || 'Модуль';
+    return `Экономист · ${unitName}`;
+  }
+  return step.user?.role === 'zgd' ? 'ЗГД' : `Согласующий · ${approvalUserName(step.user)}`;
+}
+
+function historyValue(value: unknown, field: string, entity: string, action: string) {
   if (value === null || value === undefined || value === '') return '—';
   if (field === 'sum_plan' || field === 'sum_fact') return money(Number(value));
   if (field === 'status' && typeof value === 'string') {
+    if (action.startsWith('approval_')) return stepStatusLabels[value as StepStatus] || requestStatusLabels[value as keyof typeof requestStatusLabels] || value;
     return entity === 'req_item'
       ? itemStatusLabels[value as ItemStatus] || value
-      : requestStatusLabels[value as keyof typeof requestStatusLabels] || value;
+      : requestStatusLabels[value as keyof typeof requestStatusLabels] || stepStatusLabels[value as StepStatus] || value;
   }
   if (field === 'frozen') return value ? 'Зафиксирован' : 'Разморожен';
   return String(value);
@@ -303,9 +330,9 @@ function historyChanges(entry: RequestLog) {
   return Object.entries(entry.log.changes || {})
     .filter(([field]) => !technicalHistoryFields.has(field))
     .map(([field, change]) => ({
-      field: historyFieldLabels[field] || field,
-      from: historyValue(change.from, field, entry.log.entity),
-      to: historyValue(change.to, field, entry.log.entity),
+      field: historyFieldLabels[field] || 'Параметр заявки',
+      from: historyValue(change.from, field, entry.log.entity, entry.log.action),
+      to: historyValue(change.to, field, entry.log.entity, entry.log.action),
     }));
 }
 
@@ -341,6 +368,7 @@ function contactName(contact: CounterpartyContact) {
 }
 
 function chatSenderName(sender: ChatMessage['sender']) {
+  if (!sender) return 'Система';
   const profile = sender.profile;
   return [profile?.last_name, profile?.name].filter(Boolean).join(' ') || sender.login;
 }
@@ -1308,6 +1336,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyTab, setHistoryTab] = useState<'content' | 'approval'>('content');
   const [confirmAction, setConfirmAction] = useState<'approve-all-items' | null>(null);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnComment, setReturnComment] = useState('');
@@ -1317,7 +1346,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     queryFn: async () => (await api.get<BudgetRequest>(`/requests/${id}`)).data,
   });
   const { data: approvalAction } = useQuery({
-    queryKey: [...detailsKey, 'approval-action'],
+    queryKey: [...detailsKey, 'approval-action', user.id],
     queryFn: async () => (await api.get<RequestApprovalAction | null>(`/requests/${id}/approval-step`)).data,
     enabled: !!request && ['economist', 'approver', 'zgd'].includes(user.role),
   });
@@ -1338,13 +1367,18 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const { data: chat } = useQuery({
     queryKey: [...detailsKey, 'chat'],
     queryFn: async () => (await api.get(`/requests/${id}/chat`)).data as RequestChat,
-    enabled: !!request && request.status !== 'draft',
+    enabled: !!request,
+    retry: false,
   });
   const { data: logs = [] } = useQuery({
-    queryKey: [...detailsKey, 'logs'],
+    queryKey: [...detailsKey, 'request-logs'],
     queryFn: async () => (await api.get<RequestLog[]>(`/requests/${id}/logs`)).data,
     enabled: !!request,
   });
+  const contentLogs = useMemo(
+    () => logs.filter((entry) => !entry.log.action.startsWith('approval_')),
+    [logs],
+  );
   const [chatText, setChatText] = useState('');
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const chatMessages = chat?.messages || [];
@@ -1366,17 +1400,17 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   }, [chat?.participants, chatMessages, chatOpen, markChatRead, user.id]);
   const openChat = () => setChatOpen(true);
   useEffect(() => {
-    if (!request || request.status === 'draft' || searchParams.get('chat') !== '1') return;
+    if (!request || (!chat && request.status === 'draft') || searchParams.get('chat') !== '1') return;
     openChat();
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
       next.delete('chat');
       return next;
     }, { replace: true });
-  }, [request?.status, searchParams, setSearchParams]);
+  }, [chat, request?.status, searchParams, setSearchParams]);
   useEffect(() => {
     const token = localStorage.getItem('budgetbasket_token');
-    if (!request?.id || request.status === 'draft' || !token) return;
+    if (!request?.id || (!chat && request.status === 'draft') || !token) return;
 
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
@@ -1412,7 +1446,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [id, queryClient, request?.id, request?.status]);
+  }, [chat, id, queryClient, request?.id, request?.status]);
   const sendChatMessage = useMutation({
     mutationFn: () => api.post(`/requests/${id}/chat/messages`, { text: chatText }),
     onSuccess: () => {
@@ -1488,6 +1522,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось согласовать заявку'), 'error'),
   });
+  const forwardApprovalPackage = useMutation({
+    mutationFn: () => api.post(`/steps/${approvalAction?.step.id}/approve`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: detailsKey });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-action'] });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-route'] });
+      queryClient.invalidateQueries({ queryKey: ['requests'] });
+      queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+      queryClient.invalidateQueries({ queryKey: ['step-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
+      toast('Проверенный пакет передан на следующий этап', 'success');
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось передать пакет дальше'), 'error'),
+  });
   const returnForRevision = useMutation({
     mutationFn: () => api.post(
       `/steps/${approvalAction?.step.id}/return`,
@@ -1508,6 +1556,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       toast('Заявка возвращена на доработку', 'success');
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось вернуть заявку на доработку'), 'error'),
+  });
+  const resumeEconomistReview = useMutation({
+    mutationFn: () => api.post(`/requests/${id}/resume-economist-review`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: detailsKey });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-action'] });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-route'] });
+      queryClient.invalidateQueries({ queryKey: ['requests'] });
+      queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+      queryClient.invalidateQueries({ queryKey: ['step-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
+      toast('Заявка разморожена и открыта для доработки экономистом', 'success');
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось разморозить заявку'), 'error'),
   });
 
   const deleteRequest = useMutation({
@@ -1612,7 +1674,15 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
   const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.frozen;
   const canApproveRequest = !!request && !!approvalAction?.can_approve;
-  const canReturnForRevision = !!request && !!approvalAction?.can_return;
+  const canForwardApprovalPackage = !!request && !!approvalAction?.can_forward;
+  const canReturnForRevision = !!request
+    && ['economist', 'approver', 'zgd'].includes(user.role)
+    && !!approvalAction?.can_return;
+  const canResumeEconomistReview = !!request
+    && user.role === 'economist'
+    && request.frozen
+    && approvalAction?.step.unit_id != null
+    && approvalAction.request_status === 'on_revision';
   const approvalRequestLabel = approvalAction?.is_final ? 'Зафиксировать заявку' : 'Подтвердить проверку';
 
   const exportRequest = async () => {
@@ -1639,8 +1709,8 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 </Stack>
                 <Stack spacing={1} alignItems={{ xs: 'stretch', sm: 'flex-end' }} sx={{ width: { xs: '100%', sm: 'auto' } }}>
                   <Stack className="request-summary-actions" direction="row" spacing={1} flexWrap="wrap" useFlexGap justifyContent={{ xs: 'flex-start', sm: 'flex-end' }}>
-                    <Button startIcon={<HistoryOutlinedIcon />} variant="outlined" onClick={() => setHistoryOpen(true)}>
-                      История содержимого
+                    <Button startIcon={<HistoryOutlinedIcon />} variant="outlined" onClick={() => { setHistoryTab('content'); setHistoryOpen(true); }}>
+                      История заявки
                     </Button>
                     {canApproveAllItems && (
                       <Button startIcon={<DoneAllIcon />} variant="contained" onClick={() => setConfirmAction('approve-all-items')}>
@@ -1684,6 +1754,17 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                         Согласовать и отправить
                       </Button>
                     )}
+                    {canResumeEconomistReview && (
+                      <Button
+                        startIcon={<RestartAltIcon />}
+                        variant="contained"
+                        color="warning"
+                        onClick={() => resumeEconomistReview.mutate()}
+                        disabled={resumeEconomistReview.isPending}
+                      >
+                        Разморозить и доработать
+                      </Button>
+                    )}
                     {canApproveRequest && approvalAction && (
                       <Button
                         startIcon={<DoneAllIcon />}
@@ -1692,6 +1773,16 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                         disabled={approveRequestAtStep.isPending}
                       >
                         {approvalRequestLabel}
+                      </Button>
+                    )}
+                    {canForwardApprovalPackage && (
+                      <Button
+                        startIcon={<SendIcon />}
+                        variant="contained"
+                        onClick={() => forwardApprovalPackage.mutate()}
+                        disabled={forwardApprovalPackage.isPending}
+                      >
+                        Передать дальше
                       </Button>
                     )}
                     {canReturnForRevision && (
@@ -1764,11 +1855,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               </Box>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} useFlexGap>
               {approvalRoute.map(({ step }) => {
-                const stepTitle = step.unit_id
-                  ? `Экономист · ${[step.cfo?.name || step.unit_path.at(-2), step.unit?.name || step.unit_path.at(-1)].filter(Boolean).join(' \\ ') || 'Модуль'}`
-                  : step.user?.role === 'zgd'
-                    ? 'ЗГД'
-                    : `Согласующий · ${approvalUserName(step.user)}`;
+                const stepTitle = approvalStepTitle(step);
                 return (
                   <Stack key={step.id} spacing={0.75} sx={{ flex: 1, minWidth: 190, p: 1.5, border: 1, borderColor: 'divider', borderRadius: 2 }}>
                     <Typography fontWeight={700}>{stepTitle}</Typography>
@@ -1780,23 +1867,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               </Stack>
               {!approvalRoute.length && (
                 <Typography variant="body2" color="text.secondary">Для заявки пока не создан маршрут согласования.</Typography>
-              )}
-              {approvalRoute.length > 0 && (
-                <Stack spacing={1}>
-                  <Typography variant="subtitle1" fontWeight={700}>История согласования</Typography>
-                  {approvalRoute
-                    .flatMap(({ step, logs: stepLogs }) => stepLogs.map((entry) => ({ step, entry })))
-                    .sort((left, right) => new Date(right.entry.created_at).getTime() - new Date(left.entry.created_at).getTime())
-                    .map(({ step, entry }) => (
-                      <Box key={`${step.id}:${entry.id}`} sx={{ pl: 1.25, borderLeft: 2, borderColor: 'divider' }}>
-                        <Typography variant="body2" fontWeight={600}>{approvalRouteActionLabels[entry.log.action] || entry.log.action}</Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {new Date(entry.created_at).toLocaleString('ru-RU')} · {approvalUserName(entry.user)}
-                        </Typography>
-                        {entry.log.comment && <Typography variant="body2" sx={{ mt: 0.25 }}>{entry.log.comment}</Typography>}
-                      </Box>
-                    ))}
-                </Stack>
               )}
             </Stack>
         </Paper>
@@ -1815,7 +1885,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           </Paper>
         ) : null}
 
-        {request.status !== 'draft' && (user.role === 'employee' || user.role === 'economist') && <Drawer
+        {!!chat && (user.role === 'employee' || user.role === 'economist') && <Drawer
           anchor="right"
           open={chatOpen}
           onClose={() => setChatOpen(false)}
@@ -1843,16 +1913,18 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               </Box>
             )}
             {chatMessages.map((message, index) => {
-              const isOwn = message.sender.id === user.id;
+              const isSystem = !!message.is_system;
+              const isOwn = !isSystem && message.sender?.id === user.id;
               const previousMessage = chatMessages[index - 1];
               const startsNewDay = !previousMessage || chatDayKey(previousMessage.created_at) !== chatDayKey(message.created_at);
               return (
                 <Fragment key={message.id}>
                   {startsNewDay && <Box className="chat-day-divider">{chatDayLabel(message.created_at)}</Box>}
-                  <Box className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''}`}>
-                  {!isOwn && <Avatar className="request-chat-avatar">{chatSenderInitial(message.sender)}</Avatar>}
+                  <Box className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''} ${isSystem ? 'request-chat-message-system' : ''}`}>
+                  {!isOwn && !isSystem && <Avatar className="request-chat-avatar">{chatSenderInitial(message.sender)}</Avatar>}
                   <Box className="request-chat-bubble">
-                    {!isOwn && <Typography className="request-chat-sender" variant="caption">{chatSenderName(message.sender)}</Typography>}
+                    {!isOwn && !isSystem && <Typography className="request-chat-sender" variant="caption">{chatSenderName(message.sender)}</Typography>}
+                    {isSystem && <Typography className="request-chat-system-label" variant="caption">Системное сообщение</Typography>}
                     <Typography className="request-chat-text">{message.text}</Typography>
                     <Typography className="request-chat-time" variant="caption">{chatTime(message.created_at)}</Typography>
                   </Box>
@@ -1936,14 +2008,23 @@ export default function RequestDetailsPage({ user }: { user: User }) {
             </Box>
             <IconButton onClick={() => setHistoryOpen(false)} aria-label="Закрыть историю изменений"><CloseIcon /></IconButton>
           </Stack>
+          <Tabs
+            value={historyTab}
+            onChange={(_, value: 'content' | 'approval') => setHistoryTab(value)}
+            variant="fullWidth"
+            sx={{ px: 1.5, borderBottom: 1, borderColor: 'divider' }}
+          >
+            <Tab value="content" label="История содержимого" />
+            <Tab value="approval" label="История согласования" />
+          </Tabs>
           <Stack sx={{ px: 2.5, overflowY: 'auto' }}>
-            {logs.map((entry) => {
+            {historyTab === 'content' && contentLogs.map((entry) => {
               const changes = historyChanges(entry);
               const isLineChange = !!entry.subject;
               const content = (
                 <Stack className="request-history-entry-content" spacing={0.25}>
                   <Typography className="request-history-kind" variant="overline" color="text.secondary" lineHeight={1.2}>{isLineChange ? 'Строка заявки' : 'Заявка'}</Typography>
-                  <Typography className="request-history-action" fontWeight={700} lineHeight={1.35}>{historyActionLabels[entry.log.action] || entry.log.action}</Typography>
+                  <Typography className="request-history-action" fontWeight={700} lineHeight={1.35}>{historyActionLabels[entry.log.action] || 'Данные заявки изменены'}</Typography>
                   <Typography className="request-history-meta" variant="caption" color="text.secondary">
                     {new Date(entry.created_at).toLocaleString('ru-RU')} · {historyActorName(entry.user)}
                   </Typography>
@@ -1984,7 +2065,36 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 </Box>
               );
             })}
-            {!logs.length && <Typography sx={{ py: 2 }} color="text.secondary">Изменений пока нет.</Typography>}
+            {historyTab === 'content' && !contentLogs.length && <Typography sx={{ py: 2 }} color="text.secondary">Изменений пока нет.</Typography>}
+            {historyTab === 'approval' && approvalRoute
+              .flatMap(({ step, logs: stepLogs }) => stepLogs.map((entry) => ({ step, entry })))
+              .sort((left, right) => new Date(right.entry.created_at).getTime() - new Date(left.entry.created_at).getTime())
+              .map(({ step, entry }) => (
+                <Box key={`${step.id}:${entry.id}`} sx={{ py: 1.5, borderBottom: 1, borderColor: 'divider' }}>
+                  <Stack className="request-history-entry-content" spacing={0.25}>
+                    <Typography className="request-history-kind" variant="overline" color="text.secondary" lineHeight={1.2}>Согласование заявки</Typography>
+                    <Typography className="request-history-action" fontWeight={700} lineHeight={1.35}>
+                      {approvalActionLabel(entry.log.action)}
+                    </Typography>
+                    <Typography className="request-history-meta" variant="caption" color="text.secondary">
+                      {new Date(entry.created_at).toLocaleString('ru-RU')} · {approvalUserName(entry.user)}
+                    </Typography>
+                    <Typography className="request-history-subject" variant="body2" sx={{ pt: 0.5 }}>
+                      <Box component="span" color="text.secondary">Этап: </Box>
+                      <Box component="span" fontWeight={700}>{approvalStepTitle(step)}</Box>
+                    </Typography>
+                    {entry.log.comment && (
+                      <Typography variant="body2" sx={{ pt: 0.25 }}>
+                        <Box component="span" color="text.secondary">Комментарий этапа: </Box>
+                        {entry.log.comment}
+                      </Typography>
+                    )}
+                  </Stack>
+                </Box>
+              ))}
+            {historyTab === 'approval' && !approvalRoute.some(({ logs: stepLogs }) => stepLogs.length) && (
+              <Typography sx={{ py: 2 }} color="text.secondary">Событий согласования пока нет.</Typography>
+            )}
           </Stack>
         </Drawer>
 

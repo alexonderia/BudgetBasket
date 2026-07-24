@@ -93,15 +93,32 @@ def test_return_reaches_economist_then_employee_for_revision(tmp_path):
         headers=approver,
     )
     assert returned.status_code == 200
+    route = client.get(f"/requests/{request_id}/approval-route", headers=employee).json()
+    return_log = next(
+        log
+        for route_step in route
+        for log in route_step["logs"]
+        if log["log"].get("comment") == "Уточнить обоснование"
+    )
+    assert return_log["step_id"] == APPROVER_STEP_ID
     request = client.get(f"/requests/{request_id}", headers=employee).json()
     assert request["frozen"] is True
     assert client.get(f"/requests/{request_id}/approval-step", headers=economist).json()["request_status"] == "on_revision"
+
+    resumed = client.post(f"/requests/{request_id}/resume-economist-review", headers=economist)
+    assert resumed.status_code == 200
+    assert resumed.json()["status"] == "on_review"
+    assert resumed.json()["frozen"] is False
+    assert client.get(f"/requests/{request_id}/approval-step", headers=economist).json()["request_status"] == "on_approval"
 
     assert client.post(
         f"/steps/{LEAF_STEP_ID}/return",
         json={"request_ids": [request_id], "comment": "Вернуть сотруднику"},
         headers=economist,
     ).status_code == 200
+    chat = client.get(f"/requests/{request_id}/chat", headers=employee)
+    assert chat.status_code == 200
+    assert any("Комментарий: Вернуть сотруднику" in item["text"] for item in chat.json()["messages"])
     request = client.get(f"/requests/{request_id}", headers=employee).json()
     assert request["status"] == "draft"
     assert request["frozen"] is False
@@ -128,7 +145,7 @@ def test_zgd_is_the_only_actor_that_sets_fixed_and_closes_final_step(tmp_path):
     assert client.post(f"/steps/{ROOT_STEP_ID}/requests/{request_id}/approve", headers=zgd).status_code == 409
 
 
-def test_reviewer_forwards_only_a_full_reviewed_package(tmp_path):
+def test_reviewer_forwards_only_requests_that_reached_the_step(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
@@ -142,17 +159,18 @@ def test_reviewer_forwards_only_a_full_reviewed_package(tmp_path):
         f"/steps/{APPROVER_STEP_ID}/requests/{first_request_id}/approve",
         headers=approver,
     ).status_code == 200
-    blocked = client.post(f"/steps/{APPROVER_STEP_ID}/approve", headers=approver)
-    assert blocked.status_code == 409
-    assert "не все заявки" in blocked.json()["detail"]
+    forwarded = client.post(f"/steps/{APPROVER_STEP_ID}/approve", headers=approver)
+    assert forwarded.status_code == 200
+
+    route = client.get(f"/requests/{first_request_id}/approval-route", headers=employee).json()
+    assert [item["step"]["request_status"] for item in route] == ["approved", "approved", "on_approval"]
 
     finalize_by_economist(client, second_request_id, second_item_id, economist)
     assert client.post(
         f"/steps/{APPROVER_STEP_ID}/requests/{second_request_id}/approve",
         headers=approver,
     ).status_code == 200
-    forwarded = client.post(f"/steps/{APPROVER_STEP_ID}/approve", headers=approver)
-    assert forwarded.status_code == 200
+    assert client.post(f"/steps/{APPROVER_STEP_ID}/approve", headers=approver).status_code == 200
 
     for request_id in (first_request_id, second_request_id):
         route = client.get(f"/requests/{request_id}/approval-route", headers=employee).json()

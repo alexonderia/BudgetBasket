@@ -453,6 +453,11 @@ def unfreeze_request_budget(request: Request, request_id: str, user: User):
     return request.app.state.request_service.unfreeze_budget(user, request_id)
 
 
+@router.post("/requests/{request_id}/resume-economist-review")
+def resume_economist_review(request: Request, request_id: str, user: User):
+    return request.app.state.approval_service.resume_economist_review(user, request_id)
+
+
 @router.post("/requests/{request_id}/withdraw")
 def withdraw_request(request: Request, request_id: str, user: User):
     return request.app.state.request_service.withdraw(user, request_id)

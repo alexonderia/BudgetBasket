@@ -84,8 +84,8 @@ CREATE TABLE req_chats (
 CREATE TABLE chat_messages (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), chat_id uuid NOT NULL REFERENCES req_chats(id) ON DELETE CASCADE,
     reply_to uuid REFERENCES chat_messages(id) ON DELETE SET NULL,
-    sender_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-    text text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+    sender_id uuid REFERENCES users(id) ON DELETE RESTRICT,
+    text text NOT NULL, is_system boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE chats_participants (
     chat_id uuid NOT NULL REFERENCES req_chats(id) ON DELETE CASCADE,

@@ -34,8 +34,9 @@ type ChatMessage = {
   id: string;
   text: string;
   created_at: string;
+  is_system?: boolean;
   reply_to?: string | null;
-  sender: ChatSender;
+  sender: ChatSender | null;
 };
 
 type ChatSummary = {
@@ -52,7 +53,8 @@ type RequestChat = {
   messages: ChatMessage[];
 };
 
-function senderName(sender: ChatSender) {
+function senderName(sender: ChatSender | null) {
+  if (!sender) return 'Система';
   const profile = sender.profile;
   return [profile?.last_name, profile?.name].filter(Boolean).join(' ') || sender.login;
 }
@@ -189,7 +191,8 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
               </Box>
             )}
             {requestChat?.messages.map((message, index) => {
-              const isOwn = message.sender.id === currentUserId;
+              const isSystem = !!message.is_system;
+              const isOwn = !isSystem && message.sender?.id === currentUserId;
               const previousMessage = requestChat.messages[index - 1];
               const startsNewDay = !previousMessage || chatDayKey(previousMessage.created_at) !== chatDayKey(message.created_at);
               const reply = message.reply_to ? requestChat.messages.find((item) => item.id === message.reply_to) : undefined;
@@ -200,9 +203,10 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
               return (
                 <Fragment key={message.id}>
                   {startsNewDay && <Box className="chat-day-divider">{chatDayLabel(message.created_at)}</Box>}
-                  <Box className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''}`}>
+                  <Box className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''} ${isSystem ? 'request-chat-message-system' : ''}`}>
                   <Box className="request-chat-bubble">
-                    {!isOwn && <Typography className="request-chat-sender" variant="caption">{senderName(message.sender)}</Typography>}
+                    {!isOwn && !isSystem && <Typography className="request-chat-sender" variant="caption">{senderName(message.sender)}</Typography>}
+                    {isSystem && <Typography className="request-chat-system-label" variant="caption">Системное сообщение</Typography>}
                     {reply && (
                       <Box className="chat-reply-reference">
                         <Typography variant="caption" fontWeight={700}>{senderName(reply.sender)}</Typography>
@@ -221,11 +225,11 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
                       </Stack>
                     </Stack>
                   </Box>
-                  <Tooltip title="Ответить">
+                  {!isSystem && <Tooltip title="Ответить">
                     <IconButton className="chat-message-forward" size="small" onClick={() => setReplyTo(message)} aria-label="Ответить на сообщение">
                       <ReplyOutlinedIcon fontSize="small" />
                     </IconButton>
-                  </Tooltip>
+                  </Tooltip>}
                   </Box>
                 </Fragment>
               );
@@ -293,7 +297,7 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
                     <Typography className="chat-list-request" noWrap>Заявка {chat.request_id.slice(0, 8)}</Typography>
                     {chat.last_message ? (
                       <Typography className="chat-list-preview" noWrap>
-                        <strong>{senderName(chat.last_message.sender)}:</strong> {chat.last_message.text}
+                        {!chat.last_message.is_system && <><strong>{senderName(chat.last_message.sender)}:</strong> </>}{chat.last_message.text}
                       </Typography>
                     ) : (
                       <Typography className="chat-list-preview" color="text.secondary">Сообщений пока нет</Typography>

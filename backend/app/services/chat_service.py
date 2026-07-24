@@ -13,10 +13,11 @@ class ChatService:
         self.permissions = permissions
         self.requests = requests
 
-    def _participant_ids(self, request: dict) -> set[str]:
-        users = {item["id"]: item for item in self.repo.load_all("users")}
+    def _participant_ids(self, request: dict, *, repo: Repository | None = None) -> set[str]:
+        storage = repo or self.repo
+        users = {item["id"]: item for item in storage.load_all("users")}
         employee_ids = {
-            item["user_id"] for item in self.repo.load_all("units_responsibles")
+            item["user_id"] for item in storage.load_all("units_responsibles")
             if item.get("unit_id") == request["unit_id"] and item.get("is_active") and users.get(item.get("user_id"), {}).get("role") == "employee"
         }
         return employee_ids | ({request["economist_id"]} if request.get("economist_id") else set())
@@ -26,18 +27,20 @@ class ChatService:
         self._require_chat_available(request)
         return self._participant_ids(request) - {sender_id}
 
-    @staticmethod
-    def _require_chat_available(request: dict) -> None:
-        if request.get("status") == RequestStatus.draft:
+    def _require_chat_available(self, request: dict) -> None:
+        if request.get("status") == RequestStatus.draft and not any(
+            chat.get("req_id") == request["id"] for chat in self.repo.load_all("req_chats")
+        ):
             raise HTTPException(status_code=400, detail="Чат становится доступен после отправки заявки на рассмотрение")
 
-    def _chat(self, request: dict) -> dict:
-        chat = next((item for item in self.repo.load_all("req_chats") if item.get("req_id") == request["id"]), None)
+    def _chat(self, request: dict, *, repo: Repository | None = None) -> dict:
+        storage = repo or self.repo
+        chat = next((item for item in storage.load_all("req_chats") if item.get("req_id") == request["id"]), None)
         if chat:
             return chat
-        chat = self.repo.create("req_chats", {"req_id": request["id"]})
-        for user_id in self._participant_ids(request):
-            self.repo.insert("chats_participants", {"chat_id": chat["id"], "user_id": user_id})
+        chat = storage.create("req_chats", {"req_id": request["id"]})
+        for user_id in self._participant_ids(request, repo=storage):
+            storage.insert("chats_participants", {"chat_id": chat["id"], "user_id": user_id})
         return chat
 
     def _require_participant(self, user: dict, request: dict, chat: dict) -> None:
@@ -59,8 +62,15 @@ class ChatService:
         for message in self.repo.load_all("chat_messages"):
             if message.get("chat_id") != chat["id"]:
                 continue
-            sender = users.get(message["sender_id"], {})
-            messages.append({**message, "sender": {"id": sender.get("id"), "login": sender.get("login"), "role": sender.get("role"), "profile": profiles.get(message["sender_id"])}})
+            sender_id = message.get("sender_id")
+            sender = users.get(sender_id, {})
+            messages.append({
+                **message,
+                "sender": (
+                    {"id": sender.get("id"), "login": sender.get("login"), "role": sender.get("role"), "profile": profiles.get(sender_id)}
+                    if sender_id else None
+                ),
+            })
         messages.sort(key=lambda item: str(item.get("created_at") or ""))
         participants = [row for row in self.repo.load_all("chats_participants") if row.get("chat_id") == chat["id"]]
         return {"id": chat["id"], "request_id": request_id, "participants": participants, "messages": messages}
@@ -80,7 +90,7 @@ class ChatService:
 
         result = []
         for request_id, request in requests.items():
-            if request.get("status") == RequestStatus.draft:
+            if request.get("status") == RequestStatus.draft and request_id not in chats_by_request:
                 continue
             if user["role"] != "admin" and user["id"] not in self._participant_ids(request):
                 continue
@@ -103,12 +113,15 @@ class ChatService:
                     "last_message": (
                         {
                             **last_message,
-                            "sender": {
-                                "id": users.get(last_message["sender_id"], {}).get("id"),
-                                "login": users.get(last_message["sender_id"], {}).get("login"),
-                                "role": users.get(last_message["sender_id"], {}).get("role"),
-                                "profile": profiles.get(last_message["sender_id"]),
-                            },
+                            "sender": (
+                                {
+                                    "id": users.get(last_message["sender_id"], {}).get("id"),
+                                    "login": users.get(last_message["sender_id"], {}).get("login"),
+                                    "role": users.get(last_message["sender_id"], {}).get("role"),
+                                    "profile": profiles.get(last_message["sender_id"]),
+                                }
+                                if last_message.get("sender_id") else None
+                            ),
                         }
                         if last_message
                         else None
@@ -135,6 +148,37 @@ class ChatService:
         message = self.repo.create("chat_messages", {"chat_id": chat["id"], "reply_to": reply_to, "sender_id": user["id"], "text": text})
         self.repo.update_where("chats_participants", {"chat_id": chat["id"], "user_id": user["id"]}, {"last_read_message_id": message["id"]})
         self.requests.log(user, request_id, "chat_message_sent", entity="chat_message", entity_id=message["id"], after={"text": text})
+        return message
+
+    def send_return_to_employee_system_message(self, user: dict, request_id: str, comment: str, *, repo: Repository | None = None) -> dict:
+        """Persist the economist's return comment as an automatic chat notification."""
+        storage = repo or self.repo
+        request = get_required(storage, "requests", request_id)
+        chat = self._chat(request, repo=storage)
+        message = storage.create(
+            "chat_messages",
+            {
+                "chat_id": chat["id"],
+                "reply_to": None,
+                "sender_id": None,
+                "text": f"Экономист вернул заявку на доработку.\nКомментарий: {comment}",
+                "is_system": True,
+            },
+        )
+        storage.update_where(
+            "chats_participants",
+            {"chat_id": chat["id"], "user_id": user["id"]},
+            {"last_read_message_id": message["id"]},
+        )
+        self.requests.log(
+            user,
+            request_id,
+            "system_message_sent",
+            entity="chat_message",
+            entity_id=message["id"],
+            after={"text": message["text"]},
+            repo=storage,
+        )
         return message
 
     def mark_read(self, user: dict, request_id: str, message_id: str | None) -> dict:

@@ -22,9 +22,10 @@ FINAL_REQUEST_STATUSES = {
 
 
 class ApprovalService:
-    def __init__(self, repo: Repository, permissions: PermissionService):
+    def __init__(self, repo: Repository, permissions: PermissionService, chat_service=None):
         self.repo = repo
         self.permissions = permissions
+        self.chat_service = chat_service
 
     @staticmethod
     def _event_id() -> str:
@@ -1987,6 +1988,52 @@ class ApprovalService:
         with self.repo.transaction() as transaction_repo:
             apply(transaction_repo)
 
+    def resume_economist_review(self, user: dict, request_id: str) -> dict:
+        """Unfreeze a returned request so its economist can revise it before resubmission."""
+        with self.repo.transaction() as repo:
+            request = get_required(repo, "requests", request_id)
+            route = self._request_route(repo, request["unit_id"])
+            if not route:
+                raise HTTPException(status_code=400, detail="Для подразделения не настроен маршрут согласования")
+            leaf = route[0]
+            self._require_assignee_action(repo, user, leaf)
+            state = self._request_step_state(repo, leaf, request_id)
+            if state["status"] != StepStatus.on_revision or not request.get("frozen"):
+                raise HTTPException(status_code=409, detail="Заявка не ожидает доработки экономистом")
+            if request.get("fixed"):
+                raise HTTPException(status_code=409, detail="Окончательно зафиксированную заявку нельзя разморозить")
+
+            event_id = self._event_id()
+            updated = repo.update(
+                "requests",
+                request_id,
+                {"status": RequestStatus.on_review, "frozen": False},
+            )
+            _, before = self._set_request_step_state(repo, request_id, leaf["id"], StepStatus.on_approval)
+            self._log_request_step_status(
+                repo,
+                user,
+                request_id,
+                leaf,
+                before,
+                StepStatus.on_approval,
+                event_id,
+                action="approval_economist_review_resumed",
+            )
+            self._request_log(
+                repo,
+                user,
+                request_id,
+                "reopened",
+                event_id,
+                changes={
+                    "status": {"from": request.get("status"), "to": updated.get("status")},
+                    "frozen": {"from": request.get("frozen"), "to": False},
+                },
+                step_id=leaf["id"],
+            )
+            return updated
+
     def approve_request_at_step(self, user: dict, step_id: str, request_id: str) -> dict:
         with self.repo.transaction() as repo:
             step = get_required(repo, "steps", step_id)
@@ -2058,6 +2105,8 @@ class ApprovalService:
             },
             step_id=leaf["id"],
         )
+        if self.chat_service:
+            self.chat_service.send_return_to_employee_system_message(user, request["id"], comment, repo=repo)
         sync_annual_budgets(repo)
 
     def return_requests(self, user: dict, step_id: str, payload: dict) -> dict:
@@ -2104,7 +2153,21 @@ class ApprovalService:
                     _, child_before = self._set_request_step_state(
                         repo, request_id, child_id, StepStatus.on_revision,
                     )
-                    self._set_request_step_state(repo, request_id, step_id, StepStatus.waiting)
+                    _, step_before = self._set_request_step_state(
+                        repo, request_id, step_id, StepStatus.waiting,
+                    )
+                    self._log_request_step_status(
+                        repo,
+                        user,
+                        request_id,
+                        step,
+                        step_before,
+                        StepStatus.waiting,
+                        event_id,
+                        action="approval_request_returned",
+                        comment=comment,
+                        returned_to_step_id=child_id,
+                    )
                     self._log_request_step_status(
                         repo,
                         user,
@@ -2113,8 +2176,7 @@ class ApprovalService:
                         child_before,
                         StepStatus.on_revision,
                         event_id,
-                        action="approval_request_returned",
-                        comment=comment,
+                        action="approval_request_reopened_for_revision",
                         returned_from_step_id=step_id,
                     )
             public_step = self._public_steps(repo, [step])[0]
@@ -2245,12 +2307,18 @@ class ApprovalService:
     # them only as one complete packet after every request of the branch has
     # reached and been checked at the current step.
     def _requests_for_route_step(self, repo: Repository, step_id: str) -> list[dict]:
+        """Requests currently actionable at a route step, not every request in its history."""
+        step = get_required(repo, "steps", step_id)
         result = []
         for request in repo.load_all("requests"):
             if request.get("status") == RequestStatus.cancelled:
                 continue
             route = self._request_route(repo, request["unit_id"])
-            if any(route_step["id"] == step_id for route_step in route):
+            if not any(route_step["id"] == step_id for route_step in route):
+                continue
+            status = self._request_step_state(repo, step, request["id"])["status"]
+            active_statuses = {StepStatus.on_approval, StepStatus.on_revision} if step.get("unit_id") else {StepStatus.on_approval}
+            if status in active_statuses:
                 result.append(request)
         return result
 
@@ -2270,15 +2338,22 @@ class ApprovalService:
         return (latest.get("log") or {}).get("action") == "approval_request_step_approved"
 
     def _step_progress(self, repo: Repository, step: dict) -> tuple[StepStatus, int]:
+        """Aggregate the route state for graph display, including completed requests."""
         states = [
             self._request_step_state(repo, step, request["id"])["status"]
-            for request in self._requests_for_route_step(repo, step["id"])
+            for request in repo.load_all("requests")
+            if request.get("status") != RequestStatus.cancelled
+            and any(route_step["id"] == step["id"] for route_step in self._request_route(repo, request["unit_id"]))
         ]
         active = [status for status in states if status in {StepStatus.on_approval, StepStatus.on_revision}]
         if StepStatus.on_revision in active:
             return StepStatus.on_revision, len(active)
         if active:
             return StepStatus.on_approval, len(active)
+        if StepStatus.approved in states:
+            return StepStatus.approved, 0
+        if states and all(status == StepStatus.closed for status in states):
+            return StepStatus.closed, 0
         return StepStatus.waiting, 0
 
     def _active_step_ids_for_user(self, user: dict) -> set[str]:
@@ -2405,16 +2480,28 @@ class ApprovalService:
             public_step["request_status"] = state["status"]
             is_final = step["id"] in self._root_ids(self.repo)
             reviewed = self._request_reviewed_at_step(self.repo, request_id, step["id"])
+            step_requests = self._requests_for_route_step(self.repo, step["id"])
+            can_forward = (
+                step.get("unit_id") is None
+                and not is_final
+                and reviewed
+                and bool(step_requests)
+                and all(
+                    self._request_step_state(self.repo, step, item["id"])["status"] == StepStatus.on_approval
+                    and self._request_reviewed_at_step(self.repo, item["id"], step["id"])
+                    for item in step_requests
+                )
+            )
             return {
                 "step": public_step,
                 "child_step_id": state["child_step_id"],
                 "request_status": state["status"],
                 "can_approve": (
                     step.get("unit_id") is None
-                    and state["status"] == StepStatus.on_approval
+                    and state["status"] in {StepStatus.on_approval, StepStatus.on_revision}
                     and (is_final or not reviewed)
                 ),
-                "can_forward": False,
+                "can_forward": can_forward,
                 "can_return": state["status"] in {StepStatus.on_approval, StepStatus.on_revision},
                 "is_final": is_final,
             }
@@ -2428,19 +2515,31 @@ class ApprovalService:
             if step.get("unit_id") is not None:
                 raise HTTPException(status_code=400, detail="Экономист завершает проверку заявки из её карточки")
             state = self._request_step_state(repo, step, request_id)
-            if state["status"] != StepStatus.on_approval:
-                raise HTTPException(status_code=409, detail="Заявка ещё не передана на этот шаг согласования")
+            if state["status"] not in {StepStatus.on_approval, StepStatus.on_revision}:
+                raise HTTPException(status_code=409, detail="Заявка ещё не передана на этот этап согласования")
             if request.get("status") not in FINAL_REQUEST_STATUSES or not request.get("frozen"):
                 raise HTTPException(status_code=409, detail="Заявка должна быть проверена и заморожена экономистом")
+            event_id = self._event_id()
+            if state["status"] == StepStatus.on_revision:
+                _, before = self._set_request_step_state(repo, request_id, step_id, StepStatus.on_approval)
+                self._log_request_step_status(
+                    repo,
+                    user,
+                    request_id,
+                    step,
+                    before,
+                    StepStatus.on_approval,
+                    event_id,
+                    action="approval_request_revision_accepted",
+                )
             if step_id in self._root_ids(repo):
-                updated_request = self._advance_request(repo, user, request, step, self._event_id())
+                updated_request = self._advance_request(repo, user, request, step, event_id)
                 public_step = self._public_steps(repo, [step])[0]
                 public_step["request_status"] = StepStatus.closed
                 public_step["request"] = updated_request
                 return public_step
             if self._request_reviewed_at_step(repo, request_id, step_id):
                 raise HTTPException(status_code=409, detail="Заявка уже проверена на этом шаге")
-            event_id = self._event_id()
             self._step_log(
                 repo,
                 user,
