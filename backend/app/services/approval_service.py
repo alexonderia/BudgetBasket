@@ -654,6 +654,17 @@ class ApprovalService:
                 raise HTTPException(status_code=404, detail="Шаг не найден")
             if step.get("status") == StepStatus.closed:
                 raise HTTPException(status_code=400, detail="Закрытый шаг нельзя удалить")
+            progress_status, active_count = self._step_progress(repo, step)
+            if active_count or progress_status in {
+                StepStatus.on_approval,
+                StepStatus.on_revision,
+                StepStatus.approved,
+                StepStatus.closed,
+            }:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Нельзя удалить шаг: на него уже поступали заявки",
+                )
             event_id = self._event_id()
             related_edges = [
                 edge
@@ -746,6 +757,157 @@ class ApprovalService:
                 raise HTTPException(status_code=404, detail="Связь не найдена")
             self._edge_log(repo, user, edge, "step_edge_deleted", self._event_id())
             repo.delete_where("step_edges", payload)
+
+    def _route_from_leaf(
+        self,
+        steps: dict[str, dict],
+        edges: list[dict],
+        leaf_id: str,
+    ) -> list[dict]:
+        if leaf_id not in steps:
+            return []
+        route = [steps[leaf_id]]
+        seen = {leaf_id}
+        current_id = leaf_id
+        while True:
+            parents = self._parents(current_id, edges)
+            if not parents:
+                break
+            parent_id = parents[0]
+            if parent_id in seen or parent_id not in steps:
+                break
+            route.append(steps[parent_id])
+            seen.add(parent_id)
+            current_id = parent_id
+        return route
+
+    def _public_step_label(self, public_step: dict) -> str:
+        if public_step.get("unit_id"):
+            path = public_step.get("unit_path") or []
+            cfo = path[-2] if len(path) >= 2 else None
+            unit = public_step.get("unit") or {}
+            module = unit.get("name") or (path[-1] if path else None)
+            label = " \\ ".join(part for part in (cfo, module) if part)
+            return label or "Модуль"
+        user = public_step.get("user") or {}
+        profile = user.get("profile") or {}
+        full_name = " ".join(
+            part for part in (profile.get("last_name"), profile.get("name"), profile.get("second_name")) if part
+        ).strip()
+        name = full_name or user.get("login") or "Без назначения"
+        if user.get("role") == "zgd":
+            return f"ЗГД · {name}"
+        return name
+
+    def preview_delete_edge(self, user: dict, payload: dict) -> dict:
+        """Show a compact affected subgraph before/after removing an edge."""
+        self.permissions.require_admin(user)
+        parent_id = payload["parent_step_id"]
+        child_id = payload["child_step_id"]
+        edges = self._edges(self.repo)
+        edge = next(
+            (
+                item
+                for item in edges
+                if item["parent_step_id"] == parent_id and item["child_step_id"] == child_id
+            ),
+            None,
+        )
+        if not edge:
+            raise HTTPException(status_code=404, detail="Связь не найдена")
+
+        steps = self._steps(self.repo)
+        public_by_id = {
+            item["id"]: item
+            for item in self._public_steps(self.repo, list(steps.values()))
+        }
+        remaining_edges = [
+            item
+            for item in edges
+            if not (item["parent_step_id"] == parent_id and item["child_step_id"] == child_id)
+        ]
+
+        affected_leaf_ids: list[str] = []
+        before_node_ids: set[str] = set()
+        after_node_ids: set[str] = set()
+        for leaf in steps.values():
+            if not leaf.get("unit_id"):
+                continue
+            before = self._route_from_leaf(steps, edges, leaf["id"])
+            before_ids = [item["id"] for item in before]
+            uses_edge = any(
+                before_ids[index] == child_id and before_ids[index + 1] == parent_id
+                for index in range(len(before_ids) - 1)
+            )
+            if not uses_edge:
+                continue
+            affected_leaf_ids.append(leaf["id"])
+            before_node_ids.update(before_ids)
+            after = self._route_from_leaf(steps, remaining_edges, leaf["id"])
+            after_node_ids.update(item["id"] for item in after)
+
+        def graph_payload(node_ids: set[str], edge_list: list[dict]) -> dict:
+            nodes = []
+            for step_id in node_ids:
+                public = public_by_id.get(step_id)
+                raw = steps.get(step_id)
+                if not public or not raw:
+                    continue
+                role = (public.get("user") or {}).get("role")
+                kind = "leaf" if raw.get("unit_id") else ("zgd" if role == "zgd" else "review")
+                nodes.append(
+                    {
+                        "id": step_id,
+                        "label": self._public_step_label(public),
+                        "kind": kind,
+                    }
+                )
+            graph_edges = [
+                {
+                    "parent_step_id": item["parent_step_id"],
+                    "child_step_id": item["child_step_id"],
+                }
+                for item in edge_list
+                if item["parent_step_id"] in node_ids and item["child_step_id"] in node_ids
+            ]
+            return {"nodes": nodes, "edges": graph_edges}
+
+        past_statuses = {
+            StepStatus.on_approval,
+            StepStatus.on_revision,
+            StepStatus.approved,
+            StepStatus.closed,
+        }
+        approved_past_count = 0
+        for request in self.repo.load_all("requests"):
+            if request.get("status") == RequestStatus.cancelled:
+                continue
+            route = self._request_route(self.repo, request["unit_id"])
+            route_ids = [item["id"] for item in route]
+            edge_index = next(
+                (
+                    index
+                    for index in range(len(route_ids) - 1)
+                    if route_ids[index] == child_id and route_ids[index + 1] == parent_id
+                ),
+                None,
+            )
+            if edge_index is None:
+                continue
+            for step in route[edge_index + 1 :]:
+                status = self._request_step_state(self.repo, step, request["id"])["status"]
+                if status in past_statuses:
+                    approved_past_count += 1
+                    break
+
+        return {
+            "removed_edge": {"parent_step_id": parent_id, "child_step_id": child_id},
+            "before_graph": graph_payload(before_node_ids, edges),
+            "after_graph": graph_payload(after_node_ids, remaining_edges),
+            "affected_leaf_count": len(affected_leaf_ids),
+            "has_approved_past": approved_past_count > 0,
+            "approved_past_count": approved_past_count,
+        }
 
     def validate_graph(self, user: dict) -> dict:
         self.permissions.require_admin(user)
@@ -2357,7 +2519,7 @@ class ApprovalService:
         return result
 
     def _request_package(self, repo: Repository, request: dict) -> tuple[str, str]:
-        """Requests from different CFOs stay independent at a shared route step."""
+        """Parent unit (ЦФО) of a request module — for display only, not package boundaries."""
         units = {item["id"]: item for item in repo.load_all("units")}
         unit = units.get(request.get("unit_id"))
         if not unit:
@@ -2547,6 +2709,7 @@ class ApprovalService:
                     and (is_final or not reviewed)
                 ),
                 "can_forward": can_forward,
+                "package_request_ids": [item["id"] for item in step_requests],
                 "can_return": state["status"] in {StepStatus.on_approval, StepStatus.on_revision},
                 "is_final": is_final,
             }
@@ -2615,15 +2778,19 @@ class ApprovalService:
             if step_id in self._root_ids(repo):
                 raise HTTPException(status_code=400, detail="ЗГД фиксирует каждую поступившую заявку из её карточки")
             requests = self._requests_for_route_step(repo, step_id)
+            if not requests:
+                raise HTTPException(status_code=400, detail="Для этого шага нет заявок")
             requested_ids = set(request_ids or [])
             if requested_ids:
                 selected_requests = [request for request in requests if request["id"] in requested_ids]
                 if len(selected_requests) != len(requested_ids):
                     raise HTTPException(status_code=400, detail="В пакет можно включать только заявки текущего шага")
                 if {request["id"] for request in requests} != requested_ids:
-                    raise HTTPException(status_code=409, detail="В пакет должны входить все заявки цепочки на этом шаге")
-            if not requests:
-                raise HTTPException(status_code=400, detail="Для этого шага нет заявок")
+                    raise HTTPException(
+                        status_code=409,
+                        detail="В пакет должны входить все заявки, поступившие на этот шаг",
+                    )
+                requests = selected_requests
             not_delivered = [
                 request
                 for request in requests

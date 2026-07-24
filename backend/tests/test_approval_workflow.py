@@ -184,3 +184,54 @@ def test_cancel_is_available_only_for_a_draft(tmp_path):
     assert client.post(f"/requests/{request_id}/cancel", headers=employee).status_code == 400
     draft = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
     assert client.post(f"/requests/{draft['id']}/cancel", headers=employee).status_code == 200
+
+
+def test_edge_delete_preview_warns_about_approved_past(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    admin = auth(client, "admin", "admin")
+    request_id, item_id = create_submitted_request(client, employee)
+    finalize_by_economist(client, request_id, item_id, economist)
+
+    preview = client.post(
+        "/step-edges/preview-delete",
+        json={"parent_step_id": APPROVER_STEP_ID, "child_step_id": LEAF_STEP_ID},
+        headers=admin,
+    )
+    assert preview.status_code == 200
+    body = preview.json()
+    assert body["has_approved_past"] is True
+    assert body["approved_past_count"] >= 1
+    assert body["before_graph"]["nodes"]
+    assert body["before_graph"]["edges"]
+    assert body["removed_edge"] == {
+        "parent_step_id": APPROVER_STEP_ID,
+        "child_step_id": LEAF_STEP_ID,
+    }
+    assert len(body["after_graph"]["edges"]) < len(body["before_graph"]["edges"])
+
+
+def test_empty_reviewer_step_can_be_created_linked_and_deleted(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    users = client.get("/users", headers=admin).json()
+    approver = next(user for user in users if user["login"] == "approver")
+
+    created = client.post(
+        "/steps",
+        json={"user_id": approver["id"], "child_step_id": LEAF_STEP_ID},
+        headers=admin,
+    )
+    assert created.status_code == 200
+    step = created.json()
+    assert LEAF_STEP_ID in step["child_step_ids"]
+    assert client.delete(f"/steps/{step['id']}", headers=admin).status_code == 200
+
+    request_id, item_id = create_submitted_request(client, employee)
+    finalize_by_economist(client, request_id, item_id, economist)
+    blocked = client.delete(f"/steps/{APPROVER_STEP_ID}", headers=admin)
+    assert blocked.status_code == 400
+    assert "поступали заявки" in blocked.json()["detail"]

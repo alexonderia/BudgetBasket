@@ -14,6 +14,7 @@ import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import SendIcon from '@mui/icons-material/Send';
 import UndoIcon from '@mui/icons-material/Undo';
+import CheckIcon from '@mui/icons-material/Check';
 import CloseIcon from '@mui/icons-material/Close';
 import Alert from '@mui/material/Alert';
 import Accordion from '@mui/material/Accordion';
@@ -43,7 +44,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
@@ -51,12 +52,12 @@ import { requestChatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
-import { ItemStatusBadge, RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
+import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
 import type { ApprovalStep, BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, Profile, StepLog, StepStatus, Unit, User } from '../types';
 import { CLOSED_REQUEST_STATUSES } from '../types';
 import { downloadAuthorized, downloadBlob } from '../utils/download';
 import { itemStatusLabels, money, requestStatusLabels, stepStatusLabels } from '../utils/labels';
-import { useTableColumnControls, type TableColumnDefinition } from '../utils/tableColumns';
+import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { normalizePositiveAmount } from '../utils/validation';
 
 const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
@@ -77,6 +78,7 @@ type RequestApprovalAction = {
   request_status: StepStatus;
   can_approve: boolean;
   can_forward: boolean;
+  package_request_ids?: string[];
   can_return: boolean;
   is_final: boolean;
 };
@@ -298,6 +300,16 @@ function approvalUserName(user: User | null) {
   return [profile?.last_name, profile?.name, profile?.second_name].filter(Boolean).join(' ') || user.login;
 }
 
+function approvalUserContacts(user: User | null) {
+  if (!user?.profile) return 'Контакты не указаны';
+  const parts = [
+    user.profile.phone,
+    user.profile.email,
+    user.profile.max_link ? `Max: ${user.profile.max_link}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'Контакты не указаны';
+}
+
 function approvalStepTitle(step: ApprovalStep) {
   if (step.unit_id) {
     const unitName = [step.cfo?.name || step.unit_path.at(-2), step.unit?.name || step.unit_path.at(-1)]
@@ -306,6 +318,56 @@ function approvalStepTitle(step: ApprovalStep) {
     return `Экономист · ${unitName}`;
   }
   return step.user?.role === 'zgd' ? 'ЗГД' : `Согласующий · ${approvalUserName(step.user)}`;
+}
+
+function approvalRouteStepState(status: StepStatus | undefined): 'completed' | 'active' | 'pending' {
+  if (status === 'approved' || status === 'closed') return 'completed';
+  if (status === 'on_approval' || status === 'on_revision') return 'active';
+  return 'pending';
+}
+
+function approvalRouteActiveIndex(route: RequestApprovalRouteStep[]) {
+  const activeIndex = route.findIndex(({ step }) => approvalRouteStepState(step.request_status || step.status) === 'active');
+  if (activeIndex >= 0) return activeIndex;
+  let lastCompleted = -1;
+  route.forEach(({ step }, index) => {
+    if (approvalRouteStepState(step.request_status || step.status) === 'completed') lastCompleted = index;
+  });
+  if (lastCompleted < 0) return 0;
+  return Math.min(lastCompleted + 1, route.length - 1);
+}
+
+function ApprovalRouteStepper({
+  route,
+  orientation,
+}: {
+  route: RequestApprovalRouteStep[];
+  orientation: 'horizontal' | 'vertical';
+}) {
+  return (
+    <Box className={`approval-route-stepper approval-route-stepper--${orientation}`} role="list">
+      {route.map(({ step }, index) => {
+        const state = approvalRouteStepState(step.request_status || step.status);
+        const prevCompleted = index > 0
+          && approvalRouteStepState(route[index - 1].step.request_status || route[index - 1].step.status) === 'completed';
+        return (
+          <Box key={step.id} className={`approval-route-step approval-route-step--${state}`} role="listitem">
+            <Box className="approval-route-step-track" aria-hidden>
+              <Box className={`approval-route-step-line approval-route-step-line--before${index === 0 ? ' approval-route-step-line--hidden' : ''}${prevCompleted ? ' approval-route-step-line--done' : ''}`} />
+              <Box className="approval-route-step-marker">
+                {state === 'completed' ? <CheckIcon sx={{ fontSize: 16 }} /> : String(index + 1).padStart(2, '0')}
+              </Box>
+              <Box className={`approval-route-step-line approval-route-step-line--after${index === route.length - 1 ? ' approval-route-step-line--hidden' : ''}${state === 'completed' ? ' approval-route-step-line--done' : ''}`} />
+            </Box>
+            <Box className="approval-route-step-copy">
+              <Typography className="approval-route-step-name">{approvalUserName(step.user)}</Typography>
+              <Typography className="approval-route-step-contacts">{approvalUserContacts(step.user)}</Typography>
+            </Box>
+          </Box>
+        );
+      })}
+    </Box>
+  );
 }
 
 function historyValue(value: unknown, field: string, entity: string, action: string) {
@@ -594,7 +656,7 @@ function AddItemForm({
         onChange={(_, value) => setArticle(value)}
         getOptionLabel={(item) => catalogLabel(item, catalog)}
         disabled={disabled}
-        sx={{ minWidth: 360, flex: 1 }}
+        sx={{ minWidth: { xs: 0, sm: 280 }, width: { xs: '100%', lg: 'auto' }, flex: 1 }}
         renderInput={(params) => (
           <TextField
             {...params}
@@ -609,16 +671,16 @@ function AddItemForm({
         value={sumPlan}
         onChange={(event) => setSumPlan(normalizePositiveAmount(event.target.value))}
         disabled={disabled}
-        sx={{ minWidth: 160 }}
+        sx={{ minWidth: { xs: 0, sm: 140 }, width: { xs: '100%', lg: 'auto' } }}
       />
       <TextField
         label="Наименование"
         value={name}
         onChange={(event) => setName(event.target.value)}
         disabled={disabled}
-        sx={{ minWidth: 220, flex: 1 }}
+        sx={{ minWidth: { xs: 0, sm: 200 }, width: { xs: '100%', lg: 'auto' }, flex: 1 }}
       />
-        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || !name.trim() || Number(sumPlan) <= 0 || create.isPending}>
+        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || !name.trim() || Number(sumPlan) <= 0 || create.isPending} sx={{ width: { xs: '100%', lg: 'auto' } }}>
           {isIncome ? 'Добавить доход' : 'Добавить расход'}
         </Button>
       </Stack>
@@ -680,7 +742,6 @@ function ItemsTable({
   const toast = useAppToast();
   const [drafts, setDrafts] = useState<Record<string, Partial<BudgetItem>>>({});
   const [isEmployeeEditing, setIsEmployeeEditing] = useState(false);
-  const [columnWidths, setColumnWidths] = useState<Record<ItemTableColumn, number>>(DEFAULT_ITEM_TABLE_COLUMN_WIDTHS);
   const [stagedFilesByItem, setStagedFilesByItem] = useState<Record<string, File[]>>({});
   const [pendingDeletedFileIdsByItem, setPendingDeletedFileIdsByItem] = useState<Record<string, number[]>>({});
   const [deleteTarget, setDeleteTarget] = useState<BudgetItem | null>(null);
@@ -737,6 +798,35 @@ function ItemsTable({
     visibility: itemVisibility,
     visibleColumns: visibleItemColumns,
   } = useTableColumnControls({ rows: items, columns: itemTableDefinitions });
+  const itemAutoFitValues = useMemo(() => {
+    const values = {} as Record<ItemTableColumn, Array<string | number>>;
+    itemTableDefinitions.forEach((column) => {
+      if (column.id === 'actions') {
+        values[column.id] = [column.label, 'Сохранить', 'Удалить'];
+        return;
+      }
+      if (column.id === 'files') {
+        values[column.id] = [column.label, 'Файл'];
+        return;
+      }
+      values[column.id] = [
+        column.label,
+        ...items.map((item) => {
+          const value = column.getValue(item);
+          return value == null || value === '' ? '—' : String(value);
+        }),
+      ];
+    });
+    return values;
+  }, [itemTableDefinitions, items]);
+  const { columnWidths, resetColumnWidths, resizeColumn, autoFitColumn } = useTableColumnWidths(
+    DEFAULT_ITEM_TABLE_COLUMN_WIDTHS,
+    ITEM_TABLE_COLUMN_MIN_WIDTHS,
+    itemAutoFitValues,
+  );
+  const fitItemColumn = (columnId: ItemTableColumn) => {
+    autoFitColumn(columnId, itemAutoFitValues[columnId] || [columnId]);
+  };
   const renderItemHeader = (
     columnId: ItemTableColumn,
     label: string,
@@ -758,7 +848,8 @@ function ItemsTable({
       onSelectAllFilterValues={() => setAllItemFilterOptions(columnId)}
       onClearColumnFilter={() => clearItemColumnFilter(columnId)}
       onClearVisibleFilterValues={() => setItemVisibleFilterOptions(columnId, false)}
-      endAdornment={resizeHandle(columnId)}
+      onResize={(event) => resizeColumn(columnId, event)}
+      onAutoFit={() => fitItemColumn(columnId)}
     />
   );
   const renderItemCell = (
@@ -993,22 +1084,6 @@ function ItemsTable({
   };
   const tableWidth = visibleItemColumns.reduce((sum, column) => sum + columnWidths[column.id], 0);
 
-  const resizeColumn = (column: ItemTableColumn, event: ReactPointerEvent<HTMLSpanElement>) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = columnWidths[column];
-    const onMove = (moveEvent: PointerEvent) => {
-      const nextWidth = Math.max(ITEM_TABLE_COLUMN_MIN_WIDTHS[column], startWidth + moveEvent.clientX - startX);
-      setColumnWidths((current) => ({ ...current, [column]: nextWidth }));
-    };
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  };
-
   const headerCell = (column: ItemTableColumn) => ({
     width: itemVisibility[column] ? columnWidths[column] : 0,
     minWidth: itemVisibility[column] ? columnWidths[column] : 0,
@@ -1025,38 +1100,6 @@ function ItemsTable({
     display: itemVisibility[column] ? 'table-cell' : 'none',
     ...sx,
   });
-
-  const resizeHandle = (column: ItemTableColumn) => (
-    <Tooltip title="Перетащите для изменения ширины колонки" placement="top">
-      <Box
-        component="span"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Изменить ширину колонки"
-        onPointerDown={(event) => resizeColumn(column, event)}
-        sx={{
-          position: 'absolute',
-          top: 0,
-          right: -4,
-          zIndex: 2,
-          width: 8,
-          height: '100%',
-          cursor: 'col-resize',
-          touchAction: 'none',
-          '&:hover::after': {
-            content: '""',
-            position: 'absolute',
-            top: 8,
-            bottom: 8,
-            left: 3,
-            width: 2,
-            borderRadius: 1,
-            bgcolor: 'primary.main',
-          },
-        }}
-      />
-    </Tooltip>
-  );
 
   const patch = useMutation({
     mutationFn: ({ id, body }: { id: string; body: Partial<BudgetItem> }) => api.patch(`/items/${id}`, body),
@@ -1164,7 +1207,7 @@ function ItemsTable({
               onToggleColumn={toggleItemVisibility}
               onResetColumns={resetItemVisibility}
               onResetFilters={resetItemFilters}
-              onResetWidths={() => setColumnWidths(DEFAULT_ITEM_TABLE_COLUMN_WIDTHS)}
+              onResetWidths={resetColumnWidths}
               hasActiveFilters={hasActiveItemFilters}
             />
           </Stack>
@@ -1201,7 +1244,7 @@ function ItemsTable({
             <Tooltip title="Сбросить ширину колонок">
               <IconButton
                 size="small"
-                onClick={() => setColumnWidths(DEFAULT_ITEM_TABLE_COLUMN_WIDTHS)}
+                onClick={resetColumnWidths}
                 aria-label="Сбросить ширину колонок"
               >
                 <RestartAltIcon fontSize="small" />
@@ -1513,7 +1556,9 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     onError: (error) => toast(getErrorMessage(error, 'Не удалось согласовать заявку'), 'error'),
   });
   const forwardApprovalPackage = useMutation({
-    mutationFn: () => api.post(`/steps/${approvalAction?.step.id}/approve`),
+    mutationFn: () => api.post(`/steps/${approvalAction?.step.id}/approve`, {
+      request_ids: approvalAction?.package_request_ids || [],
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: detailsKey });
       queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-action'] });
@@ -1855,27 +1900,41 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           </CardContent>
         </Card>
 
-        <Paper className="surface-pad" elevation={0}>
-            <Stack spacing={2}>
+        <Paper className="surface-pad approval-route-paper" elevation={0}>
+            <Stack spacing={1.5}>
               <Box>
                 <Typography variant="h6">Маршрут согласования заявки</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  Статус заявки показывает результат проверки экономиста, а ниже — её состояние на каждом шаге маршрута.
+                  Согласующие по маршруту заявки и их контакты.
                 </Typography>
               </Box>
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} useFlexGap>
-              {approvalRoute.map(({ step }) => {
-                const stepTitle = approvalStepTitle(step);
-                return (
-                  <Stack key={step.id} spacing={0.75} sx={{ flex: 1, minWidth: 190, p: 1.5, border: 1, borderColor: 'divider', borderRadius: 2 }}>
-                    <Typography fontWeight={700}>{stepTitle}</Typography>
-                    <StepStatusBadge status={step.request_status || step.status} />
-                    <Typography variant="caption" color="text.secondary">{approvalUserName(step.user)}</Typography>
-                  </Stack>
-                );
-              })}
-              </Stack>
-              {!approvalRoute.length && (
+              {approvalRoute.length > 0 ? (
+                <>
+                  <Accordion className="approval-route-mobile-accordion" disableGutters elevation={0} defaultExpanded={false}>
+                    <AccordionSummary expandIcon={<ExpandMoreIcon />} className="approval-route-mobile-summary">
+                      {(() => {
+                        const activeIndex = approvalRouteActiveIndex(approvalRoute);
+                        const activeStep = approvalRoute[activeIndex]?.step;
+                        return (
+                          <Stack spacing={0.25} minWidth={0}>
+                            <Typography variant="body2" fontWeight={700} noWrap>
+                              {approvalUserName(activeStep?.user || null)}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary">
+                              Шаг {activeIndex + 1} из {approvalRoute.length}
+                              {activeStep ? ` · ${stepStatusLabels[activeStep.request_status || activeStep.status]}` : ''}
+                            </Typography>
+                          </Stack>
+                        );
+                      })()}
+                    </AccordionSummary>
+                    <AccordionDetails className="approval-route-mobile-details">
+                      <ApprovalRouteStepper route={approvalRoute} orientation="vertical" />
+                    </AccordionDetails>
+                  </Accordion>
+                  <ApprovalRouteStepper route={approvalRoute} orientation="horizontal" />
+                </>
+              ) : (
                 <Typography variant="body2" color="text.secondary">Для заявки пока не создан маршрут согласования.</Typography>
               )}
             </Stack>

@@ -31,8 +31,10 @@ import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import { useTheme } from '@mui/material/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -43,6 +45,7 @@ import type { BudgetItem, BudgetRequest, CatalogItem, RequestStatus, Unit, User 
 import { EXPORTABLE_REQUEST_STATUSES } from '../types';
 import { downloadBlob } from '../utils/download';
 import { money, requestStatusLabels } from '../utils/labels';
+import { filterFieldSx } from '../utils/responsive';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -84,6 +87,8 @@ export default function RequestsPage({ user }: { user: User }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useAppToast();
+  const theme = useTheme();
+  const fullScreenDialog = useMediaQuery(theme.breakpoints.down('sm'));
   const [filters, setFilters] = useState({ status: '', frozen: '' });
   const [requestColumnOrder, setRequestColumnOrder] = useState<RequestTableColumn[]>(['actions', 'unit', 'status', 'my_step', 'planned', 'approved', 'items_count']);
   const [draggedRequestColumn, setDraggedRequestColumn] = useState<RequestTableColumn | null>(null);
@@ -177,16 +182,51 @@ export default function RequestsPage({ user }: { user: User }) {
   const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
   const forwardPackages = useMemo(() => {
     if (user.role !== 'approver') return [];
-    const groups = new Map<string, { stepId: string; requests: BudgetRequest[] }>();
+    const packageKeys = new Map<string, { stepId: string; packageName: string }>();
     filteredRequests.forEach((request) => {
-      const step = request.my_step_statuses?.find((item) => item.status === 'on_approval');
-      if (!step) return;
-      const key = step.step_id;
-      const group = groups.get(key) || { stepId: step.step_id, requests: [] };
-      group.requests.push(request);
-      groups.set(key, group);
+      (request.my_step_statuses || []).forEach((step) => {
+        // One package = all requests that share the same route step.
+        if (!['on_approval', 'on_revision', 'approved'].includes(step.status)) return;
+        packageKeys.set(step.step_id, {
+          stepId: step.step_id,
+          packageName: 'Цепочка согласования',
+        });
+      });
     });
-    return [...groups.values()];
+    const groups = new Map<string, {
+      stepId: string;
+      packageName: string;
+      requests: BudgetRequest[];
+      forwarded: boolean;
+    }>();
+    filteredRequests.forEach((request) => {
+      (request.my_step_statuses || []).forEach((step) => {
+        const meta = packageKeys.get(step.step_id);
+        if (!meta) return;
+        if (!['waiting', 'on_approval', 'on_revision', 'approved'].includes(step.status)) return;
+        const group = groups.get(step.step_id) || { ...meta, requests: [], forwarded: false };
+        if (!group.requests.some((item) => item.id === request.id)) {
+          group.requests.push(request);
+        }
+        groups.set(step.step_id, group);
+      });
+    });
+    return [...groups.values()]
+      .map((group) => {
+        const atStep = group.requests.filter((request) => (
+          request.my_step_statuses?.some((step) => step.step_id === group.stepId && step.status === 'on_approval')
+        ));
+        const forwarded = group.requests.length > 0
+          && atStep.length === 0
+          && group.requests.every((request) => (
+            request.my_step_statuses?.some((step) => step.step_id === group.stepId && step.status === 'approved')
+          ));
+        return { ...group, forwarded };
+      })
+      .sort((left, right) => {
+        if (left.forwarded !== right.forwarded) return left.forwarded ? 1 : -1;
+        return left.stepId.localeCompare(right.stepId);
+      });
   }, [filteredRequests, user.role]);
   const packageByRequestId = useMemo(() => new Map(
     forwardPackages.flatMap((packageItem) => packageItem.requests.map((request) => [request.id, packageItem] as const)),
@@ -354,20 +394,39 @@ export default function RequestsPage({ user }: { user: User }) {
       ...visibleRequests.filter((request) => !packagedIds.has(request.id)),
     ];
   }, [forwardPackages, packageByRequestId, user.role, visibleRequests]);
-  const { columnWidths: requestColumnWidths, resetColumnWidths: resetRequestColumnWidths, resizeColumn: resizeRequestColumn, autoFitColumn: autoFitRequestColumn } = useTableColumnWidths(REQUEST_TABLE_COLUMN_WIDTHS, REQUEST_TABLE_COLUMN_MIN_WIDTHS);
+  const requestColumnLabels: Record<RequestTableColumn, string> = {
+    actions: 'Действие',
+    unit: 'Объединение заявки',
+    status: 'Статус',
+    my_step: 'Мой этап',
+    planned: 'План',
+    approved: 'Утверждено',
+    items_count: 'Строк',
+  };
+  const requestAutoFitValues = useMemo(() => {
+    const values = {} as Record<RequestTableColumn, Array<string | number>>;
+    (Object.keys(REQUEST_TABLE_COLUMN_WIDTHS) as RequestTableColumn[]).forEach((columnId) => {
+      const cellValues = tableRequests.map((item) => {
+        if (columnId === 'unit') return formatUnitName(item.unit_id);
+        if (columnId === 'status') return requestStatusLabels[item.status] || item.status;
+        if (columnId === 'my_step') return item.my_step_statuses?.map((step) => step.reviewed ? 'Согласовано' : step.status).join(', ') || '—';
+        if (columnId === 'planned') return money(item.summary?.planned_sum);
+        if (columnId === 'approved') return money(item.summary?.approved_sum ?? item.sum);
+        if (columnId === 'items_count') return item.summary?.items_count || 0;
+        return 'Удалить';
+      });
+      values[columnId] = [requestColumnLabels[columnId], ...cellValues];
+    });
+    return values;
+  }, [tableRequests, units]);
+  const { columnWidths: requestColumnWidths, resetColumnWidths: resetRequestColumnWidths, resizeColumn: resizeRequestColumn, autoFitColumn: autoFitRequestColumn } = useTableColumnWidths(
+    REQUEST_TABLE_COLUMN_WIDTHS,
+    REQUEST_TABLE_COLUMN_MIN_WIDTHS,
+    requestAutoFitValues,
+  );
   const requestTableWidth = visibleRequestColumns.reduce((sum, column) => sum + requestColumnWidths[column.id], 0);
   const fitRequestColumn = (columnId: RequestTableColumn) => {
-    const labels: Record<RequestTableColumn, string> = { actions: 'Действие', unit: 'Объединение заявки', status: 'Статус', my_step: 'Мой этап', planned: 'План', approved: 'Утверждено', items_count: 'Строк' };
-    const values = tableRequests.map((item) => {
-      if (columnId === 'unit') return formatUnitName(item.unit_id);
-      if (columnId === 'status') return requestStatusLabels[item.status] || item.status;
-      if (columnId === 'my_step') return item.my_step_statuses?.map((step) => step.reviewed ? 'Согласовано' : step.status).join(', ') || '—';
-      if (columnId === 'planned') return money(item.summary?.planned_sum);
-      if (columnId === 'approved') return money(item.summary?.approved_sum ?? item.sum);
-      if (columnId === 'items_count') return item.summary?.items_count || 0;
-      return 'Удалить';
-    });
-    autoFitRequestColumn(columnId, [labels[columnId], ...values]);
+    autoFitRequestColumn(columnId, requestAutoFitValues[columnId] || [requestColumnLabels[columnId]]);
   };
   const moveRequestColumn = (target: RequestTableColumn) => {
     if (!draggedRequestColumn || draggedRequestColumn === target) return;
@@ -469,8 +528,8 @@ export default function RequestsPage({ user }: { user: User }) {
       <Paper className="surface-pad" elevation={0}>
         <Stack spacing={1.5}>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }} justifyContent="space-between">
-            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ flex: 1 }}>
-              <TextField select label="Статус" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))} sx={{ minWidth: 220 }}>
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} className="page-filters" sx={{ flex: 1 }}>
+              <TextField select label="Статус" value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))} sx={filterFieldSx(220)}>
                 <MenuItem value="">Все</MenuItem>
                 {Object.entries(requestStatusLabels).map(([value, label]) => (
                   <MenuItem key={value} value={value}>
@@ -478,7 +537,7 @@ export default function RequestsPage({ user }: { user: User }) {
                   </MenuItem>
                 ))}
               </TextField>
-              <TextField select label="Блокировка заявки" value={filters.frozen} onChange={(event) => setFilters((current) => ({ ...current, frozen: event.target.value }))} sx={{ minWidth: 220 }}>
+              <TextField select label="Блокировка заявки" value={filters.frozen} onChange={(event) => setFilters((current) => ({ ...current, frozen: event.target.value }))} sx={filterFieldSx(220)}>
                 <MenuItem value="">Все заявки</MenuItem>
                 <MenuItem value="frozen">Замороженные экономистом</MenuItem>
                 <MenuItem value="fixed">Зафиксированные ЗГД</MenuItem>
@@ -518,7 +577,7 @@ export default function RequestsPage({ user }: { user: User }) {
         </Stack>
       </Paper>
 
-      <Dialog open={exportOpen} onClose={() => setExportOpen(false)} fullWidth maxWidth="sm" className="export-dialog">
+      <Dialog open={exportOpen} onClose={() => setExportOpen(false)} fullWidth maxWidth="sm" fullScreen={fullScreenDialog} className="export-dialog">
         <DialogTitle>Настройки экспорта</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2.5} sx={{ pt: 0.5 }}>
@@ -674,28 +733,58 @@ export default function RequestsPage({ user }: { user: User }) {
               const unitName = formatUnitName(item.unit_id);
               const packageItem = packageByRequestId.get(item.id);
               const isPackageStart = packageItem?.requests[0]?.id === item.id;
-              const reviewedCount = packageItem?.requests.filter((request) => request.my_step_statuses?.some((step) => step.step_id === packageItem.stepId && step.reviewed)).length || 0;
-              const packageReady = !!packageItem && reviewedCount === packageItem.requests.length;
+              const atStepRequests = packageItem?.requests.filter((request) => (
+                request.my_step_statuses?.some((step) => step.step_id === packageItem.stepId && step.status === 'on_approval')
+              )) || [];
+              const reviewedCount = packageItem?.forwarded
+                ? packageItem.requests.length
+                : atStepRequests.filter((request) => (
+                  request.my_step_statuses?.some((step) => step.step_id === packageItem!.stepId && step.reviewed)
+                )).length;
+              const packageReady = !!packageItem && !packageItem.forwarded && atStepRequests.length > 0 && reviewedCount === atStepRequests.length;
               return (
-                <>
+                <Fragment key={item.id}>
                 {isPackageStart && packageItem && (
-                  <TableRow key={`package-${packageItem.stepId}`} sx={{ bgcolor: packageReady ? '#F0FDF4' : '#F8FAFC' }}>
+                  <TableRow key={`package-${packageItem.stepId}`} sx={{ bgcolor: packageItem.forwarded || packageReady ? '#F0FDF4' : '#F8FAFC' }}>
                     <TableCell colSpan={visibleRequestColumns.length} sx={{ py: 1.25 }}>
                       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
                         <Box flex={1}>
-                          <Typography fontWeight={700}>Цепочка согласования</Typography>
-                          <Typography variant="body2" color="text.secondary">Заявок в пакете: {packageItem.requests.length} · согласовано: {reviewedCount}/{packageItem.requests.length}</Typography>
+                          <Typography fontWeight={700}>{packageItem.packageName || 'Цепочка согласования'}</Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            {packageItem.forwarded
+                              ? `Заявок в пакете: ${packageItem.requests.length} · передан дальше`
+                              : `Заявок в пакете: ${packageItem.requests.length} · согласовано: ${reviewedCount}/${atStepRequests.length || packageItem.requests.length}`}
+                          </Typography>
                         </Box>
-                        <Button size="small" variant="contained" startIcon={<FactCheckIcon />} disabled={!packageReady || forwardPackage.isPending} onClick={() => forwardPackage.mutate({ stepId: packageItem.stepId, requestIds: packageItem.requests.map((request) => request.id) })}>Передать пакет</Button>
+                        {packageItem.forwarded ? (
+                          <Button size="small" variant="outlined" color="success" disabled>
+                            Пакет передан
+                          </Button>
+                        ) : (
+                          <Button
+                            size="small"
+                            variant="contained"
+                            startIcon={<FactCheckIcon />}
+                            disabled={!packageReady || forwardPackage.isPending}
+                            onClick={() => forwardPackage.mutate({
+                              stepId: packageItem.stepId,
+                              requestIds: atStepRequests.map((request) => request.id),
+                            })}
+                          >
+                            Передать пакет
+                          </Button>
+                        )}
                       </Stack>
                     </TableCell>
                   </TableRow>
                 )}
                 <TableRow
-                  key={item.id}
                   hover
                   onClick={() => navigate(`/requests/${item.id}`)}
-                  sx={{ cursor: 'pointer' }}
+                  sx={{
+                    cursor: 'pointer',
+                    ...(packageItem ? { borderLeft: '3px solid', borderLeftColor: 'primary.light' } : {}),
+                  }}
                   className={item.frozen ? 'fixed-request' : ''}
                 >
                   {visibleRequestColumns.map((column) => renderRequestCell(item, column.id))}
@@ -750,7 +839,7 @@ export default function RequestsPage({ user }: { user: User }) {
                   {requestVisibility.items_count && <TableCell>{item.summary?.items_count || 0}</TableCell>}
                   </>}
                 </TableRow>
-                </>
+                </Fragment>
               );
             })}
             {visibleRequests.length === 0 && (

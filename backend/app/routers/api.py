@@ -107,6 +107,11 @@ def create_step_edge(request: Request, payload: StepEdgeIn, user: User):
     return request.app.state.approval_service.create_edge(user, payload.model_dump())
 
 
+@router.post("/step-edges/preview-delete")
+def preview_delete_step_edge(request: Request, payload: StepEdgeIn, user: User):
+    return request.app.state.approval_service.preview_delete_edge(user, payload.model_dump())
+
+
 @router.delete("/step-edges")
 def delete_step_edge(request: Request, payload: StepEdgeIn, user: User):
     request.app.state.approval_service.delete_edge(user, payload.model_dump())

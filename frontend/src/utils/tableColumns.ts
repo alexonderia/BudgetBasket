@@ -1,4 +1,4 @@
-import { useMemo, useState, type PointerEvent } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 
 export type TableSortDirection = 'asc' | 'desc';
 
@@ -25,14 +25,61 @@ export type TableColumnDefinition<T, K extends string> = {
   getSortValue?: (row: T) => string | number | boolean | null | undefined;
 };
 
+function measureFittedWidth(values: Array<string | number>, minimumWidth: number, maximumWidth: number) {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  if (!context) return minimumWidth;
+  context.font = '14px Roboto, Arial, sans-serif';
+  const widest = Math.max(...values.map((value) => context.measureText(String(value)).width), 0);
+  return Math.min(maximumWidth, Math.max(minimumWidth, Math.ceil(widest + 48)));
+}
+
+/** Upper bound for auto-fit only; manual drag-resize is unlimited. */
+export const TABLE_COLUMN_MAX_WIDTH = 420;
+
 export function useTableColumnWidths<K extends string>(
   initialWidths: Record<K, number>,
   minimumWidths: Record<K, number>,
+  autoFitValues?: Partial<Record<K, Array<string | number>>>,
+  maximumWidth: number = TABLE_COLUMN_MAX_WIDTH,
 ) {
   const [columnWidths, setColumnWidths] = useState<Record<K, number>>(() => ({ ...initialWidths }));
+  const userAdjustedRef = useRef(false);
+  const lastAutoFitKeyRef = useRef('');
+
+  const autoFitColumns = (valuesByColumn: Partial<Record<K, Array<string | number>>>) => {
+    setColumnWidths((current) => {
+      const next = { ...current };
+      (Object.keys(valuesByColumn) as K[]).forEach((columnId) => {
+        const values = valuesByColumn[columnId];
+        if (!values) return;
+        next[columnId] = measureFittedWidth(values, minimumWidths[columnId], maximumWidth);
+      });
+      return next;
+    });
+  };
+
+  const autoFitColumn = (columnId: K, values: Array<string | number>) => {
+    autoFitColumns({ [columnId]: values } as Partial<Record<K, Array<string | number>>>);
+  };
+
+  const autoFitKey = useMemo(() => {
+    if (!autoFitValues) return '';
+    return (Object.keys(autoFitValues) as K[])
+      .map((columnId) => `${columnId}:${(autoFitValues[columnId] || []).join('\u0001')}`)
+      .join('|');
+  }, [autoFitValues]);
+
+  useLayoutEffect(() => {
+    if (!autoFitValues || !autoFitKey || userAdjustedRef.current) return;
+    if (autoFitKey === lastAutoFitKeyRef.current) return;
+    lastAutoFitKeyRef.current = autoFitKey;
+    autoFitColumns(autoFitValues);
+  }, [autoFitKey, autoFitValues]);
 
   const resizeColumn = (columnId: K, event: PointerEvent<HTMLSpanElement>) => {
     event.preventDefault();
+    userAdjustedRef.current = true;
     const startX = event.clientX;
     const startWidth = columnWidths[columnId];
     const onMove = (moveEvent: globalThis.PointerEvent) => {
@@ -47,20 +94,23 @@ export function useTableColumnWidths<K extends string>(
     window.addEventListener('pointerup', onUp);
   };
 
-  const autoFitColumn = (columnId: K, values: Array<string | number>) => {
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    if (!context) return;
-    context.font = '14px Roboto, Arial, sans-serif';
-    const widest = Math.max(...values.map((value) => context.measureText(String(value)).width), 0);
-    setColumnWidths((current) => ({ ...current, [columnId]: Math.max(minimumWidths[columnId], Math.ceil(widest + 48)) }));
+  const resetColumnWidths = () => {
+    userAdjustedRef.current = false;
+    lastAutoFitKeyRef.current = '';
+    if (autoFitValues) {
+      autoFitColumns(autoFitValues);
+      lastAutoFitKeyRef.current = autoFitKey;
+      return;
+    }
+    setColumnWidths({ ...initialWidths });
   };
 
   return {
     columnWidths,
-    resetColumnWidths: () => setColumnWidths({ ...initialWidths }),
+    resetColumnWidths,
     resizeColumn,
     autoFitColumn,
+    autoFitColumns,
   };
 }
 

@@ -153,6 +153,7 @@ export function TableColumnHeader({
   onClearVisibleFilterValues,
   endAdornment,
   onResize,
+  onAutoFit,
 }: {
   label: ReactNode;
   sortable?: boolean;
@@ -171,6 +172,7 @@ export function TableColumnHeader({
   onClearVisibleFilterValues?: () => void;
   endAdornment?: ReactNode;
   onResize?: (event: ReactPointerEvent<HTMLSpanElement>) => void;
+  onAutoFit?: () => void;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
@@ -253,7 +255,7 @@ export function TableColumnHeader({
           )}
         </Stack>
         {endAdornment}
-        {onResize && <TableColumnResizeHandle onPointerDown={onResize} />}
+        {onResize && <TableColumnResizeHandle onPointerDown={onResize} onDoubleClick={onAutoFit} />}
       </Box>
       <Popover
         open={!!anchorEl}

@@ -16,6 +16,8 @@ import ListItem from '@mui/material/ListItem';
 import ListItemText from '@mui/material/ListItemText';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import { useTheme } from '@mui/material/styles';
 
 type GuideSection = {
   title: string;
@@ -184,8 +186,11 @@ export const userGuides: Record<Role, GuideSection[]> = {
 };
 
 export function UserGuideDialog({ role, open, onClose }: { role: Role; open: boolean; onClose: () => void }) {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
+
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md" aria-labelledby="user-guide-title">
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md" fullScreen={fullScreen} aria-labelledby="user-guide-title">
       <DialogTitle id="user-guide-title" sx={{ pr: 6 }}>
         Руководство пользователя BudgetBasket: {roleLabels[role]}
         <IconButton aria-label="Закрыть руководство" onClick={onClose} sx={{ position: 'absolute', right: 12, top: 12 }}>

@@ -26,6 +26,8 @@ import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import { useTheme } from '@mui/material/styles';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { api } from '../api/client';
@@ -168,6 +170,8 @@ function UnitFormDialog({
   onDelete?: () => void;
   deletePending?: boolean;
 }) {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [name, setName] = useState('');
   const [isActive, setIsActive] = useState(true);
   const [usesInvestProjects, setUsesInvestProjects] = useState(false);
@@ -207,7 +211,7 @@ function UnitFormDialog({
     mode.kind === 'create-child' ? mode.parent.id : mode.kind === 'edit' ? mode.unit.parent_id : null;
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" scroll="paper">
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} scroll="paper">
       <DialogTitle sx={{ pr: isEdit && onDelete ? 7 : undefined }}>
         {title}
         {isEdit && onDelete && (

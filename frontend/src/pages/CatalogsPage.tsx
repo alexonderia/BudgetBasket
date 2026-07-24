@@ -34,8 +34,11 @@ import { api } from '../api/client';
 import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import { useTheme } from '@mui/material/styles';
 import { downloadBlob } from '../utils/download';
 import type { CatalogItem, Unit } from '../types';
+import { filterFieldSx } from '../utils/responsive';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 
 type CatalogKind = 'dds' | 'invests';
@@ -148,6 +151,8 @@ function CatalogManageDialog({
   onChanged: () => void;
 }) {
   const toast = useAppToast();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const meta = catalogMeta[kind];
   const departments = units.filter((unit) => unit.type === 'department' || !unit.parent_id);
 
@@ -401,9 +406,9 @@ function CatalogManageDialog({
   );
 
   return (
-    <Dialog open={open} onClose={handleClose} fullWidth maxWidth="lg">
+    <Dialog open={open} onClose={handleClose} fullWidth maxWidth="lg" fullScreen={isMobile}>
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5, pr: 6, flexWrap: 'wrap' }}>
-        <Typography component="span" variant="h6" sx={{ flex: 1, minWidth: 180, fontWeight: 700 }}>
+        <Typography component="span" variant="h6" sx={{ flex: 1, minWidth: 0, fontWeight: 700 }}>
           Управление НСИ · {meta.title}
         </Typography>
         <Stack direction="row" spacing={1} className="page-actions" sx={{ mr: 4 }}>
@@ -741,8 +746,33 @@ function CatalogPanel({
     rows: sorted,
     columns: catalogTableColumns,
   });
-  const { columnWidths: catalogColumnWidths, resetColumnWidths: resetCatalogColumnWidths, resizeColumn: resizeCatalogColumn } = useTableColumnWidths(CATALOG_TABLE_COLUMN_WIDTHS, CATALOG_TABLE_COLUMN_MIN_WIDTHS);
+  const catalogAutoFitValues = useMemo(() => {
+    const values = {} as Record<CatalogTableColumn, Array<string | number>>;
+    catalogTableColumns.forEach((column) => {
+      if (column.id === 'actions') {
+        values[column.id] = [column.label, 'Изменить', 'Удалить'];
+        return;
+      }
+      values[column.id] = [
+        column.label,
+        ...sorted.map((item) => {
+          const value = column.getValue(item);
+          return value == null || value === '' ? '—' : String(value);
+        }),
+      ];
+    });
+    return values;
+  }, [catalogTableColumns, sorted]);
+  const { columnWidths: catalogColumnWidths, resetColumnWidths: resetCatalogColumnWidths, resizeColumn: resizeCatalogColumn, autoFitColumn: autoFitCatalogColumn } = useTableColumnWidths(
+    CATALOG_TABLE_COLUMN_WIDTHS,
+    CATALOG_TABLE_COLUMN_MIN_WIDTHS,
+    catalogAutoFitValues,
+  );
   const catalogTableWidth = visibleCatalogColumns.reduce((sum, column) => sum + catalogColumnWidths[column.id], 0);
+
+  const fitCatalogColumn = (columnId: CatalogTableColumn) => {
+    autoFitCatalogColumn(columnId, catalogAutoFitValues[columnId] || [columnId]);
+  };
 
   const renderCatalogHeader = (
     columnId: CatalogTableColumn,
@@ -766,6 +796,7 @@ function CatalogPanel({
       onClearColumnFilter={() => clearColumnFilter(columnId)}
       onClearVisibleFilterValues={() => setCatalogVisibleFilterOptions(columnId, false)}
       onResize={(event) => resizeCatalogColumn(columnId, event)}
+      onAutoFit={() => fitCatalogColumn(columnId)}
     />
   );
 
@@ -826,8 +857,8 @@ function CatalogPanel({
     <Stack spacing={2.5}>
       <Paper className="surface-pad" sx={{ py: { xs: 1, md: 0 }, px: 1.5 }}>
         <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ md: 'center' }} justifyContent="space-between" spacing={1.5}>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Tabs value={kind} onChange={(_, value: CatalogKind) => onKindChange(value)} sx={{ minHeight: 56 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} sx={{ minWidth: 0, width: { xs: '100%', md: 'auto' } }}>
+            <Tabs value={kind} onChange={(_, value: CatalogKind) => onKindChange(value)} sx={{ minHeight: 56, maxWidth: '100%' }}>
               <Tab value="dds" label="Статьи ДДС" />
               <Tab value="invests" label="Инвест-проекты" />
             </Tabs>
@@ -841,8 +872,8 @@ function CatalogPanel({
               hasActiveFilters={hasActiveCatalogColumnFilters}
             />
           </Stack>
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
-            <TextField select size="small" label="Объединение" value={departmentId} onChange={(event) => onDepartmentChange(event.target.value)} sx={{ minWidth: 280 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} className="page-filters" sx={{ width: { xs: '100%', md: 'auto' } }}>
+            <TextField select size="small" label="Объединение" value={departmentId} onChange={(event) => onDepartmentChange(event.target.value)} sx={filterFieldSx(280)}>
               {departments.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
             </TextField>
             <Button startIcon={<AddIcon />} variant="contained" onClick={() => onDialogOpenChange(true)} disabled={!departmentId}>

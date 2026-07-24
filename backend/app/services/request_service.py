@@ -135,6 +135,9 @@ class RequestService:
                 continue
             public_request = self.public_request(budget_request, self.summary(budget_request["id"]))
             if user.get("role") in {"approver", "zgd"} and self.approval_service:
+                package_id, package_name = self.approval_service._request_package(self.repo, budget_request)
+                public_request["package_id"] = package_id
+                public_request["package_name"] = package_name
                 public_request["my_step_statuses"] = [
                     {
                         "step_id": step["id"],

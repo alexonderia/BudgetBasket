@@ -1,5 +1,6 @@
 import AddIcon from '@mui/icons-material/Add';
 import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
+import CloseIcon from '@mui/icons-material/Close';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadIcon from '@mui/icons-material/Download';
 import DragHandleIcon from '@mui/icons-material/DragHandle';
@@ -34,10 +35,13 @@ import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import { useTheme } from '@mui/material/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import { RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
 import type {
@@ -47,7 +51,28 @@ import type {
   User,
 } from '../types';
 import { money, roleLabels, stepStatusLabels } from '../utils/labels';
+import { filterFieldSx } from '../utils/responsive';
 import { downloadAuthorized } from '../utils/download';
+
+type EdgeDeletePreviewNode = {
+  id: string;
+  label: string;
+  kind: 'leaf' | 'review' | 'zgd';
+};
+
+type EdgeDeletePreviewGraph = {
+  nodes: EdgeDeletePreviewNode[];
+  edges: { parent_step_id: string; child_step_id: string }[];
+};
+
+type EdgeDeletePreview = {
+  removed_edge: { parent_step_id: string; child_step_id: string };
+  before_graph: EdgeDeletePreviewGraph;
+  after_graph: EdgeDeletePreviewGraph;
+  affected_leaf_count: number;
+  has_approved_past: boolean;
+  approved_past_count: number;
+};
 
 const logActionLabels: Record<string, string> = {
   step_created: 'Шаг создан',
@@ -158,6 +183,172 @@ function stepName(step: ApprovalStep) {
   return personName(step.user);
 }
 
+function canDeleteApprovalStep(step: ApprovalStep) {
+  if (step.unit_id) return false;
+  if (step.status === 'closed') return false;
+  if ((step.active_requests_count || 0) > 0) return false;
+  return step.status === 'waiting';
+}
+
+function shortRouteLabel(label: string) {
+  const parts = label.split(' · ');
+  if (parts.length > 1 && parts[0] === 'ЗГД') return 'ЗГД';
+  if (label.includes(' \\ ')) return label.split(' \\ ').slice(-1)[0] || label;
+  const words = label.trim().split(/\s+/);
+  if (words.length <= 2) return label;
+  return `${words[0]} ${words[1][0]}.`;
+}
+
+function EdgeDeleteGraphPreview({
+  title,
+  graph,
+  removedEdge = null,
+  emptyLabel = 'Затронутых цепочек нет',
+}: {
+  title: string;
+  graph: EdgeDeletePreviewGraph;
+  removedEdge?: { parent_step_id: string; child_step_id: string } | null;
+  emptyLabel?: string;
+}) {
+  const nodeWidth = 120;
+  const nodeHeight = 46;
+  const columnGap = 64;
+  const rowGap = 16;
+  const padX = 12;
+  const padY = 12;
+
+  const layout = useMemo(() => {
+    const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+    const children = new Map<string, string[]>();
+    const parents = new Map<string, string[]>();
+    graph.edges.forEach((edge) => {
+      children.set(edge.parent_step_id, [...(children.get(edge.parent_step_id) || []), edge.child_step_id]);
+      parents.set(edge.child_step_id, [...(parents.get(edge.child_step_id) || []), edge.parent_step_id]);
+    });
+
+    const depth = new Map<string, number>();
+    const visiting = new Set<string>();
+    const resolveDepth = (stepId: string): number => {
+      if (depth.has(stepId)) return depth.get(stepId)!;
+      if (visiting.has(stepId)) return 0;
+      visiting.add(stepId);
+      const childDepths = (children.get(stepId) || []).filter((id) => byId.has(id)).map(resolveDepth);
+      visiting.delete(stepId);
+      const value = childDepths.length ? Math.max(...childDepths) + 1 : 0;
+      depth.set(stepId, value);
+      return value;
+    };
+    graph.nodes.forEach((node) => resolveDepth(node.id));
+
+    const columns = new Map<number, EdgeDeletePreviewNode[]>();
+    graph.nodes.forEach((node) => {
+      const column = depth.get(node.id) || 0;
+      columns.set(column, [...(columns.get(column) || []), node]);
+    });
+    [...columns.values()].forEach((columnNodes) => {
+      columnNodes.sort((a, b) => {
+        const kindOrder = { leaf: 0, review: 1, zgd: 2 };
+        return kindOrder[a.kind] - kindOrder[b.kind] || a.label.localeCompare(b.label, 'ru');
+      });
+    });
+
+    const maxColumn = Math.max(0, ...depth.values());
+    const positions = new Map<string, { x: number; y: number }>();
+    let maxY = nodeHeight;
+    for (let column = 0; column <= maxColumn; column += 1) {
+      const columnNodes = columns.get(column) || [];
+      columnNodes.forEach((node, index) => {
+        const y = padY + index * (nodeHeight + rowGap);
+        positions.set(node.id, {
+          x: padX + column * (nodeWidth + columnGap),
+          y,
+        });
+        maxY = Math.max(maxY, y + nodeHeight);
+      });
+    }
+
+    return {
+      positions,
+      width: padX * 2 + (maxColumn + 1) * nodeWidth + Math.max(0, maxColumn) * columnGap,
+      height: maxY + padY,
+    };
+  }, [graph, nodeHeight, nodeWidth, columnGap, rowGap, padX, padY]);
+
+  return (
+    <Box className="approval-edge-delete-preview">
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>{title}</Typography>
+      {!graph.nodes.length ? (
+        <Typography variant="body2" color="text.secondary">{emptyLabel}</Typography>
+      ) : (
+        <Box className="approval-edge-delete-preview-scroll">
+          <svg width={layout.width} height={layout.height} role="img" aria-label={title}>
+            {graph.edges.map((edge) => {
+              const child = layout.positions.get(edge.child_step_id);
+              const parent = layout.positions.get(edge.parent_step_id);
+              if (!child || !parent) return null;
+              const x1 = child.x + nodeWidth;
+              const y1 = child.y + nodeHeight / 2;
+              const x2 = parent.x;
+              const y2 = parent.y + nodeHeight / 2;
+              const bend = Math.max(20, (x2 - x1) / 2);
+              const removed = Boolean(
+                removedEdge
+                && removedEdge.parent_step_id === edge.parent_step_id
+                && removedEdge.child_step_id === edge.child_step_id,
+              );
+              return (
+                <g key={`${edge.parent_step_id}:${edge.child_step_id}`}>
+                  <path
+                    d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`}
+                    fill="none"
+                    stroke={removed ? '#d32f2f' : '#263238'}
+                    strokeWidth={removed ? 2 : 1.6}
+                    strokeDasharray={removed ? '5 4' : undefined}
+                  />
+                  {removed && (
+                    <g transform={`translate(${(x1 + x2) / 2}, ${(y1 + y2) / 2})`}>
+                      <circle r="9" fill="#fff" stroke="#d32f2f" strokeWidth="1.4" />
+                      <path d="M -3.5 -3.5 L 3.5 3.5 M 3.5 -3.5 L -3.5 3.5" stroke="#d32f2f" strokeWidth="1.6" strokeLinecap="round" />
+                    </g>
+                  )}
+                </g>
+              );
+            })}
+            {graph.nodes.map((node) => {
+              const position = layout.positions.get(node.id);
+              if (!position) return null;
+              const touched = Boolean(
+                removedEdge
+                && (removedEdge.parent_step_id === node.id || removedEdge.child_step_id === node.id),
+              );
+              return (
+                <g key={node.id}>
+                  <rect
+                    x={position.x}
+                    y={position.y}
+                    width={nodeWidth}
+                    height={nodeHeight}
+                    rx="10"
+                    fill="#fff"
+                    stroke={touched && removedEdge ? '#FECACA' : '#D1D5DB'}
+                    strokeWidth="1.2"
+                  />
+                  <rect x={position.x} y={position.y} width="4" height={nodeHeight} rx="2" fill="#2F6FED" />
+                  <foreignObject x={position.x + 10} y={position.y + 6} width={nodeWidth - 16} height={nodeHeight - 12}>
+                    <div className="approval-edge-delete-preview-node">
+                      <span title={node.label}>{shortRouteLabel(node.label)}</span>
+                    </div>
+                  </foreignObject>
+                </g>
+              );
+            })}
+          </svg>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 function ApprovalGraph({
   steps,
   selectedStepId,
@@ -166,16 +357,18 @@ function ApprovalGraph({
   onAssign,
   onConnect,
   onDisconnect,
+  onDeleteStep,
   reviewers,
   canEdit = true,
 }: {
   steps: ApprovalStep[];
   selectedStepId: string;
   onSelect: (stepId: string) => void;
-  onCreateStep: () => void;
+  onCreateStep: (childStepId?: string) => void;
   onAssign: (step: ApprovalStep, userId: string) => void;
   onConnect: (childStepId: string, parentStepId: string) => void;
   onDisconnect: (childStepId: string, parentStepId: string) => void;
+  onDeleteStep?: (step: ApprovalStep) => void;
   reviewers: User[];
   canEdit?: boolean;
 }) {
@@ -193,6 +386,7 @@ function ApprovalGraph({
   const graphViewportRef = useRef<HTMLDivElement>(null);
   const hasAutoFramedGraph = useRef(false);
   const panStart = useRef({ pointerX: 0, pointerY: 0, x: 0, y: 0 });
+  const pendingEmptyClick = useRef<{ pointerX: number; pointerY: number } | null>(null);
   const zoomGestureRef = useRef<{
     pointerX: number;
     pointerY: number;
@@ -447,7 +641,16 @@ function ApprovalGraph({
     setPan({ x: 72, y: 56 });
   };
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || (event.target as HTMLElement).closest('button, a, input, textarea, select, [draggable="true"], .approval-graph-card, .approval-graph-pool.is-draggable, .approval-edge-delete')) return;
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('button, a, input, textarea, select, [draggable="true"], .approval-graph-card, .approval-graph-pool.is-draggable, .approval-edge-delete')) {
+      return;
+    }
+    if (canEdit && pendingConnectionChildId) {
+      pendingEmptyClick.current = { pointerX: event.clientX, pointerY: event.clientY };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return;
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     panStart.current = { pointerX: event.clientX, pointerY: event.clientY, ...pan };
     setIsPanning(true);
@@ -459,6 +662,13 @@ function ApprovalGraph({
         x: (event.clientX - bounds.left - pan.x) / zoom,
         y: (event.clientY - bounds.top - pan.y) / zoom,
       });
+      if (pendingEmptyClick.current) {
+        const moved = Math.hypot(
+          event.clientX - pendingEmptyClick.current.pointerX,
+          event.clientY - pendingEmptyClick.current.pointerY,
+        );
+        if (moved > 8) pendingEmptyClick.current = null;
+      }
       return;
     }
     if (!isPanning) return;
@@ -466,6 +676,22 @@ function ApprovalGraph({
   };
   const stopPanning = (event: PointerEvent<HTMLDivElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (canEdit && pendingConnectionChildId && pendingEmptyClick.current) {
+      const moved = Math.hypot(
+        event.clientX - pendingEmptyClick.current.pointerX,
+        event.clientY - pendingEmptyClick.current.pointerY,
+      );
+      const childId = pendingConnectionChildId;
+      pendingEmptyClick.current = null;
+      if (moved <= 8) {
+        setPendingConnectionChildId(null);
+        setPendingConnectionCursor(null);
+        onCreateStep(childId);
+      }
+      setIsPanning(false);
+      return;
+    }
+    pendingEmptyClick.current = null;
     setIsPanning(false);
   };
   const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
@@ -513,7 +739,7 @@ function ApprovalGraph({
   return (
     <>
       <Stack className="org-chart-toolbar" direction="row" alignItems="center" justifyContent="space-between">
-        <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={onCreateStep} disabled={!canEdit} sx={{ visibility: canEdit ? 'visible' : 'hidden' }}>
+        <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={() => onCreateStep()} disabled={!canEdit} sx={{ visibility: canEdit ? 'visible' : 'hidden' }}>
           Добавить проверяющего
         </Button>
         <Stack direction="row" spacing={0.5} alignItems="center">
@@ -650,9 +876,29 @@ function ApprovalGraph({
             >
               <Stack spacing={0.75} sx={{ p: 1.5, height: '100%' }}>
                 <Stack spacing={0.5} alignItems="flex-start">
-                  <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.3 }}>
-                    {isLeaf ? moduleName(step) : step.user?.role === 'zgd' ? 'ЗГД' : 'Проверяющий'}
-                  </Typography>
+                  <Stack direction="row" spacing={0.5} alignItems="flex-start" justifyContent="space-between" sx={{ width: '100%' }}>
+                    <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.3 }}>
+                      {isLeaf ? moduleName(step) : step.user?.role === 'zgd' ? 'ЗГД' : 'Проверяющий'}
+                    </Typography>
+                    {canEdit && onDeleteStep && canDeleteApprovalStep(step) && (
+                      <Tooltip title="Удалить шаг">
+                        <IconButton
+                          size="small"
+                          color="error"
+                          className="approval-step-delete"
+                          aria-label="Удалить шаг"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onDeleteStep(step);
+                          }}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          sx={{ p: 0.25, width: 22, height: 22, mt: -0.25, mr: -0.5 }}
+                        >
+                          <CloseIcon sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </Stack>
                   <Chip
                     size="small"
                     variant="outlined"
@@ -792,7 +1038,7 @@ function ApprovalGraph({
     </Box>
       <Typography className="org-chart-pan-hint" variant="caption">
         {pendingConnectionChildId
-          ? 'Проведите линию к карточке проверяющего или ЗГД и кликните по ней. Нажмите Пробел, чтобы отменить связь.'
+          ? 'Кликните по карточке проверяющего или ЗГД, чтобы связать, или по пустому месту — чтобы создать новый привязанный шаг. Пробел отменяет связь.'
           : 'Нажмите пустую область и перетащите граф. Используйте колесо для прокрутки и Alt + колесо для масштаба.'}
       </Typography>
     </>
@@ -801,16 +1047,25 @@ function ApprovalGraph({
 
 function AdminApprovalPage() {
   const toast = useAppToast();
+  const theme = useTheme();
+  const fullScreenDialog = useMediaQuery(theme.breakpoints.down('sm'));
   const queryClient = useQueryClient();
   const [parentStepId, setParentStepId] = useState('');
   const [childStepId, setChildStepId] = useState('');
   const [selectedStepId, setSelectedStepId] = useState('');
   const [stepDialog, setStepDialog] = useState<
-    | { kind: 'create' }
+    | { kind: 'create'; childStepId?: string }
     | { kind: 'assign'; step: ApprovalStep }
     | null
   >(null);
   const [dialogUserId, setDialogUserId] = useState('');
+  const [edgeDelete, setEdgeDelete] = useState<{
+    child_step_id: string;
+    parent_step_id: string;
+    preview: EdgeDeletePreview | null;
+    loading: boolean;
+  } | null>(null);
+  const [stepDeleteTarget, setStepDeleteTarget] = useState<ApprovalStep | null>(null);
   const [logAction, setLogAction] = useState('');
   const [logUserId, setLogUserId] = useState('');
   const [validation, setValidation] = useState<{
@@ -845,11 +1100,19 @@ function AdminApprovalPage() {
   };
 
   const createStep = useMutation({
-    mutationFn: async ({ userId }: { userId: string }) => {
-      return (await api.post<ApprovalStep>('/steps', { user_id: userId })).data;
+    mutationFn: async ({ userId, childStepId }: { userId: string; childStepId?: string }) => {
+      return (await api.post<ApprovalStep>('/steps', {
+        user_id: userId,
+        ...(childStepId ? { child_step_id: childStepId } : {}),
+      })).data;
     },
-    onSuccess: () => {
-      toast('Шаг создан. Свяжите его, перетащив стрелку из дочернего шага.', 'success');
+    onSuccess: (_data, variables) => {
+      toast(
+        variables.childStepId
+          ? 'Шаг создан и сразу связан с выбранным блоком'
+          : 'Шаг создан. Свяжите его, перетащив стрелку из дочернего шага.',
+        'success',
+      );
       setStepDialog(null);
       setDialogUserId('');
       refresh();
@@ -870,6 +1133,7 @@ function AdminApprovalPage() {
     mutationFn: (id: string) => api.delete(`/steps/${id}`),
     onSuccess: () => {
       toast('Шаг удалён', 'success');
+      setStepDeleteTarget(null);
       refresh();
     },
     onError: (error) => toast(errorMessage(error, 'Не удалось удалить шаг'), 'error'),
@@ -888,10 +1152,22 @@ function AdminApprovalPage() {
     mutationFn: (edge: { parent_step_id: string; child_step_id: string }) => api.delete('/step-edges', { data: edge }),
     onSuccess: () => {
       toast('Связь удалена', 'success');
+      setEdgeDelete(null);
       refresh();
     },
     onError: (error) => toast(errorMessage(error, 'Не удалось удалить связь'), 'error'),
   });
+  const openEdgeDelete = async (childStepId: string, parentStepId: string) => {
+    const edge = { child_step_id: childStepId, parent_step_id: parentStepId };
+    setEdgeDelete({ ...edge, preview: null, loading: true });
+    try {
+      const preview = (await api.post<EdgeDeletePreview>('/step-edges/preview-delete', edge)).data;
+      setEdgeDelete({ ...edge, preview, loading: false });
+    } catch (error) {
+      setEdgeDelete(null);
+      toast(errorMessage(error, 'Не удалось подготовить удаление связи'), 'error');
+    }
+  };
   const validate = useMutation({
     mutationFn: () => api.post('/steps/validate'),
     onSuccess: (response) => {
@@ -923,10 +1199,13 @@ function AdminApprovalPage() {
   const dialogUsers = stepDialog?.kind === 'assign'
     ? eligibleUsers.filter((item) => item.role === stepDialog.step.user?.role)
     : eligibleUsers.filter((item) => item.role === 'approver');
-  const openCreateStep = () => {
+  const openCreateStep = (childStepId?: string) => {
     setDialogUserId('');
-    setStepDialog({ kind: 'create' });
+    setStepDialog({ kind: 'create', childStepId });
   };
+  const linkedChildName = stepDialog?.kind === 'create' && stepDialog.childStepId
+    ? stepNames.get(stepDialog.childStepId)
+    : null;
   return (
     <Stack spacing={3}>
       <Box sx={{ display: 'none' }}>
@@ -948,7 +1227,7 @@ function AdminApprovalPage() {
         <Stack spacing={1.5}>
           <Typography variant="h6">Граф шагов</Typography>
           <Typography variant="body2" color="text.secondary">
-            Стрелка показывает движение заявки: от модуля и экономиста к проверяющим, затем к ЗГД. Наведите курсор на карточку и перетащите кнопку «+» на проверяющего или ЗГД, чтобы создать связь.
+            Стрелка показывает движение заявки: от модуля и экономиста к проверяющим, затем к ЗГД. Наведите курсор на карточку и перетащите кнопку «+» на проверяющего или ЗГД, чтобы создать связь. Клик по пустому месту при активной пунктирной линии создаёт новый привязанный шаг.
           </Typography>
           <ApprovalGraph
             steps={steps}
@@ -957,7 +1236,8 @@ function AdminApprovalPage() {
             onCreateStep={openCreateStep}
             onAssign={(step, userId) => patchStep.mutate({ id: step.id, patch: { user_id: userId } })}
             onConnect={(childStepId, parentStepId) => createEdge.mutate({ child_step_id: childStepId, parent_step_id: parentStepId })}
-            onDisconnect={(childStepId, parentStepId) => deleteEdge.mutate({ child_step_id: childStepId, parent_step_id: parentStepId })}
+            onDisconnect={openEdgeDelete}
+            onDeleteStep={setStepDeleteTarget}
             reviewers={eligibleUsers.filter((user) => user.role === 'approver')}
           />
         </Stack>
@@ -1006,9 +1286,8 @@ function AdminApprovalPage() {
                   <Tooltip title="Удалить шаг">
                     <IconButton
                       color="error"
-                      onClick={() => {
-                        if (window.confirm('Удалить шаг и его связи?')) deleteStep.mutate(step.id);
-                      }}
+                      onClick={() => setStepDeleteTarget(step)}
+                      disabled={!canDeleteApprovalStep(step)}
                     >
                       <DeleteOutlineIcon />
                     </IconButton>
@@ -1044,7 +1323,7 @@ function AdminApprovalPage() {
               <Chip
                 key={`${edge.parent_step_id}:${edge.child_step_id}`}
                 label={`${stepNames.get(edge.child_step_id)} → ${stepNames.get(edge.parent_step_id)}`}
-                onDelete={() => deleteEdge.mutate(edge)}
+                onDelete={() => openEdgeDelete(edge.child_step_id, edge.parent_step_id)}
               />
             ))}
             {!edges.length && <Typography color="text.secondary">Связей пока нет</Typography>}
@@ -1074,12 +1353,12 @@ function AdminApprovalPage() {
 
       <Stack spacing={2}>
         <Typography variant="h6">Журнал маршрута</Typography>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-          <TextField select label="Действие" value={logAction} onChange={(event) => setLogAction(event.target.value)} sx={{ minWidth: 260 }}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} className="page-filters">
+          <TextField select label="Действие" value={logAction} onChange={(event) => setLogAction(event.target.value)} sx={filterFieldSx(260)}>
             <MenuItem value="">Все действия</MenuItem>
             {logActions.map((action) => <MenuItem key={action} value={action}>{logActionLabels[action]}</MenuItem>)}
           </TextField>
-          <TextField select label="Пользователь" value={logUserId} onChange={(event) => setLogUserId(event.target.value)} sx={{ minWidth: 240 }}>
+          <TextField select label="Пользователь" value={logUserId} onChange={(event) => setLogUserId(event.target.value)} sx={filterFieldSx(240)}>
             <MenuItem value="">Все пользователи</MenuItem>
             {users.map((item) => <MenuItem key={item.id} value={item.id}>{personName(item)}</MenuItem>)}
           </TextField>
@@ -1089,7 +1368,7 @@ function AdminApprovalPage() {
       </Stack>
       </Box>
 
-      <Dialog open={Boolean(stepDialog)} onClose={() => setStepDialog(null)} fullWidth maxWidth="xs">
+      <Dialog open={Boolean(stepDialog)} onClose={() => setStepDialog(null)} fullWidth maxWidth="xs" fullScreen={fullScreenDialog}>
         <DialogTitle>
           {stepDialog?.kind === 'assign' ? 'Назначить проверяющего' : 'Добавить проверяющего'}
         </DialogTitle>
@@ -1097,7 +1376,9 @@ function AdminApprovalPage() {
           <Stack spacing={2} sx={{ pt: 1 }}>
             {stepDialog?.kind === 'create' && (
               <Alert severity="info">
-                Новый блок проверяющего создаётся отдельно. Затем перетащите кнопку связи из дочерней карточки на него, чтобы задать связь.
+                {linkedChildName
+                  ? `Новый шаг будет сразу связан с блоком «${linkedChildName}».`
+                  : 'Новый блок проверяющего создаётся отдельно. Затем перетащите кнопку связи из дочерней карточки на него, чтобы задать связь.'}
               </Alert>
             )}
             <TextField
@@ -1131,13 +1412,88 @@ function AdminApprovalPage() {
             <Button
               variant="contained"
               disabled={!dialogUserId || createStep.isPending}
-              onClick={() => createStep.mutate({ userId: dialogUserId })}
+              onClick={() => createStep.mutate({
+                userId: dialogUserId,
+                childStepId: stepDialog?.kind === 'create' ? stepDialog.childStepId : undefined,
+              })}
             >
               Добавить
             </Button>
           )}
         </DialogActions>
       </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(edgeDelete)}
+        title="Удалить связь?"
+        confirmLabel="Удалить связь"
+        pending={deleteEdge.isPending}
+        confirmDisabled={Boolean(edgeDelete?.loading || !edgeDelete?.preview)}
+        maxWidth="md"
+        onClose={() => setEdgeDelete(null)}
+        onConfirm={() => {
+          if (!edgeDelete || edgeDelete.loading || !edgeDelete.preview) return;
+          deleteEdge.mutate({
+            child_step_id: edgeDelete.child_step_id,
+            parent_step_id: edgeDelete.parent_step_id,
+          });
+        }}
+        description={(
+          <Stack spacing={1.5}>
+            <Typography variant="body2">
+              Связь: {stepNames.get(edgeDelete?.child_step_id || '') || '—'} → {stepNames.get(edgeDelete?.parent_step_id || '') || '—'}
+            </Typography>
+            {edgeDelete?.loading && <Typography variant="body2" color="text.secondary">Готовим превью маршрута…</Typography>}
+            {edgeDelete?.preview?.has_approved_past && (
+              <Alert severity="warning">
+                По этой связи уже есть пройденные согласования дальше по маршруту ({edgeDelete.preview.approved_past_count}).
+                Удаление изменит цепочку для новых передач, но не отменит уже выполненные согласования.
+              </Alert>
+            )}
+            {edgeDelete?.preview && !edgeDelete.preview.before_graph.nodes.length && (
+              <Typography variant="body2" color="text.secondary">
+                Эта связь сейчас не входит ни в одну листовую цепочку модулей.
+              </Typography>
+            )}
+            {edgeDelete?.preview && Boolean(edgeDelete.preview.before_graph.nodes.length) && (
+              <Stack spacing={1}>
+                <EdgeDeleteGraphPreview
+                  title="Было"
+                  graph={edgeDelete.preview.before_graph}
+                  removedEdge={edgeDelete.preview.removed_edge}
+                />
+                <EdgeDeleteGraphPreview
+                  title="Станет"
+                  graph={edgeDelete.preview.after_graph}
+                  emptyLabel="Цепочки оборвутся на текущих шагах"
+                />
+              </Stack>
+            )}
+          </Stack>
+        )}
+      />
+
+      <ConfirmDialog
+        open={Boolean(stepDeleteTarget)}
+        title="Удалить шаг?"
+        confirmLabel="Удалить шаг"
+        pending={deleteStep.isPending}
+        onClose={() => setStepDeleteTarget(null)}
+        onConfirm={() => {
+          if (!stepDeleteTarget) return;
+          deleteStep.mutate(stepDeleteTarget.id);
+        }}
+        description={(
+          <Stack spacing={1}>
+            <Typography variant="body2">
+              Будет удалён шаг «{stepDeleteTarget ? stepName(stepDeleteTarget) : ''}» вместе с его связями.
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Удаление доступно только если на шаг ещё не поступали заявки.
+            </Typography>
+          </Stack>
+        )}
+      />
     </Stack>
   );
 }
@@ -1241,9 +1597,6 @@ function UserApprovalPage({ user }: { user: User }) {
     && (!!selectedStep?.unit_id || !!childStepId);
   const isLeaf = Boolean(selectedStep?.unit_id);
   const isFinal = selectedStep?.user?.role === 'zgd';
-  const allDelivered = requests.length > 0 && requests.every((item) => item.approval_status === 'on_approval');
-  const allReviewed = allDelivered && requests.every((item) => item.reviewed_at_step);
-  const canForwardPackage = !isLeaf && !isFinal && allDelivered && allReviewed;
   const packageGroups = useMemo(() => {
     if (!stepId || !requests.length) return [];
     return [{
@@ -1254,6 +1607,10 @@ function UserApprovalPage({ user }: { user: User }) {
       reviewed: requests.filter((item) => item.reviewed_at_step).length,
     }];
   }, [requests, stepId]);
+  const readyPackages = packageGroups.filter(
+    (group) => group.delivered === group.items.length && group.reviewed === group.items.length,
+  );
+  const canForwardAnyPackage = !isLeaf && !isFinal && readyPackages.length > 0;
 
   if (isLoading) return <CircularProgress />;
   if (!steps.length) {
@@ -1278,7 +1635,7 @@ function UserApprovalPage({ user }: { user: User }) {
             label="Шаг"
             value={stepId}
             onChange={(event) => setStepId(event.target.value)}
-            sx={{ minWidth: 320 }}
+            sx={filterFieldSx(320)}
           >
             {steps.map((step) => (
               <MenuItem key={step.id} value={step.id}>
@@ -1299,8 +1656,8 @@ function UserApprovalPage({ user }: { user: User }) {
             <Button
               variant="contained"
               startIcon={<FactCheckIcon />}
-              disabled={!canForwardPackage || packageGroups.length !== 1 || approve.isPending}
-              onClick={() => approve.mutate(requests.map((item) => item.id))}
+              disabled={!canForwardAnyPackage || readyPackages.length !== 1 || approve.isPending}
+              onClick={() => approve.mutate(readyPackages[0].items.map((item) => item.id))}
             >
               Передать проверенный пакет дальше
             </Button>
@@ -1317,9 +1674,9 @@ function UserApprovalPage({ user }: { user: User }) {
         </Alert>
       )}
       {!isLeaf && !isFinal && requests.length > 0 && (
-        <Alert severity={canForwardPackage ? 'success' : 'info'}>
-          {canForwardPackage
-            ? 'Все заявки маршрута поступили и подтверждены. Их можно передать дальше одним пакетом.'
+        <Alert severity={canForwardAnyPackage ? 'success' : 'info'}>
+          {canForwardAnyPackage
+            ? 'Все заявки шага поступили и подтверждены. Их можно передать дальше одним пакетом.'
             : `Передача пакета пока недоступна: поступило ${requests.filter((item) => item.approval_status === 'on_approval').length} из ${requests.length}, подтверждено ${requests.filter((item) => item.reviewed_at_step).length} из ${requests.length}.`}
         </Alert>
       )}
@@ -1329,7 +1686,7 @@ function UserApprovalPage({ user }: { user: User }) {
           <Stack spacing={1.5}>
             <Box>
               <Typography variant="h6">Пакеты для передачи</Typography>
-              <Typography variant="body2" color="text.secondary">Заявки одной цепочки согласования передаются единым пакетом.</Typography>
+              <Typography variant="body2" color="text.secondary">Все заявки, сходящиеся в один шаг маршрута, передаются единым пакетом.</Typography>
             </Box>
             {packageGroups.map((group) => {
               const ready = group.delivered === group.items.length && group.reviewed === group.items.length;
@@ -1430,7 +1787,7 @@ function UserApprovalPage({ user }: { user: User }) {
               ))}
               {!requests.length && (
                 <TableRow>
-                  <TableCell colSpan={10} align="center">Для шага пока нет доступных заявок</TableCell>
+                  <TableCell colSpan={11} align="center">Для шага пока нет доступных заявок</TableCell>
                 </TableRow>
               )}
             </TableBody>
@@ -1563,6 +1920,7 @@ function RouteGraphPage() {
         onAssign={() => undefined}
         onConnect={() => undefined}
         onDisconnect={() => undefined}
+        onDeleteStep={() => undefined}
         reviewers={[]}
         canEdit={false}
       />

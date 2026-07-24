@@ -417,7 +417,7 @@ export function Layout({
         </>
       )}
 
-      <Dialog open={profileOpen} onClose={() => setProfileOpen(false)} fullWidth maxWidth="sm" className="profile-dialog">
+      <Dialog open={profileOpen} onClose={() => setProfileOpen(false)} fullWidth maxWidth="sm" fullScreen={isMobile} className="profile-dialog">
         <DialogTitle sx={{ pr: 6, pb: 1.5 }}>
           Профиль сотрудника
           <IconButton onClick={() => setProfileOpen(false)} sx={{ position: 'absolute', right: 12, top: 12 }}>
@@ -544,7 +544,8 @@ export function Layout({
           key={toast?.key}
           open={!!toast}
           autoHideDuration={3500}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+          anchorOrigin={{ vertical: 'bottom', horizontal: isMobile ? 'center' : 'right' }}
+          sx={isMobile ? { bottom: { xs: 88 } } : undefined}
           onClose={(_, reason) => {
             if (reason === 'clickaway') return;
             setToast(null);

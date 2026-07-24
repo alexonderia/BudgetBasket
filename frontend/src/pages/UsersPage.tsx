@@ -20,6 +20,8 @@ import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import { useTheme } from '@mui/material/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
@@ -29,6 +31,7 @@ import { useAppToast } from '../components/Layout';
 import type { Role, Unit, User } from '../types';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { roleLabels } from '../utils/labels';
+import { filterFieldSx } from '../utils/responsive';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 
 const emptyForm = {
@@ -141,6 +144,8 @@ function CreateUserDialog({
   onCreated: () => void;
 }) {
   const toast = useAppToast();
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [form, setForm] = useState<CreateForm>(emptyForm);
 
   useEffect(() => {
@@ -166,7 +171,7 @@ function CreateUserDialog({
   const invalidContact = (form.email && !EMAIL_RE.test(form.email)) || (form.phone && !PHONE_RE.test(form.phone));
 
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" className="profile-dialog">
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} className="profile-dialog">
       <DialogTitle sx={{ pr: 6, pb: 1.5 }}>
         Создать профиль
         <IconButton onClick={onClose} sx={{ position: 'absolute', right: 12, top: 12 }}>
@@ -224,6 +229,8 @@ function EditUserDialog({
   onSaved: () => void;
 }) {
   const toast = useAppToast();
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [form, setForm] = useState<UserDraft>(emptyDraft());
 
   useEffect(() => {
@@ -249,7 +256,7 @@ function EditUserDialog({
   const invalidContact = (form.email && !EMAIL_RE.test(form.email)) || (form.phone && !PHONE_RE.test(form.phone));
 
   return (
-    <Dialog open={!!user} onClose={onClose} fullWidth maxWidth="sm" className="profile-dialog">
+    <Dialog open={!!user} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} className="profile-dialog">
       <DialogTitle sx={{ pr: 6, pb: 1.5 }}>
         Редактировать пользователя
         <IconButton onClick={onClose} sx={{ position: 'absolute', right: 12, top: 12 }} aria-label="Закрыть">
@@ -347,8 +354,33 @@ export default function UsersPage() {
     visibility,
     visibleColumns,
   } = useTableColumnControls({ rows: filteredUsers, columns: tableColumns });
-  const { columnWidths, resetColumnWidths, resizeColumn } = useTableColumnWidths(USER_TABLE_COLUMN_WIDTHS, USER_TABLE_COLUMN_MIN_WIDTHS);
+  const userAutoFitValues = useMemo(() => {
+    const values = {} as Record<UserTableColumn, Array<string | number>>;
+    tableColumns.forEach((column) => {
+      if (column.id === 'actions') {
+        values[column.id] = [column.label, 'Удалить'];
+        return;
+      }
+      values[column.id] = [
+        column.label,
+        ...filteredUsers.map((user) => {
+          const value = column.getValue(user);
+          return value == null || value === '' ? '—' : String(value);
+        }),
+      ];
+    });
+    return values;
+  }, [filteredUsers, tableColumns]);
+  const { columnWidths, resetColumnWidths, resizeColumn, autoFitColumn } = useTableColumnWidths(
+    USER_TABLE_COLUMN_WIDTHS,
+    USER_TABLE_COLUMN_MIN_WIDTHS,
+    userAutoFitValues,
+  );
   const tableWidth = visibleColumns.reduce((sum, column) => sum + columnWidths[column.id], 0);
+
+  const fitUserColumn = (columnId: UserTableColumn) => {
+    autoFitColumn(columnId, userAutoFitValues[columnId] || [columnId]);
+  };
 
   const renderHeader = (columnId: UserTableColumn, label: string, options?: { sortable?: boolean; filterable?: boolean }) => (
     <TableColumnHeader
@@ -387,14 +419,14 @@ export default function UsersPage() {
     <Stack spacing={3}>
       <Paper className="table-surface" sx={{ p: 2 }}>
         <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ lg: 'center' }}>
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-            <TextField select label="Роль" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value as Role | '')} sx={{ minWidth: 220 }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} className="page-filters">
+            <TextField select label="Роль" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value as Role | '')} sx={filterFieldSx(220)}>
               <MenuItem value="">Все роли</MenuItem>
               {Object.entries(roleLabels).map(([value, label]) => (
                 <MenuItem key={value} value={value}>{label}</MenuItem>
               ))}
             </TextField>
-            <TextField select label="Объединение" value={unitFilter} onChange={(event) => setUnitFilter(event.target.value)} sx={{ minWidth: 260 }}>
+            <TextField select label="Объединение" value={unitFilter} onChange={(event) => setUnitFilter(event.target.value)} sx={filterFieldSx(260)}>
               <MenuItem value="">Все объединения</MenuItem>
               {units.map((unit) => (
                 <MenuItem key={unit.id} value={unit.id}>
@@ -427,15 +459,15 @@ export default function UsersPage() {
           </colgroup>
           <TableHead>
             <TableRow>
-              {visibility.actions && <TableCell sx={{ position: 'relative' }}>{renderHeader('actions', 'Действия', { sortable: false, filterable: false })}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('actions', event)} /></TableCell>}
-              {visibility.login && <TableCell sx={{ position: 'relative' }}>{renderHeader('login', 'Логин')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('login', event)} /></TableCell>}
-              {visibility.role && <TableCell sx={{ position: 'relative' }}>{renderHeader('role', 'Роль')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('role', event)} /></TableCell>}
-              {visibility.last_name && <TableCell sx={{ position: 'relative' }}>{renderHeader('last_name', 'Фамилия')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('last_name', event)} /></TableCell>}
-              {visibility.name && <TableCell sx={{ position: 'relative' }}>{renderHeader('name', 'Имя')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('name', event)} /></TableCell>}
-              {visibility.second_name && <TableCell sx={{ position: 'relative' }}>{renderHeader('second_name', 'Отчество')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('second_name', event)} /></TableCell>}
-              {visibility.phone && <TableCell sx={{ position: 'relative' }}>{renderHeader('phone', 'Телефон')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('phone', event)} /></TableCell>}
-              {visibility.email && <TableCell sx={{ position: 'relative' }}>{renderHeader('email', 'Электронная почта')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('email', event)} /></TableCell>}
-              {visibility.max_link && <TableCell sx={{ position: 'relative' }}>{renderHeader('max_link', 'Max')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('max_link', event)} /></TableCell>}
+              {visibility.actions && <TableCell sx={{ position: 'relative' }}>{renderHeader('actions', 'Действия', { sortable: false, filterable: false })}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('actions', event)} onDoubleClick={() => fitUserColumn('actions')} /></TableCell>}
+              {visibility.login && <TableCell sx={{ position: 'relative' }}>{renderHeader('login', 'Логин')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('login', event)} onDoubleClick={() => fitUserColumn('login')} /></TableCell>}
+              {visibility.role && <TableCell sx={{ position: 'relative' }}>{renderHeader('role', 'Роль')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('role', event)} onDoubleClick={() => fitUserColumn('role')} /></TableCell>}
+              {visibility.last_name && <TableCell sx={{ position: 'relative' }}>{renderHeader('last_name', 'Фамилия')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('last_name', event)} onDoubleClick={() => fitUserColumn('last_name')} /></TableCell>}
+              {visibility.name && <TableCell sx={{ position: 'relative' }}>{renderHeader('name', 'Имя')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('name', event)} onDoubleClick={() => fitUserColumn('name')} /></TableCell>}
+              {visibility.second_name && <TableCell sx={{ position: 'relative' }}>{renderHeader('second_name', 'Отчество')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('second_name', event)} onDoubleClick={() => fitUserColumn('second_name')} /></TableCell>}
+              {visibility.phone && <TableCell sx={{ position: 'relative' }}>{renderHeader('phone', 'Телефон')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('phone', event)} onDoubleClick={() => fitUserColumn('phone')} /></TableCell>}
+              {visibility.email && <TableCell sx={{ position: 'relative' }}>{renderHeader('email', 'Электронная почта')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('email', event)} onDoubleClick={() => fitUserColumn('email')} /></TableCell>}
+              {visibility.max_link && <TableCell sx={{ position: 'relative' }}>{renderHeader('max_link', 'Max')}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn('max_link', event)} onDoubleClick={() => fitUserColumn('max_link')} /></TableCell>}
             </TableRow>
           </TableHead>
           <TableBody>

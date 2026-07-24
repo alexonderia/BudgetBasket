@@ -50,6 +50,8 @@ export interface BudgetRequest {
   fixed: boolean;
   total_approved_sum?: number;
   summary?: RequestSummary;
+  package_id?: string;
+  package_name?: string;
   my_step_statuses?: MyApprovalStepStatus[];
 }
 
