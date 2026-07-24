@@ -50,6 +50,13 @@ export interface BudgetRequest {
   fixed: boolean;
   total_approved_sum?: number;
   summary?: RequestSummary;
+  my_step_statuses?: MyApprovalStepStatus[];
+}
+
+export interface MyApprovalStepStatus {
+  step_id: string;
+  status: StepStatus;
+  reviewed: boolean;
 }
 
 export interface RequestSummary {
@@ -109,6 +116,8 @@ export interface StepRequest extends BudgetRequest {
   reviewed_items_count: number;
   sum_plan: number;
   sum_fact: number;
+  package_id?: string;
+  package_name?: string;
 }
 
 export interface StepLog {

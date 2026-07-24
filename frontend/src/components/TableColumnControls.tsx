@@ -96,17 +96,20 @@ export function TableColumnTools<K extends string>({
 
 export function TableColumnResizeHandle({
   onPointerDown,
+  onDoubleClick,
 }: {
   onPointerDown: (event: ReactPointerEvent<HTMLSpanElement>) => void;
+  onDoubleClick?: () => void;
 }) {
   return (
-    <Tooltip title="Перетащите для изменения ширины столбца" placement="top">
+    <Tooltip title="Перетащите для изменения ширины; дважды нажмите для подбора по содержимому" placement="top">
       <Box
         component="span"
         role="separator"
         aria-orientation="vertical"
         aria-label="Изменить ширину столбца"
         onPointerDown={onPointerDown}
+        onDoubleClick={onDoubleClick}
         sx={{
           position: 'absolute',
           top: 0,

@@ -133,7 +133,18 @@ class RequestService:
                 continue
             if created_to and created_at and created_at > created_to:
                 continue
-            result.append(self.public_request(budget_request, self.summary(budget_request["id"])))
+            public_request = self.public_request(budget_request, self.summary(budget_request["id"]))
+            if user.get("role") in {"approver", "zgd"} and self.approval_service:
+                public_request["my_step_statuses"] = [
+                    {
+                        "step_id": step["id"],
+                        "status": self.approval_service._request_step_state(self.repo, step, budget_request["id"])["status"],
+                        "reviewed": self.approval_service._request_reviewed_at_step(self.repo, budget_request["id"], step["id"]),
+                    }
+                    for step in self.approval_service._request_route(self.repo, budget_request["unit_id"])
+                    if step.get("user_id") == user.get("id")
+                ]
+            result.append(public_request)
         return result
 
     def dashboard(self, user: dict, unit_id: str | None = None, *, is_income: bool = False) -> dict:

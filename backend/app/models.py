@@ -209,5 +209,10 @@ class StepReturnIn(StrictModel):
     comment: str = Field(min_length=1)
 
 
+class StepApproveIn(StrictModel):
+    """The exact independent package a reviewer is forwarding."""
+    request_ids: list[str] = Field(default_factory=list)
+
+
 def clean_patch(model: BaseModel) -> dict[str, Any]:
     return model.model_dump(exclude_unset=True)

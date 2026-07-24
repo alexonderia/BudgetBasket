@@ -1,5 +1,6 @@
 import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
+import FactCheckIcon from '@mui/icons-material/FactCheck';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -7,6 +8,7 @@ import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import UndoIcon from '@mui/icons-material/Undo';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import Alert from '@mui/material/Alert';
+import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
 import Collapse from '@mui/material/Collapse';
@@ -36,7 +38,7 @@ import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
-import { RequestStatusBadge } from '../components/StatusBadge';
+import { RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
 import type { BudgetItem, BudgetRequest, CatalogItem, RequestStatus, Unit, User } from '../types';
 import { EXPORTABLE_REQUEST_STATUSES } from '../types';
 import { downloadBlob } from '../utils/download';
@@ -50,7 +52,7 @@ function getErrorMessage(error: unknown, fallback: string) {
   return detail || (error instanceof Error ? error.message : fallback);
 }
 
-type RequestTableColumn = 'unit' | 'status' | 'planned' | 'approved' | 'items_count' | 'actions';
+type RequestTableColumn = 'unit' | 'status' | 'my_step' | 'planned' | 'approved' | 'items_count' | 'actions';
 type DeletePreviewColumn = 'kind' | 'name' | 'sum';
 type DeletePreviewRow = {
   kind: string;
@@ -61,6 +63,7 @@ type DeletePreviewRow = {
 const REQUEST_TABLE_COLUMN_WIDTHS: Record<RequestTableColumn, number> = {
   unit: 300,
   status: 380,
+  my_step: 190,
   planned: 160,
   approved: 180,
   items_count: 120,
@@ -70,6 +73,7 @@ const REQUEST_TABLE_COLUMN_WIDTHS: Record<RequestTableColumn, number> = {
 const REQUEST_TABLE_COLUMN_MIN_WIDTHS: Record<RequestTableColumn, number> = {
   unit: 180,
   status: 220,
+  my_step: 150,
   planned: 130,
   approved: 140,
   items_count: 100,
@@ -81,6 +85,8 @@ export default function RequestsPage({ user }: { user: User }) {
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const [filters, setFilters] = useState({ status: '', frozen: '' });
+  const [requestColumnOrder, setRequestColumnOrder] = useState<RequestTableColumn[]>(['actions', 'unit', 'status', 'my_step', 'planned', 'approved', 'items_count']);
+  const [draggedRequestColumn, setDraggedRequestColumn] = useState<RequestTableColumn | null>(null);
   const [createError, setCreateError] = useState('');
   const [exportError, setExportError] = useState('');
   const [exportOpen, setExportOpen] = useState(false);
@@ -151,6 +157,17 @@ export default function RequestsPage({ user }: { user: User }) {
     [data, filters.frozen],
   );
 
+  const forwardPackage = useMutation({
+    mutationFn: ({ stepId, requestIds }: { stepId: string; requestIds: string[] }) => api.post(`/steps/${stepId}/approve`, { request_ids: requestIds }),
+    onSuccess: () => {
+      toast('Пакет передан на следующий этап', 'success');
+      queryClient.invalidateQueries({ queryKey: ['requests'] });
+      queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+      queryClient.invalidateQueries({ queryKey: ['step-requests'] });
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось передать пакет'), 'error'),
+  });
+
   const allModules = units.filter((unit) => unit.type === 'department' || unit.type === 'module');
   const departments = units.filter((unit) => !unit.parent_id);
   const modulesByDepartment = useMemo(
@@ -158,6 +175,22 @@ export default function RequestsPage({ user }: { user: User }) {
     [departments, units],
   );
   const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
+  const forwardPackages = useMemo(() => {
+    if (user.role !== 'approver') return [];
+    const groups = new Map<string, { stepId: string; requests: BudgetRequest[] }>();
+    filteredRequests.forEach((request) => {
+      const step = request.my_step_statuses?.find((item) => item.status === 'on_approval');
+      if (!step) return;
+      const key = step.step_id;
+      const group = groups.get(key) || { stepId: step.step_id, requests: [] };
+      group.requests.push(request);
+      groups.set(key, group);
+    });
+    return [...groups.values()];
+  }, [filteredRequests, user.role]);
+  const packageByRequestId = useMemo(() => new Map(
+    forwardPackages.flatMap((packageItem) => packageItem.requests.map((request) => [request.id, packageItem] as const)),
+  ), [forwardPackages]);
   const formatUnitName = (unitId: string | null | undefined) => units.find((unit) => unit.id === unitId)?.name || unitId || '—';
   const employeeUnitNames = useMemo(
     () => (user.unit_ids || []).map((unitId) => formatUnitName(unitId)).filter(Boolean),
@@ -280,14 +313,18 @@ export default function RequestsPage({ user }: { user: User }) {
     return [...ddsRows, ...investRows];
   }, [deleteTargetDds, deleteTargetDdsCatalog, deleteTargetInvest, deleteTargetInvestCatalog]);
 
-  const requestTableColumns = useMemo<TableColumnDefinition<BudgetRequest, RequestTableColumn>[]>(() => [
+  const requestTableColumns = useMemo<TableColumnDefinition<BudgetRequest, RequestTableColumn>[]>(() => {
+    const columns: TableColumnDefinition<BudgetRequest, RequestTableColumn>[] = [
+    ...(user.role === 'employee' && filteredRequests.some((item) => item.status === 'draft') ? [{ id: 'actions' as const, label: 'Действие', sortable: false, filterable: false, hideable: false, getValue: () => '' }] : []),
     { id: 'unit', label: 'Объединение заявки', getValue: (item) => formatUnitName(item.unit_id) },
     { id: 'status', label: 'Статус', getValue: (item) => requestStatusLabels[item.status] || item.status },
+    ...(user.role === 'approver' || user.role === 'zgd' ? [{ id: 'my_step' as const, label: 'Мой этап', getValue: (item: BudgetRequest) => item.my_step_statuses?.map((step) => step.reviewed ? 'Согласовано' : step.status).join(', ') || '—' }] : []),
     { id: 'planned', label: 'План', getValue: (item) => money(item.summary?.planned_sum), getSortValue: (item) => item.summary?.planned_sum ?? 0 },
     { id: 'approved', label: 'Утверждено', getValue: (item) => money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum)), getSortValue: (item) => item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum) },
     { id: 'items_count', label: 'Строк', getValue: (item) => String(item.summary?.items_count || 0), getSortValue: (item) => item.summary?.items_count || 0 },
-    { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
-  ], [formatUnitName]);
+    ];
+    return columns.sort((left, right) => requestColumnOrder.indexOf(left.id) - requestColumnOrder.indexOf(right.id));
+  }, [filteredRequests, formatUnitName, requestColumnOrder, user.role]);
   const {
     clearColumnFilter: clearRequestColumnFilter,
     clearSort: clearRequestSort,
@@ -309,8 +346,50 @@ export default function RequestsPage({ user }: { user: User }) {
     visibility: requestVisibility,
     visibleColumns: visibleRequestColumns,
   } = useTableColumnControls({ rows: filteredRequests, columns: requestTableColumns });
-  const { columnWidths: requestColumnWidths, resetColumnWidths: resetRequestColumnWidths, resizeColumn: resizeRequestColumn } = useTableColumnWidths(REQUEST_TABLE_COLUMN_WIDTHS, REQUEST_TABLE_COLUMN_MIN_WIDTHS);
+  const tableRequests = useMemo(() => {
+    if (user.role !== 'approver') return visibleRequests;
+    const packagedIds = new Set(packageByRequestId.keys());
+    return [
+      ...forwardPackages.flatMap((packageItem) => packageItem.requests),
+      ...visibleRequests.filter((request) => !packagedIds.has(request.id)),
+    ];
+  }, [forwardPackages, packageByRequestId, user.role, visibleRequests]);
+  const { columnWidths: requestColumnWidths, resetColumnWidths: resetRequestColumnWidths, resizeColumn: resizeRequestColumn, autoFitColumn: autoFitRequestColumn } = useTableColumnWidths(REQUEST_TABLE_COLUMN_WIDTHS, REQUEST_TABLE_COLUMN_MIN_WIDTHS);
   const requestTableWidth = visibleRequestColumns.reduce((sum, column) => sum + requestColumnWidths[column.id], 0);
+  const fitRequestColumn = (columnId: RequestTableColumn) => {
+    const labels: Record<RequestTableColumn, string> = { actions: 'Действие', unit: 'Объединение заявки', status: 'Статус', my_step: 'Мой этап', planned: 'План', approved: 'Утверждено', items_count: 'Строк' };
+    const values = tableRequests.map((item) => {
+      if (columnId === 'unit') return formatUnitName(item.unit_id);
+      if (columnId === 'status') return requestStatusLabels[item.status] || item.status;
+      if (columnId === 'my_step') return item.my_step_statuses?.map((step) => step.reviewed ? 'Согласовано' : step.status).join(', ') || '—';
+      if (columnId === 'planned') return money(item.summary?.planned_sum);
+      if (columnId === 'approved') return money(item.summary?.approved_sum ?? item.sum);
+      if (columnId === 'items_count') return item.summary?.items_count || 0;
+      return 'Удалить';
+    });
+    autoFitRequestColumn(columnId, [labels[columnId], ...values]);
+  };
+  const moveRequestColumn = (target: RequestTableColumn) => {
+    if (!draggedRequestColumn || draggedRequestColumn === target) return;
+    setRequestColumnOrder((current) => {
+      const next = current.filter((column) => column !== draggedRequestColumn);
+      next.splice(next.indexOf(target), 0, draggedRequestColumn);
+      return next;
+    });
+    setDraggedRequestColumn(null);
+  };
+  const renderRequestCell = (item: BudgetRequest, columnId: RequestTableColumn) => {
+    const canDelete = item.status === 'draft' && user.role === 'employee';
+    if (columnId === 'actions') {
+      return <TableCell key={columnId}><Stack direction="row" spacing={0.5}>{canDelete && <Tooltip title="Удалить"><IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }} aria-label="Удалить"><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>}</Stack></TableCell>;
+    }
+    if (columnId === 'unit') return <TableCell key={columnId}>{formatUnitName(item.unit_id)}</TableCell>;
+    if (columnId === 'status') return <TableCell key={columnId}><Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap><RequestStatusBadge status={item.status} />{item.frozen && <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}><LockOutlinedIcon color={item.fixed ? 'success' : 'warning'} fontSize="small" /></Tooltip>}</Stack></TableCell>;
+    if (columnId === 'my_step') return <TableCell key={columnId}><Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(item.my_step_statuses || []).map((step, index) => <StepStatusBadge key={`${step.status}-${index}`} status={step.reviewed && step.status === 'on_approval' ? 'approved' : step.status} label={step.reviewed && step.status === 'on_approval' ? 'Согласовано' : undefined} />)}{!item.my_step_statuses?.length && '—'}</Stack></TableCell>;
+    if (columnId === 'planned') return <TableCell key={columnId}>{money(item.summary?.planned_sum)}</TableCell>;
+    if (columnId === 'approved') return <TableCell key={columnId}>{money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum))}</TableCell>;
+    return <TableCell key={columnId}>{item.summary?.items_count || 0}</TableCell>;
+  };
   const renderRequestHeader = (
     columnId: RequestTableColumn,
     label: ReactNode,
@@ -574,19 +653,44 @@ export default function RequestsPage({ user }: { user: User }) {
           </colgroup>
           <TableHead>
             <TableRow>
-              {requestVisibility.unit && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('unit', 'Объединение заявки')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('unit', event)} /></TableCell>}
-              {requestVisibility.status && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('status', 'Статус')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('status', event)} /></TableCell>}
-              {requestVisibility.planned && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('planned', 'План')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('planned', event)} /></TableCell>}
-              {requestVisibility.approved && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('approved', 'Утверждено')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('approved', event)} /></TableCell>}
-              {requestVisibility.items_count && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('items_count', 'Строк')}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('items_count', event)} /></TableCell>}
-              {requestVisibility.actions && <TableCell sx={{ position: 'relative' }}>{renderRequestHeader('actions', 'Действие', { sortable: false, filterable: false })}<TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn('actions', event)} /></TableCell>}
+              {visibleRequestColumns.map((column) => (
+                <TableCell
+                  key={column.id}
+                  draggable
+                  onDragStart={() => setDraggedRequestColumn(column.id)}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={() => moveRequestColumn(column.id)}
+                  sx={{ position: 'relative', cursor: 'grab', '&:active': { cursor: 'grabbing' } }}
+                >
+                  {renderRequestHeader(column.id, column.label, column.id === 'actions' ? { sortable: false, filterable: false } : undefined)}
+                  <TableColumnResizeHandle onPointerDown={(event) => resizeRequestColumn(column.id, event)} onDoubleClick={() => fitRequestColumn(column.id)} />
+                </TableCell>
+              ))}
             </TableRow>
           </TableHead>
           <TableBody>
-            {visibleRequests.map((item) => {
+            {tableRequests.map((item) => {
               const canDelete = item.status === 'draft' && user.role === 'employee';
               const unitName = formatUnitName(item.unit_id);
+              const packageItem = packageByRequestId.get(item.id);
+              const isPackageStart = packageItem?.requests[0]?.id === item.id;
+              const reviewedCount = packageItem?.requests.filter((request) => request.my_step_statuses?.some((step) => step.step_id === packageItem.stepId && step.reviewed)).length || 0;
+              const packageReady = !!packageItem && reviewedCount === packageItem.requests.length;
               return (
+                <>
+                {isPackageStart && packageItem && (
+                  <TableRow key={`package-${packageItem.stepId}`} sx={{ bgcolor: packageReady ? '#F0FDF4' : '#F8FAFC' }}>
+                    <TableCell colSpan={visibleRequestColumns.length} sx={{ py: 1.25 }}>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
+                        <Box flex={1}>
+                          <Typography fontWeight={700}>Цепочка согласования</Typography>
+                          <Typography variant="body2" color="text.secondary">Заявок в пакете: {packageItem.requests.length} · согласовано: {reviewedCount}/{packageItem.requests.length}</Typography>
+                        </Box>
+                        <Button size="small" variant="contained" startIcon={<FactCheckIcon />} disabled={!packageReady || forwardPackage.isPending} onClick={() => forwardPackage.mutate({ stepId: packageItem.stepId, requestIds: packageItem.requests.map((request) => request.id) })}>Передать пакет</Button>
+                      </Stack>
+                    </TableCell>
+                  </TableRow>
+                )}
                 <TableRow
                   key={item.id}
                   hover
@@ -594,22 +698,8 @@ export default function RequestsPage({ user }: { user: User }) {
                   sx={{ cursor: 'pointer' }}
                   className={item.frozen ? 'fixed-request' : ''}
                 >
-                  {requestVisibility.unit && <TableCell>{unitName}</TableCell>}
-                  {requestVisibility.status && (
-                    <TableCell>
-                      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                        <RequestStatusBadge status={item.status} />
-                        {item.frozen && (
-                          <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}>
-                            <LockOutlinedIcon color={item.fixed ? 'success' : 'warning'} fontSize="small" />
-                          </Tooltip>
-                        )}
-                      </Stack>
-                    </TableCell>
-                  )}
-                  {requestVisibility.planned && <TableCell>{money(item.summary?.planned_sum)}</TableCell>}
-                  {requestVisibility.approved && <TableCell>{money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum))}</TableCell>}
-                  {requestVisibility.items_count && <TableCell>{item.summary?.items_count || 0}</TableCell>}
+                  {visibleRequestColumns.map((column) => renderRequestCell(item, column.id))}
+                  {false && <>
                   {requestVisibility.actions && (
                     <TableCell>
                       <Stack direction="row" spacing={0.5} justifyContent="flex-start">
@@ -628,7 +718,39 @@ export default function RequestsPage({ user }: { user: User }) {
                       </Stack>
                     </TableCell>
                   )}
+                  {requestVisibility.unit && <TableCell>{unitName}</TableCell>}
+                  {requestVisibility.status && (
+                    <TableCell>
+                      <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                        <RequestStatusBadge status={item.status} />
+                        {item.frozen && (
+                          <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}>
+                            <LockOutlinedIcon color={item.fixed ? 'success' : 'warning'} fontSize="small" />
+                          </Tooltip>
+                        )}
+                      </Stack>
+                    </TableCell>
+                  )}
+                  {requestVisibility.my_step && (
+                    <TableCell>
+                      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                        {(item.my_step_statuses || []).map((step, index) => (
+                          <StepStatusBadge
+                            key={`${step.status}-${index}`}
+                            status={step.reviewed && step.status === 'on_approval' ? 'approved' : step.status}
+                            label={step.reviewed && step.status === 'on_approval' ? 'Согласовано' : undefined}
+                          />
+                        ))}
+                        {!item.my_step_statuses?.length && '—'}
+                      </Stack>
+                    </TableCell>
+                  )}
+                  {requestVisibility.planned && <TableCell>{money(item.summary?.planned_sum)}</TableCell>}
+                  {requestVisibility.approved && <TableCell>{money(item.summary?.approved_sum ?? (item.status === 'cancelled' ? 0 : item.sum))}</TableCell>}
+                  {requestVisibility.items_count && <TableCell>{item.summary?.items_count || 0}</TableCell>}
+                  </>}
                 </TableRow>
+                </>
               );
             })}
             {visibleRequests.length === 0 && (

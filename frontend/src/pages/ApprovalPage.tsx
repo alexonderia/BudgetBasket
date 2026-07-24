@@ -1207,7 +1207,7 @@ function UserApprovalPage({ user }: { user: User }) {
   };
 
   const approve = useMutation({
-    mutationFn: () => api.post(`/steps/${stepId}/approve`),
+    mutationFn: (requestIds: string[]) => api.post(`/steps/${stepId}/approve`, { request_ids: requestIds }),
     onSuccess: () => {
       toast(user.role === 'zgd' ? 'Бюджет окончательно зафиксирован' : 'Шаг согласован', 'success');
       refresh();
@@ -1244,6 +1244,16 @@ function UserApprovalPage({ user }: { user: User }) {
   const allDelivered = requests.length > 0 && requests.every((item) => item.approval_status === 'on_approval');
   const allReviewed = allDelivered && requests.every((item) => item.reviewed_at_step);
   const canForwardPackage = !isLeaf && !isFinal && allDelivered && allReviewed;
+  const packageGroups = useMemo(() => {
+    if (!stepId || !requests.length) return [];
+    return [{
+      id: stepId,
+      name: 'Цепочка согласования',
+      items: requests,
+      delivered: requests.filter((item) => item.approval_status === 'on_approval').length,
+      reviewed: requests.filter((item) => item.reviewed_at_step).length,
+    }];
+  }, [requests, stepId]);
 
   if (isLoading) return <CircularProgress />;
   if (!steps.length) {
@@ -1289,8 +1299,8 @@ function UserApprovalPage({ user }: { user: User }) {
             <Button
               variant="contained"
               startIcon={<FactCheckIcon />}
-              disabled={!canForwardPackage || approve.isPending}
-              onClick={() => approve.mutate()}
+              disabled={!canForwardPackage || packageGroups.length !== 1 || approve.isPending}
+              onClick={() => approve.mutate(requests.map((item) => item.id))}
             >
               Передать проверенный пакет дальше
             </Button>
@@ -1312,6 +1322,30 @@ function UserApprovalPage({ user }: { user: User }) {
             ? 'Все заявки маршрута поступили и подтверждены. Их можно передать дальше одним пакетом.'
             : `Передача пакета пока недоступна: поступило ${requests.filter((item) => item.approval_status === 'on_approval').length} из ${requests.length}, подтверждено ${requests.filter((item) => item.reviewed_at_step).length} из ${requests.length}.`}
         </Alert>
+      )}
+
+      {!isLeaf && packageGroups.length > 0 && (
+        <Paper className="surface-pad">
+          <Stack spacing={1.5}>
+            <Box>
+              <Typography variant="h6">Пакеты для передачи</Typography>
+              <Typography variant="body2" color="text.secondary">Заявки одной цепочки согласования передаются единым пакетом.</Typography>
+            </Box>
+            {packageGroups.map((group) => {
+              const ready = group.delivered === group.items.length && group.reviewed === group.items.length;
+              return (
+                <Stack key={group.id} direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }} sx={{ p: 1.5, border: '1px solid', borderColor: ready ? 'success.light' : 'divider', borderRadius: 2 }}>
+                  <Box flex={1}>
+                    <Typography fontWeight={700}>{group.name}</Typography>
+                    <Typography variant="body2" color="text.secondary">Заявок: {group.items.length} · поступило: {group.delivered}/{group.items.length} · подтверждено: {group.reviewed}/{group.items.length}</Typography>
+                  </Box>
+                  <Chip size="small" color={ready ? 'success' : 'default'} label={ready ? 'Можно передать' : 'Ожидает готовности'} />
+                  {!isFinal && <Button variant="contained" startIcon={<FactCheckIcon />} disabled={!ready || approve.isPending} onClick={() => approve.mutate(group.items.map((item) => item.id))}>Передать дальше</Button>}
+                </Stack>
+              );
+            })}
+          </Stack>
+        </Paper>
       )}
 
       {dashboard && (
@@ -1350,6 +1384,7 @@ function UserApprovalPage({ user }: { user: User }) {
               <TableRow>
                 <TableCell padding="checkbox" />
                 <TableCell>Заявка</TableCell>
+                <TableCell>ЦФО</TableCell>
                 <TableCell>Подразделение</TableCell>
                 <TableCell>Статус</TableCell>
                 <TableCell>На этом этапе</TableCell>
@@ -1377,6 +1412,7 @@ function UserApprovalPage({ user }: { user: User }) {
                       {item.id.slice(0, 8)}
                     </Typography>
                   </TableCell>
+                  <TableCell>{item.package_name || item.unit?.name || '—'}</TableCell>
                   <TableCell>{item.unit?.name || '—'}</TableCell>
                   <TableCell>{item.status}</TableCell>
                   <TableCell><StepStatusBadge status={item.approval_status} /></TableCell>

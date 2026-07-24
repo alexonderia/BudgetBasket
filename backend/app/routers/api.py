@@ -22,6 +22,7 @@ from app.models import (
     RequestPatch,
     ResponsibleIn,
     StepCreate,
+    StepApproveIn,
     StepEdgeIn,
     StepPatch,
     StepReturnIn,
@@ -143,8 +144,8 @@ def step_dashboard(request: Request, step_id: str, user: User):
 
 
 @router.post("/steps/{step_id}/approve")
-def approve_step(request: Request, step_id: str, user: User):
-    return request.app.state.approval_service.approve_step(user, step_id)
+def approve_step(request: Request, step_id: str, user: User, payload: StepApproveIn | None = None):
+    return request.app.state.approval_service.approve_step(user, step_id, payload.request_ids if payload else [])
 
 
 @router.post("/steps/{step_id}/requests/{request_id}/approve")
@@ -451,6 +452,11 @@ def freeze_request_budget(request: Request, request_id: str, user: User):
 @router.post("/requests/{request_id}/unfreeze-budget")
 def unfreeze_request_budget(request: Request, request_id: str, user: User):
     return request.app.state.request_service.unfreeze_budget(user, request_id)
+
+
+@router.post("/requests/{request_id}/revoke-final-approval")
+def revoke_final_approval(request: Request, request_id: str, user: User):
+    return request.app.state.approval_service.revoke_final_approval(user, request_id)
 
 
 @router.post("/requests/{request_id}/resume-economist-review")

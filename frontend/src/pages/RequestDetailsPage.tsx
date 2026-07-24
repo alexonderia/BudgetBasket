@@ -63,7 +63,7 @@ const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const UPLOAD_EXTENSIONS = new Set(UPLOAD_ACCEPT.split(','));
 
-type ItemTableColumn = 'category' | 'article' | 'name' | 'justification' | 'plan' | 'status' | 'approved' | 'difference' | 'comment' | 'files' | 'actions';
+type ItemTableColumn = 'article' | 'name' | 'justification' | 'plan' | 'status' | 'approved' | 'difference' | 'comment' | 'files' | 'actions';
 type RequestDeletePreviewColumn = 'kind' | 'name' | 'sum';
 type RequestDeletePreviewRow = {
   kind: string;
@@ -87,7 +87,6 @@ type RequestApprovalRouteStep = {
 };
 
 const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
-  category: 120,
   article: 260,
   name: 220,
   justification: 240,
@@ -101,7 +100,6 @@ const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
 };
 
 const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
-  category: 90,
   article: 180,
   name: 160,
   justification: 180,
@@ -193,12 +191,6 @@ function hasEffectiveItemChanges(item: BudgetItem, draft: Partial<BudgetItem>) {
   });
 }
 
-function categoryName(catalog: CatalogItem[], articleId?: string | null) {
-  const item = catalog.find((entry) => entry.id === articleId);
-  if (!item?.parent_id) return '—';
-  return catalog.find((entry) => entry.id === item.parent_id)?.name || '—';
-}
-
 function getErrorMessage(error: unknown, fallback: string) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
   if (detail) return detail;
@@ -258,6 +250,8 @@ const historyFieldLabels: Record<string, string> = {
   status: 'Статус',
   comment: 'Комментарий',
   frozen: 'Фиксация бюджета',
+  fixed: 'Финальная фиксация ЗГД',
+  is_income: 'Тип строки',
   dds_id: 'Статья ДДС',
   invest_id: 'Инвест-проект',
   text: 'Текст сообщения',
@@ -280,6 +274,7 @@ const approvalRouteActionLabels: Record<string, string> = {
   approval_request_returned_to_employee: 'Заявка возвращена сотруднику на доработку',
   approval_request_reopened_for_revision: 'Заявка направлена на доработку',
   approval_request_revision_accepted: 'Заявка принята после доработки',
+  approval_request_final_revoked: 'Финальное согласование ЗГД отменено',
   approval_economist_review_resumed: 'Экономист возобновил рассмотрение заявки',
 };
 
@@ -315,6 +310,10 @@ function approvalStepTitle(step: ApprovalStep) {
 
 function historyValue(value: unknown, field: string, entity: string, action: string) {
   if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'boolean') {
+    if (field === 'is_income') return value ? 'Доход' : 'Расход';
+    return value ? 'Да' : 'Нет';
+  }
   if (field === 'sum_plan' || field === 'sum_fact') return money(Number(value));
   if (field === 'status' && typeof value === 'string') {
     if (action.startsWith('approval_')) return stepStatusLabels[value as StepStatus] || requestStatusLabels[value as keyof typeof requestStatusLabels] || value;
@@ -694,11 +693,6 @@ function ItemsTable({
 
   const itemTableDefinitions = useMemo<TableColumnDefinition<BudgetItem, ItemTableColumn>[]>(() => [
     {
-      id: 'category',
-      label: '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F',
-      getValue: (item) => categoryName(catalog, kind === 'dds' ? item.dds_id : item.invest_id),
-    },
-    {
       id: 'article',
       label: kind === 'dds' ? '\u0421\u0442\u0430\u0442\u044C\u044F \u0414\u0414\u0421' : '\u0418\u043D\u0432\u0435\u0441\u0442-\u043F\u0440\u043E\u0435\u043A\u0442',
       getValue: (item) => catalog.find((entry) => entry.id === (kind === 'dds' ? item.dds_id : item.invest_id))?.name || '\u0421\u0442\u0430\u0442\u044C\u044F \u041D\u0421\u0418 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430',
@@ -783,8 +777,6 @@ function ItemsTable({
     pendingDeletedFileIds: number[],
   ) => {
     switch (columnId) {
-      case 'category':
-        return <TableCell key={columnId} sx={bodyCellSx(columnId)}>{categoryName(catalog, catalogId)}</TableCell>;
       case 'article':
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
@@ -1238,8 +1230,6 @@ function ItemsTable({
             <TableRow>
               {visibleItemColumns.map((column) => {
                 switch (column.id) {
-                  case 'category':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('category', 'Категория')}</TableCell>;
                   case 'article':
                     return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('article', kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект')}</TableCell>;
                   case 'name':
@@ -1536,6 +1526,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось передать пакет дальше'), 'error'),
   });
+  const revokeFinalApproval = useMutation({
+    mutationFn: () => api.post(`/requests/${id}/revoke-final-approval`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: detailsKey });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-action'] });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-route'] });
+      queryClient.invalidateQueries({ queryKey: ['requests'] });
+      queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+      queryClient.invalidateQueries({ queryKey: ['step-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
+      toast('Финальное согласование отменено. Заявка возвращена на этап ЗГД.', 'success');
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось отменить финальное согласование'), 'error'),
+  });
   const returnForRevision = useMutation({
     mutationFn: () => api.post(
       `/steps/${approvalAction?.step.id}/return`,
@@ -1683,6 +1687,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     && request.frozen
     && approvalAction?.step.unit_id != null
     && approvalAction.request_status === 'on_revision';
+  const canRevokeFinalApproval = user.role === 'zgd' && !!request?.fixed;
   const approvalRequestLabel = approvalAction?.is_final ? 'Зафиксировать заявку' : 'Подтвердить проверку';
 
   const exportRequest = async () => {
@@ -1788,6 +1793,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                     {canReturnForRevision && (
                       <Button startIcon={<UndoIcon />} variant="outlined" color="warning" onClick={() => setReturnDialogOpen(true)}>
                         {approvalAction?.step.unit_id ? 'Вернуть сотруднику на доработку' : 'Вернуть на доработку'}
+                      </Button>
+                    )}
+                    {canRevokeFinalApproval && (
+                      <Button startIcon={<UndoIcon />} variant="outlined" color="warning" onClick={() => revokeFinalApproval.mutate()} disabled={revokeFinalApproval.isPending}>
+                        Отменить согласование
                       </Button>
                     )}
                     {isClosed && (
@@ -2067,7 +2077,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
             })}
             {historyTab === 'content' && !contentLogs.length && <Typography sx={{ py: 2 }} color="text.secondary">Изменений пока нет.</Typography>}
             {historyTab === 'approval' && approvalRoute
-              .flatMap(({ step, logs: stepLogs }) => stepLogs.map((entry) => ({ step, entry })))
+              .flatMap(({ step, logs: stepLogs }) => stepLogs.filter((entry) => entry.log.action !== 'approval_step_waiting').map((entry) => ({ step, entry })))
               .sort((left, right) => new Date(right.entry.created_at).getTime() - new Date(left.entry.created_at).getTime())
               .map(({ step, entry }) => (
                 <Box key={`${step.id}:${entry.id}`} sx={{ py: 1.5, borderBottom: 1, borderColor: 'divider' }}>
@@ -2092,7 +2102,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                   </Stack>
                 </Box>
               ))}
-            {historyTab === 'approval' && !approvalRoute.some(({ logs: stepLogs }) => stepLogs.length) && (
+            {historyTab === 'approval' && !approvalRoute.some(({ logs: stepLogs }) => stepLogs.some((entry) => entry.log.action !== 'approval_step_waiting')) && (
               <Typography sx={{ py: 2 }} color="text.secondary">Событий согласования пока нет.</Typography>
             )}
           </Stack>

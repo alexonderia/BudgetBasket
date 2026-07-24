@@ -2269,16 +2269,17 @@ class ApprovalService:
                 _, before = self._set_request_step_state(
                     transaction_repo, request_id, route_step["id"], status,
                 )
-                self._log_request_step_status(
-                    transaction_repo,
-                    user,
-                    request_id,
-                    route_step,
-                    before,
-                    status,
-                    event_id,
-                    action="approval_step_opened" if index == 0 else "approval_step_waiting",
-                )
+                if index == 0:
+                    self._log_request_step_status(
+                        transaction_repo,
+                        user,
+                        request_id,
+                        route_step,
+                        before,
+                        status,
+                        event_id,
+                        action="approval_step_opened",
+                    )
 
         if repo is not None:
             apply(repo)
@@ -2354,6 +2355,15 @@ class ApprovalService:
             if status in active_statuses:
                 result.append(request)
         return result
+
+    def _request_package(self, repo: Repository, request: dict) -> tuple[str, str]:
+        """Requests from different CFOs stay independent at a shared route step."""
+        units = {item["id"]: item for item in repo.load_all("units")}
+        unit = units.get(request.get("unit_id"))
+        if not unit:
+            return request.get("unit_id", "unknown"), "Неуказанное ЦФО"
+        cfo = units.get(unit.get("parent_id")) or unit
+        return cfo["id"], cfo.get("name") or "Неуказанное ЦФО"
 
     def _request_reviewed_at_step(self, repo: Repository, request_id: str, step_id: str) -> bool:
         """Whether the latest request-specific event at a step is its review."""
@@ -2448,6 +2458,8 @@ class ApprovalService:
                     "reviewed_items_count": sum(
                         item.get("status") != ItemStatus.on_review for item in request_items
                     ),
+                    "package_id": self._request_package(self.repo, request)[0],
+                    "package_name": self._request_package(self.repo, request)[1],
                 }
             )
         return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
@@ -2594,7 +2606,7 @@ class ApprovalService:
             public_step["request"] = request
             return public_step
 
-    def approve_step(self, user: dict, step_id: str) -> dict:
+    def approve_step(self, user: dict, step_id: str, request_ids: list[str] | None = None) -> dict:
         with self.repo.transaction() as repo:
             step = get_required(repo, "steps", step_id)
             self._require_assignee_action(repo, user, step)
@@ -2603,6 +2615,13 @@ class ApprovalService:
             if step_id in self._root_ids(repo):
                 raise HTTPException(status_code=400, detail="ЗГД фиксирует каждую поступившую заявку из её карточки")
             requests = self._requests_for_route_step(repo, step_id)
+            requested_ids = set(request_ids or [])
+            if requested_ids:
+                selected_requests = [request for request in requests if request["id"] in requested_ids]
+                if len(selected_requests) != len(requested_ids):
+                    raise HTTPException(status_code=400, detail="В пакет можно включать только заявки текущего шага")
+                if {request["id"] for request in requests} != requested_ids:
+                    raise HTTPException(status_code=409, detail="В пакет должны входить все заявки цепочки на этом шаге")
             if not requests:
                 raise HTTPException(status_code=400, detail="Для этого шага нет заявок")
             not_delivered = [
@@ -2632,6 +2651,34 @@ class ApprovalService:
             public_step["status"] = StepStatus.approved
             public_step["request_ids"] = [request["id"] for request in requests]
             return public_step
+
+    def revoke_final_approval(self, user: dict, request_id: str) -> dict:
+        with self.repo.transaction() as repo:
+            request = get_required(repo, "requests", request_id)
+            if user.get("role") != "zgd":
+                raise HTTPException(status_code=403, detail="Отменить финальное согласование может только ЗГД")
+            if not request.get("fixed"):
+                raise HTTPException(status_code=409, detail="Заявка не была финально согласована")
+            route = self._request_route(repo, request["unit_id"])
+            final_step = next((step for step in route if step["id"] in self._root_ids(repo) and step.get("user_id") == user.get("id")), None)
+            if not final_step:
+                raise HTTPException(status_code=403, detail="Заявка не относится к маршруту текущего ЗГД")
+            event_id = self._event_id()
+            for step in route:
+                target_status = StepStatus.on_approval if step["id"] == final_step["id"] else StepStatus.approved
+                self._set_request_step_state(repo, request_id, step["id"], target_status)
+            updated = repo.update("requests", request_id, {"fixed": False, "frozen": True})
+            self._request_log(
+                repo,
+                user,
+                request_id,
+                "approval_request_final_revoked",
+                event_id,
+                changes={"fixed": {"from": True, "to": False}},
+                step_id=final_step["id"],
+            )
+            sync_annual_budgets(repo)
+            return updated
 
     def all_step_logs(self, user: dict, **filters) -> list[dict]:
         self.permissions.require_admin(user)

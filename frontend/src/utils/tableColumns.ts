@@ -47,10 +47,20 @@ export function useTableColumnWidths<K extends string>(
     window.addEventListener('pointerup', onUp);
   };
 
+  const autoFitColumn = (columnId: K, values: Array<string | number>) => {
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.font = '14px Roboto, Arial, sans-serif';
+    const widest = Math.max(...values.map((value) => context.measureText(String(value)).width), 0);
+    setColumnWidths((current) => ({ ...current, [columnId]: Math.max(minimumWidths[columnId], Math.ceil(widest + 48)) }));
+  };
+
   return {
     columnWidths,
     resetColumnWidths: () => setColumnWidths({ ...initialWidths }),
     resizeColumn,
+    autoFitColumn,
   };
 }
 
