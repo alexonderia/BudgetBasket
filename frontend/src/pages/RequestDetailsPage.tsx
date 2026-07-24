@@ -59,6 +59,7 @@ import { downloadAuthorized, downloadBlob } from '../utils/download';
 import { itemStatusLabels, money, requestStatusLabels, stepStatusLabels } from '../utils/labels';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { normalizePositiveAmount } from '../utils/validation';
+import { AUTH_TOKEN_KEY } from '../utils/session';
 
 const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
@@ -1374,19 +1375,21 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnComment, setReturnComment] = useState('');
 
-  const { data: request } = useQuery({
+  const { data: request, isPending: requestPending } = useQuery({
     queryKey: detailsKey,
     queryFn: async () => (await api.get<BudgetRequest>(`/requests/${id}`)).data,
+    enabled: !!id,
   });
-  const { data: approvalAction } = useQuery({
+  const canLoadApprovalAction = ['economist', 'approver', 'zgd'].includes(user.role);
+  const { data: approvalAction, isPending: approvalActionPending } = useQuery({
     queryKey: [...detailsKey, 'approval-action', user.id],
     queryFn: async () => (await api.get<RequestApprovalAction | null>(`/requests/${id}/approval-step`)).data,
-    enabled: !!request && ['economist', 'approver', 'zgd'].includes(user.role),
+    enabled: !!id && canLoadApprovalAction,
   });
-  const { data: approvalRoute = [] } = useQuery({
+  const { data: approvalRoute, isPending: approvalRoutePending } = useQuery({
     queryKey: [...detailsKey, 'approval-route'],
     queryFn: async () => (await api.get<RequestApprovalRouteStep[]>(`/requests/${id}/approval-route`)).data,
-    enabled: !!request,
+    enabled: !!id,
   });
   const { data: units = [] } = useQuery({
     queryKey: ['units'],
@@ -1395,19 +1398,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const { data: counterparty } = useQuery({
     queryKey: [...detailsKey, 'counterparty-contact'],
     queryFn: async () => (await api.get<CounterpartyContact | null>(`/requests/${id}/counterparty-contact`)).data,
-    enabled: !!request && (user.role === 'economist' || user.role === 'employee'),
+    enabled: !!id && (user.role === 'economist' || user.role === 'employee'),
   });
   const { data: chat } = useQuery({
     queryKey: [...detailsKey, 'chat'],
     queryFn: async () => (await api.get(`/requests/${id}/chat`)).data as RequestChat,
-    enabled: !!request,
+    enabled: !!id,
     retry: false,
   });
   const { data: logs = [] } = useQuery({
     queryKey: [...detailsKey, 'request-logs'],
     queryFn: async () => (await api.get<RequestLog[]>(`/requests/${id}/logs`)).data,
-    enabled: !!request,
+    enabled: !!id,
   });
+  const resolvedApprovalRoute = approvalRoute ?? [];
   const contentLogs = useMemo(
     () => logs.filter((entry) => !entry.log.action.startsWith('approval_')),
     [logs],
@@ -1442,7 +1446,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     }, { replace: true });
   }, [chat, request?.status, searchParams, setSearchParams]);
   useEffect(() => {
-    const token = localStorage.getItem('budgetbasket_token');
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
     if (!request?.id || (!chat && request.status === 'draft') || !token) return;
 
     let socket: WebSocket | null = null;
@@ -1489,11 +1493,12 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось отправить сообщение'), 'error'),
   });
-  const { data: requestItems = [] } = useQuery({
+  const { data: requestItems, isPending: itemsPending } = useQuery({
     queryKey: [...detailsKey, 'items'],
     queryFn: async () => (await api.get<BudgetItem[]>(`/requests/${id}/items`)).data,
-    enabled: !!request,
+    enabled: !!id,
   });
+  const resolvedRequestItems = requestItems ?? [];
 
   const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
   const requestDepartmentId = useMemo(() => {
@@ -1637,14 +1642,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const activeKind = usesInvestProjects ? 'invest' : 'dds';
   const activeCatalog = usesInvestProjects ? investCatalog : ddsCatalog;
   const expenseItems = useMemo(
-    () => requestItems.filter((item) => !item.is_income && (usesInvestProjects ? !!item.invest_id : !!item.dds_id)),
-    [requestItems, usesInvestProjects],
+    () => resolvedRequestItems.filter((item) => !item.is_income && (usesInvestProjects ? !!item.invest_id : !!item.dds_id)),
+    [resolvedRequestItems, usesInvestProjects],
   );
   const incomeItems = useMemo(
-    () => requestItems.filter((item) => item.is_income && (usesInvestProjects ? !!item.invest_id : !!item.dds_id)),
-    [requestItems, usesInvestProjects],
+    () => resolvedRequestItems.filter((item) => item.is_income && (usesInvestProjects ? !!item.invest_id : !!item.dds_id)),
+    [resolvedRequestItems, usesInvestProjects],
   );
-  const allItems = requestItems.filter((item) => item.status !== 'deleted');
+  const allItems = resolvedRequestItems.filter((item) => item.status !== 'deleted');
   const requestDeletePreviewDefinitions = useMemo<TableColumnDefinition<RequestDeletePreviewRow, RequestDeletePreviewColumn>[]>(() => [
     {
       id: 'kind',
@@ -1715,19 +1720,21 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       onClearVisibleFilterValues={() => setRequestDeletePreviewVisibleFilterOptions(columnId, false)}
     />
   );
-  const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.frozen && allItems.length > 0;
+  const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.frozen && !itemsPending && allItems.length > 0;
   const canCancel = user.role === 'employee' && request && request.status === 'draft' && !request.frozen;
-  const canFinalize = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && allItems.length > 0 && allItems.every((item) => item.status !== 'on_review');
-  const canApproveAllItems = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && allItems.some((item) => item.status === 'on_review');
+  const canFinalize = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && !itemsPending && allItems.length > 0 && allItems.every((item) => item.status !== 'on_review');
+  const canApproveAllItems = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && !itemsPending && allItems.some((item) => item.status === 'on_review');
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
   const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
   const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.frozen;
-  const canApproveRequest = !!request && !!approvalAction?.can_approve;
-  const canForwardApprovalPackage = !!request && !!approvalAction?.can_forward;
+  const canApproveRequest = !!request && !approvalActionPending && !!approvalAction?.can_approve;
+  const canForwardApprovalPackage = !!request && !approvalActionPending && !!approvalAction?.can_forward;
   const canReturnForRevision = !!request
+    && !approvalActionPending
     && ['economist', 'approver', 'zgd'].includes(user.role)
     && !!approvalAction?.can_return;
   const canResumeEconomistReview = !!request
+    && !approvalActionPending
     && user.role === 'economist'
     && request.frozen
     && approvalAction?.step.unit_id != null
@@ -1740,7 +1747,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     downloadBlob(response.data, `request_${id.slice(0, 8)}.xlsx`);
   };
 
-  if (!request) return <Typography>Загрузка заявки...</Typography>;
+  if (!id || requestPending || !request) {
+    return <Typography>Загрузка заявки...</Typography>;
+  }
+
+  // Keep summary visible while a background refetch runs, but avoid mixing ids.
+  if (request.id !== id) {
+    return <Typography>Загрузка заявки...</Typography>;
+  }
 
   return (
     <Stack spacing={3}>
@@ -1908,20 +1922,22 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                   Согласующие по маршруту заявки и их контакты.
                 </Typography>
               </Box>
-              {approvalRoute.length > 0 ? (
+              {approvalRoutePending ? (
+                <Typography variant="body2" color="text.secondary">Загрузка маршрута согласования…</Typography>
+              ) : resolvedApprovalRoute.length > 0 ? (
                 <>
                   <Accordion className="approval-route-mobile-accordion" disableGutters elevation={0} defaultExpanded={false}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon />} className="approval-route-mobile-summary">
                       {(() => {
-                        const activeIndex = approvalRouteActiveIndex(approvalRoute);
-                        const activeStep = approvalRoute[activeIndex]?.step;
+                        const activeIndex = approvalRouteActiveIndex(resolvedApprovalRoute);
+                        const activeStep = resolvedApprovalRoute[activeIndex]?.step;
                         return (
                           <Stack spacing={0.25} minWidth={0}>
                             <Typography variant="body2" fontWeight={700} noWrap>
                               {approvalUserName(activeStep?.user || null)}
                             </Typography>
                             <Typography variant="caption" color="text.secondary">
-                              Шаг {activeIndex + 1} из {approvalRoute.length}
+                              Шаг {activeIndex + 1} из {resolvedApprovalRoute.length}
                               {activeStep ? ` · ${stepStatusLabels[activeStep.request_status || activeStep.status]}` : ''}
                             </Typography>
                           </Stack>
@@ -1929,10 +1945,10 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                       })()}
                     </AccordionSummary>
                     <AccordionDetails className="approval-route-mobile-details">
-                      <ApprovalRouteStepper route={approvalRoute} orientation="vertical" />
+                      <ApprovalRouteStepper route={resolvedApprovalRoute} orientation="vertical" />
                     </AccordionDetails>
                   </Accordion>
-                  <ApprovalRouteStepper route={approvalRoute} orientation="horizontal" />
+                  <ApprovalRouteStepper route={resolvedApprovalRoute} orientation="horizontal" />
                 </>
               ) : (
                 <Typography variant="body2" color="text.secondary">Для заявки пока не создан маршрут согласования.</Typography>
@@ -2135,7 +2151,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               );
             })}
             {historyTab === 'content' && !contentLogs.length && <Typography sx={{ py: 2 }} color="text.secondary">Изменений пока нет.</Typography>}
-            {historyTab === 'approval' && approvalRoute
+            {historyTab === 'approval' && resolvedApprovalRoute
               .flatMap(({ step, logs: stepLogs }) => stepLogs.filter((entry) => entry.log.action !== 'approval_step_waiting').map((entry) => ({ step, entry })))
               .sort((left, right) => new Date(right.entry.created_at).getTime() - new Date(left.entry.created_at).getTime())
               .map(({ step, entry }) => (
@@ -2161,17 +2177,25 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                   </Stack>
                 </Box>
               ))}
-            {historyTab === 'approval' && !approvalRoute.some(({ logs: stepLogs }) => stepLogs.some((entry) => entry.log.action !== 'approval_step_waiting')) && (
+            {historyTab === 'approval' && !approvalRoutePending && !resolvedApprovalRoute.some(({ logs: stepLogs }) => stepLogs.some((entry) => entry.log.action !== 'approval_step_waiting')) && (
               <Typography sx={{ py: 2 }} color="text.secondary">Событий согласования пока нет.</Typography>
             )}
           </Stack>
         </Drawer>
 
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
-          <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} />
+          {itemsPending ? (
+            <Typography color="text.secondary">Загрузка строк заявки…</Typography>
+          ) : (
+            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} />
+          )}
         </Paper>
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
-          <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} />
+          {itemsPending ? (
+            <Typography color="text.secondary">Загрузка строк заявки…</Typography>
+          ) : (
+            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} />
+          )}
         </Paper>
       </Stack>
 

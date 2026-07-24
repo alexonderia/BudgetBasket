@@ -395,6 +395,27 @@ function ApprovalGraph({
     deltaY: number;
   } | null>(null);
   const zoomGestureTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Rebuild framing when the set of steps changes so a previous user's pan/zoom snapshot cannot stick.
+  const stepsIdentity = useMemo(
+    () => steps.map((step) => step.id).sort().join('|'),
+    [steps],
+  );
+
+  useEffect(() => {
+    hasAutoFramedGraph.current = false;
+    setDraggedChildId(null);
+    setDraggedCfoKey(null);
+    setCfoOrder([]);
+    setOpenReviewerStepId(null);
+    setOpenContactStepId(null);
+    setHoveredEdgeKey(null);
+    setPendingConnectionChildId(null);
+    setPendingConnectionCursor(null);
+    setZoom(0.75);
+    setPan({ x: 72, y: 56 });
+    setIsPanning(false);
+  }, [stepsIdentity]);
+
   const layout = useMemo(() => {
     const byId = new Map(steps.map((step) => [step.id, step]));
     const depth = new Map<string, number>();
@@ -1074,10 +1095,11 @@ function AdminApprovalPage() {
     root_step_id: string | null;
   } | null>(null);
 
-  const { data: steps = [] } = useQuery({
+  const { data: steps, isPending: stepsPending } = useQuery({
     queryKey: ['approval-steps'],
     queryFn: async () => (await api.get<ApprovalStep[]>('/steps')).data,
   });
+  const resolvedSteps = steps ?? [];
   const { data: users = [] } = useQuery({
     queryKey: ['users'],
     queryFn: async () => (await api.get<User[]>('/users')).data,
@@ -1191,8 +1213,8 @@ function AdminApprovalPage() {
   });
 
   const eligibleUsers = users.filter((item) => ['approver', 'zgd'].includes(item.role));
-  const stepNames = useMemo(() => new Map(steps.map((step) => [step.id, stepName(step)])), [steps]);
-  const edges = steps.flatMap((parent) => parent.child_step_ids.map((child) => ({
+  const stepNames = useMemo(() => new Map(resolvedSteps.map((step) => [step.id, stepName(step)])), [resolvedSteps]);
+  const edges = resolvedSteps.flatMap((parent) => parent.child_step_ids.map((child) => ({
     parent_step_id: parent.id,
     child_step_id: child,
   })));
@@ -1229,17 +1251,21 @@ function AdminApprovalPage() {
           <Typography variant="body2" color="text.secondary">
             Стрелка показывает движение заявки: от модуля и экономиста к проверяющим, затем к ЗГД. Наведите курсор на карточку и перетащите кнопку «+» на проверяющего или ЗГД, чтобы создать связь. Клик по пустому месту при активной пунктирной линии создаёт новый привязанный шаг.
           </Typography>
-          <ApprovalGraph
-            steps={steps}
-            selectedStepId={selectedStepId}
-            onSelect={setSelectedStepId}
-            onCreateStep={openCreateStep}
-            onAssign={(step, userId) => patchStep.mutate({ id: step.id, patch: { user_id: userId } })}
-            onConnect={(childStepId, parentStepId) => createEdge.mutate({ child_step_id: childStepId, parent_step_id: parentStepId })}
-            onDisconnect={openEdgeDelete}
-            onDeleteStep={setStepDeleteTarget}
-            reviewers={eligibleUsers.filter((user) => user.role === 'approver')}
-          />
+          {stepsPending && !steps ? (
+            <Typography color="text.secondary">Загрузка графа маршрута…</Typography>
+          ) : (
+            <ApprovalGraph
+              steps={resolvedSteps}
+              selectedStepId={selectedStepId}
+              onSelect={setSelectedStepId}
+              onCreateStep={openCreateStep}
+              onAssign={(step, userId) => patchStep.mutate({ id: step.id, patch: { user_id: userId } })}
+              onConnect={(childStepId, parentStepId) => createEdge.mutate({ child_step_id: childStepId, parent_step_id: parentStepId })}
+              onDisconnect={openEdgeDelete}
+              onDeleteStep={setStepDeleteTarget}
+              reviewers={eligibleUsers.filter((user) => user.role === 'approver')}
+            />
+          )}
         </Stack>
       </Paper>
 
@@ -1258,7 +1284,7 @@ function AdminApprovalPage() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {steps.map((step) => (
+            {resolvedSteps.map((step) => (
               <TableRow key={step.id} selected={step.id === selectedStepId} onClick={() => setSelectedStepId(step.id)} sx={{ cursor: 'pointer' }}>
                 <TableCell sx={{ minWidth: 210 }}>
                   {step.unit_id ? (
@@ -1304,10 +1330,10 @@ function AdminApprovalPage() {
           <Typography variant="h6">Связи графа</Typography>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
             <TextField select label="Родительский шаг" value={parentStepId} onChange={(event) => setParentStepId(event.target.value)} fullWidth>
-              {steps.map((step) => <MenuItem key={step.id} value={step.id}>{stepNames.get(step.id)}</MenuItem>)}
+              {resolvedSteps.map((step) => <MenuItem key={step.id} value={step.id}>{stepNames.get(step.id)}</MenuItem>)}
             </TextField>
             <TextField select label="Дочерний шаг" value={childStepId} onChange={(event) => setChildStepId(event.target.value)} fullWidth>
-              {steps.map((step) => <MenuItem key={step.id} value={step.id}>{stepNames.get(step.id)}</MenuItem>)}
+              {resolvedSteps.map((step) => <MenuItem key={step.id} value={step.id}>{stepNames.get(step.id)}</MenuItem>)}
             </TextField>
             <Button
               variant="outlined"

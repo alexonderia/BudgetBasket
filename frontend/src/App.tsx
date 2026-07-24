@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Navigate, Route, Routes, useNavigate } from 'react-router-dom';
+import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { api } from './api/client';
 import { Layout } from './components/Layout';
 import CatalogsPage from './pages/CatalogsPage';
@@ -12,36 +12,47 @@ import UnitsPage from './pages/UnitsPage';
 import UsersPage from './pages/UsersPage';
 import type { User } from './types';
 import { canAccessApproval, defaultRouteForRole } from './utils/roles';
+import { AUTH_TOKEN_KEY, AUTH_USER_KEY, clearUserSession } from './utils/session';
+
+function RequestDetailsRoute({ user }: { user: User }) {
+  const { id = '' } = useParams();
+  // Remount on :id change so dialogs, chat drafts and local UI never leak between requests.
+  return <RequestDetailsPage key={id} user={user} />;
+}
 
 export default function App() {
   const [user, setUser] = useState<User | null>(() => {
-    const raw = localStorage.getItem('budgetbasket_user');
+    const raw = localStorage.getItem(AUTH_USER_KEY);
     return raw ? JSON.parse(raw) : null;
   });
   const navigate = useNavigate();
 
   const persistUser = (nextUser: User) => {
-    localStorage.setItem('budgetbasket_user', JSON.stringify(nextUser));
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(nextUser));
     setUser(nextUser);
   };
 
   useEffect(() => {
-    if (!localStorage.getItem('budgetbasket_token')) return;
+    if (!localStorage.getItem(AUTH_TOKEN_KEY)) return;
     api
       .get<User>('/auth/me')
       .then((response) => persistUser(response.data))
-      .catch(() => setUser(null));
+      .catch(() => {
+        clearUserSession();
+        setUser(null);
+      });
   }, []);
 
   function handleLogin(token: string, nextUser: User) {
-    localStorage.setItem('budgetbasket_token', token);
+    // Drop any prior-user query cache / chat prefs before entering the new session.
+    clearUserSession();
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
     persistUser(nextUser);
     navigate(defaultRouteForRole(nextUser.role));
   }
 
   function logout() {
-    localStorage.removeItem('budgetbasket_token');
-    localStorage.removeItem('budgetbasket_user');
+    clearUserSession();
     setUser(null);
     navigate('/login');
   }
@@ -61,11 +72,11 @@ export default function App() {
         <Route path="/" element={user.role === 'employee' ? <Navigate to="/requests" replace /> : <DashboardPage user={user} />} />
         <Route path="/income-dashboard" element={<Navigate to="/" replace />} />
         <Route path="/requests" element={<RequestsPage user={user} />} />
-        <Route path="/requests/:id" element={<RequestDetailsPage user={user} />} />
+        <Route path="/requests/:id" element={<RequestDetailsRoute user={user} />} />
         <Route path="/users" element={user.role === 'admin' ? <UsersPage /> : <Navigate to="/" replace />} />
         <Route path="/units" element={user.role === 'admin' ? <UnitsPage /> : <Navigate to="/" replace />} />
         <Route path="/catalogs" element={user.role === 'admin' ? <CatalogsPage /> : <Navigate to="/" replace />} />
-        <Route path="/approval" element={canAccessApproval(user.role) ? <ApprovalPage user={user} /> : <Navigate to="/" replace />} />
+        <Route path="/approval" element={canAccessApproval(user.role) ? <ApprovalPage key={user.id} user={user} /> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

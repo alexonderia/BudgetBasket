@@ -21,6 +21,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
+import { AUTH_USER_KEY } from '../utils/session';
 import { RequestStatusBadge } from './StatusBadge';
 import type { Profile, RequestStatus } from '../types';
 
@@ -79,7 +80,7 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
   const lastMarkedReadRef = useRef('');
   const currentUserId = useMemo(() => {
     try {
-      return (JSON.parse(localStorage.getItem('budgetbasket_user') || '{}') as { id?: string }).id || '';
+      return (JSON.parse(localStorage.getItem(AUTH_USER_KEY) || '{}') as { id?: string }).id || '';
     } catch {
       return '';
     }

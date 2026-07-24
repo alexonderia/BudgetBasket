@@ -42,6 +42,7 @@ import { chatNotificationsWebSocketUrl } from '../api/websocket';
 import type { Profile, User } from '../types';
 import { roleLabels } from '../utils/labels';
 import { canAccessApproval } from '../utils/roles';
+import { AUTH_TOKEN_KEY } from '../utils/session';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 import { AppBreadcrumbs, breadcrumblessPaths } from './AppBreadcrumbs';
 import { ChatInboxDrawer } from './ChatInboxDrawer';
@@ -138,7 +139,7 @@ export function Layout({
   const canUseChat = user.role === 'employee' || user.role === 'economist';
 
   useEffect(() => {
-    const token = localStorage.getItem('budgetbasket_token');
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
     if (!canUseChat || !token) return;
 
     let socket: WebSocket | null = null;
