@@ -1,6 +1,6 @@
 import type { Role } from '../types';
 
-export const approvalRoles: Role[] = ['admin'];
+export const approvalRoles: Role[] = ['admin', 'economist', 'employee', 'approver', 'zgd'];
 
 export function canAccessApproval(role: Role): boolean {
   return approvalRoles.includes(role);

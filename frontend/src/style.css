@@ -1215,13 +1215,14 @@
   .approval-chart-viewport {
     position: relative;
     overflow: hidden;
-    min-height: 420px;
-    height: min(70vh, 760px);
+    min-height: 620px;
+    height: calc(100vh - 230px);
     border: 1px solid rgba(215, 221, 231, 0.72);
     border-radius: 14px;
     background: rgba(248, 250, 253, 0.62);
     cursor: grab;
     touch-action: none;
+    overscroll-behavior: contain;
     user-select: none;
   }
 
@@ -1233,7 +1234,7 @@
     position: relative;
     min-width: 100%;
     transform-origin: top left;
-    transition: transform 180ms ease;
+    transition: none;
   }
 
   .approval-chart-viewport.is-panning .approval-chart-stage {
@@ -1244,7 +1245,88 @@
     position: absolute;
     inset: 0;
     z-index: 1;
+    pointer-events: auto;
+  }
+
+  .approval-edge-hit-area {
+    cursor: pointer;
+  }
+
+  .approval-pending-edge {
+    stroke: var(--bb-primary);
+    stroke-width: 2px;
+    stroke-dasharray: 6 5;
     pointer-events: none;
+  }
+
+  .approval-edge-delete {
+    cursor: pointer;
+  }
+
+  .approval-edge-delete circle {
+    fill: #ffffff;
+    stroke: #d32f2f;
+    stroke-width: 1.5px;
+    filter: drop-shadow(0 1px 2px rgba(17, 24, 39, 0.2));
+  }
+
+  .approval-edge-delete path {
+    fill: none;
+    stroke: #d32f2f;
+    stroke-width: 1.75px;
+    stroke-linecap: round;
+  }
+
+  .approval-graph-pool {
+    position: absolute;
+    z-index: 0;
+    box-sizing: border-box;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 8px;
+    overflow: hidden;
+    border: 1px solid rgba(25, 118, 210, 0.2);
+    border-radius: 14px;
+    background: rgba(25, 118, 210, 0.045);
+    color: var(--bb-ink);
+    pointer-events: none;
+  }
+
+  .approval-graph-pool.is-draggable {
+    z-index: 3;
+    pointer-events: auto;
+    cursor: grab;
+    padding: 30px 8px 12px;
+  }
+
+  .approval-graph-pool.is-draggable.is-dragging {
+    cursor: grabbing;
+    opacity: 0.55;
+  }
+
+  .approval-cfo-drag-handle {
+    position: absolute;
+    top: 7px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: var(--bb-muted);
+    pointer-events: none;
+  }
+
+  .approval-graph-pool-content {
+    height: 100%;
+    max-height: 100%;
+    overflow-wrap: anywhere;
+    text-align: center;
+    text-orientation: mixed;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+  }
+
+  .approval-graph-pool-content .MuiTypography-root {
+    font-size: 0.72rem;
+    line-height: 1.2;
   }
 
   .approval-graph-card {
@@ -1278,6 +1360,85 @@
     box-shadow: 0 0 0 2px var(--bb-primary-soft), 0 5px 16px rgba(17, 24, 39, 0.1) !important;
   }
 
+  .approval-graph-card.is-connect-target {
+    border-color: var(--bb-primary);
+    box-shadow: 0 0 0 2px var(--bb-primary-soft), 0 5px 16px rgba(17, 24, 39, 0.1) !important;
+  }
+
+  .approval-reviewer-select {
+    position: relative;
+  }
+
+  .approval-reviewer-select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 40px;
+    padding: 0 10px 0 12px;
+    border: 1px solid rgba(0, 0, 0, 0.23);
+    border-radius: 4px;
+    color: var(--bb-ink);
+    background: #ffffff;
+    cursor: pointer;
+    font-size: 0.875rem;
+  }
+
+  .approval-reviewer-select-trigger:hover,
+  .approval-reviewer-select-trigger:focus-visible {
+    border-color: var(--bb-primary);
+    outline: 2px solid var(--bb-primary-soft);
+    outline-offset: 1px;
+  }
+
+  .approval-reviewer-select-menu {
+    position: absolute;
+    z-index: 8;
+    right: 0;
+    top: calc(100% + 4px);
+    width: max-content;
+    min-width: 100%;
+    max-width: 320px;
+    overflow: hidden;
+    border-radius: 4px !important;
+    background: #ffffff;
+  }
+
+  .approval-reviewer-select-option.MuiMenuItem-root {
+    min-height: 40px;
+    padding: 8px 16px;
+    border-radius: 0;
+    white-space: nowrap;
+  }
+
+  .approval-reviewer-select-option.MuiMenuItem-root:hover {
+    background: var(--bb-primary-soft);
+  }
+
+  .approval-contact {
+    margin-top: 4px;
+  }
+
+  .approval-contact-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 24px;
+    cursor: pointer;
+  }
+
+  .approval-contact-toggle:hover {
+    color: var(--bb-primary);
+  }
+
+  .approval-contact-toggle .MuiSvgIcon-root {
+    transition: transform 150ms ease;
+  }
+
+  .approval-contact-toggle .MuiSvgIcon-root.is-open {
+    transform: rotate(180deg);
+  }
+
   .approval-graph-link-handle {
     position: absolute;
     z-index: 4;
@@ -1294,6 +1455,27 @@
     background: #ffffff;
     box-shadow: 0 1px 4px rgba(17, 24, 39, 0.18);
     cursor: grab;
+    transition: opacity 150ms ease, color 150ms ease, background 150ms ease;
+  }
+
+  .approval-graph-link-handle.is-inbound {
+    right: auto;
+    left: -18px;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+
+  .approval-graph-card .approval-graph-link-handle {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .approval-graph-card:hover .approval-graph-link-handle {
+    opacity: 1;
+  }
+
+  .approval-graph-card:hover .approval-graph-link-handle.is-outbound {
+    pointer-events: auto;
   }
 
   .approval-graph-link-handle:hover,

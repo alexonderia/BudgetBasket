@@ -1,10 +1,10 @@
 import AddIcon from '@mui/icons-material/Add';
-import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import CenterFocusStrongIcon from '@mui/icons-material/CenterFocusStrong';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DownloadIcon from '@mui/icons-material/Download';
-import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
+import DragHandleIcon from '@mui/icons-material/DragHandle';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import UndoIcon from '@mui/icons-material/Undo';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
@@ -35,7 +35,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useAppToast } from '../components/Layout';
@@ -165,19 +165,42 @@ function ApprovalGraph({
   onCreateStep,
   onAssign,
   onConnect,
+  onDisconnect,
+  reviewers,
+  canEdit = true,
 }: {
   steps: ApprovalStep[];
   selectedStepId: string;
   onSelect: (stepId: string) => void;
   onCreateStep: () => void;
-  onAssign: (step: ApprovalStep) => void;
+  onAssign: (step: ApprovalStep, userId: string) => void;
   onConnect: (childStepId: string, parentStepId: string) => void;
+  onDisconnect: (childStepId: string, parentStepId: string) => void;
+  reviewers: User[];
+  canEdit?: boolean;
 }) {
   const [draggedChildId, setDraggedChildId] = useState<string | null>(null);
+  const [draggedCfoKey, setDraggedCfoKey] = useState<string | null>(null);
+  const [cfoOrder, setCfoOrder] = useState<string[]>([]);
+  const [openReviewerStepId, setOpenReviewerStepId] = useState<string | null>(null);
+  const [openContactStepId, setOpenContactStepId] = useState<string | null>(null);
+  const [hoveredEdgeKey, setHoveredEdgeKey] = useState<string | null>(null);
+  const [pendingConnectionChildId, setPendingConnectionChildId] = useState<string | null>(null);
+  const [pendingConnectionCursor, setPendingConnectionCursor] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(0.75);
   const [pan, setPan] = useState({ x: 72, y: 56 });
   const [isPanning, setIsPanning] = useState(false);
+  const graphViewportRef = useRef<HTMLDivElement>(null);
+  const hasAutoFramedGraph = useRef(false);
   const panStart = useRef({ pointerX: 0, pointerY: 0, x: 0, y: 0 });
+  const zoomGestureRef = useRef<{
+    pointerX: number;
+    pointerY: number;
+    zoom: number;
+    pan: { x: number; y: number };
+    deltaY: number;
+  } | null>(null);
+  const zoomGestureTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const layout = useMemo(() => {
     const byId = new Map(steps.map((step) => [step.id, step]));
     const depth = new Map<string, number>();
@@ -219,37 +242,72 @@ function ApprovalGraph({
       step.department?.name || step.unit_path[0] || '',
       step.cfo?.name || step.unit_path.at(-2) || '',
     ].join('\u0000');
+    const isPartOfRoute = (step: ApprovalStep) => Boolean(step.parent_step_ids.length || step.child_step_ids.length);
     for (const column of columns.values()) {
       column.sort((left, right) => {
+        const routeComparison = Number(isPartOfRoute(right)) - Number(isPartOfRoute(left));
+        if (routeComparison) return routeComparison;
         const groupComparison = groupKey(left).localeCompare(groupKey(right), 'ru');
         if (groupComparison) return groupComparison;
         return (left.unit?.name || left.user?.login || '').localeCompare(right.unit?.name || right.user?.login || '', 'ru');
       });
     }
     const nodeWidth = 280;
-    const nodeHeight = 208;
+    const leafNodeHeight = 184;
+    const nodeHeightFor = (step: ApprovalStep) => {
+      if (step.unit_id) return leafNodeHeight;
+      const contactsExpanded = openContactStepId === step.id;
+      return step.user?.role === 'zgd'
+        ? (contactsExpanded ? 192 : 160)
+        : (contactsExpanded ? 208 : 160);
+    };
+    const nodeHeights = new Map(steps.map((step) => [step.id, nodeHeightFor(step)]));
     const horizontalGap = 112;
     const verticalGap = 28;
-    const rowSize = nodeHeight + verticalGap;
+    const rowSize = leafNodeHeight + verticalGap;
+    const poolWidth = 72;
+    const poolGap = 8;
+    const poolLeft = 24;
+    const graphLeft = poolLeft + poolWidth * 2 + poolGap * 2 + 28;
     const positions = new Map<string, { x: number; y: number }>();
-    const maxDepth = Math.max(0, ...depth.values());
-    const leafColumn = columns.get(0) || [];
+    const leafColumn = (columns.get(0) || []).filter((step) => Boolean(step.unit_id));
+    const cfoKey = (step: ApprovalStep) => [
+      step.department?.name || step.unit_path[0] || '',
+      step.cfo?.name || step.unit_path.at(-2) || '',
+    ].join('\u0000');
+    const cfoRank = new Map([...new Set([...cfoOrder, ...leafColumn.map(cfoKey)])].map((key, index) => [key, index]));
+    leafColumn.sort((left, right) => {
+      const departmentComparison = (left.department?.name || left.unit_path[0] || '').localeCompare(
+        right.department?.name || right.unit_path[0] || '',
+        'ru',
+      );
+      if (departmentComparison) return departmentComparison;
+      const cfoComparison = (cfoRank.get(cfoKey(left)) || 0) - (cfoRank.get(cfoKey(right)) || 0);
+      if (cfoComparison) return cfoComparison;
+      const routeComparison = Number(isPartOfRoute(right)) - Number(isPartOfRoute(left));
+      if (routeComparison) return routeComparison;
+      return groupKey(left).localeCompare(groupKey(right), 'ru');
+    });
     let leafRow = 0;
     let previousLeafGroup = '';
     leafColumn.forEach((step) => {
       const currentGroup = groupKey(step);
       if (previousLeafGroup && previousLeafGroup !== currentGroup) leafRow += 0.35;
-      positions.set(step.id, { x: 112, y: 96 + leafRow * rowSize });
+      positions.set(step.id, { x: graphLeft, y: 96 + leafRow * rowSize });
       previousLeafGroup = currentGroup;
       leafRow += 1;
     });
 
-    // Position every checking node around the middle of its immediate branch.
-    // This keeps a route visually readable: child modules stay together and
-    // the reviewer sits between them instead of at the top of the column.
-    for (let column = 1; column <= maxDepth; column += 1) {
-      const columnSteps = columns.get(column) || [];
-      const withPreferredY = columnSteps.map((step, index) => {
+    const reviewerSteps = steps.filter((step) => !step.unit_id && step.user?.role !== 'zgd');
+    const reviewerColumns = new Map<number, ApprovalStep[]>();
+    reviewerSteps.forEach((step) => {
+      const column = Math.max(1, depth.get(step.id) || 1);
+      reviewerColumns.set(column, [...(reviewerColumns.get(column) || []), step]);
+    });
+    // Размещаем проверяющих по глубине маршрута: следующий этап всегда правее предыдущего.
+    [...reviewerColumns.keys()].sort((left, right) => left - right).forEach((column) => {
+      const reviewersInColumn = reviewerColumns.get(column)!;
+      const positioned = reviewersInColumn.map((step, index) => {
         const childY = step.child_step_ids
           .map((childId) => positions.get(childId)?.y)
           .filter((value): value is number => value !== undefined);
@@ -260,45 +318,149 @@ function ApprovalGraph({
             : 96 + index * rowSize,
         };
       }).sort((left, right) => left.preferredY - right.preferredY);
-
-      let nextAvailableY = 96;
-      withPreferredY.forEach(({ step, preferredY }) => {
-        const y = Math.max(preferredY, nextAvailableY);
+      let columnY = 96;
+      positioned.forEach(({ step, preferredY }) => {
+        const y = Math.max(preferredY, columnY);
         positions.set(step.id, {
-          x: 112 + column * (nodeWidth + horizontalGap),
+          x: graphLeft + column * (nodeWidth + horizontalGap),
           y,
         });
-        nextAvailableY = y + rowSize;
+        columnY = y + (nodeHeights.get(step.id) || leafNodeHeight) + verticalGap;
       });
+    });
+    const lastReviewerColumn = Math.max(0, ...reviewerColumns.keys());
+    const zgdColumn = lastReviewerColumn + 1;
+    const zgdX = graphLeft + zgdColumn * (nodeWidth + horizontalGap);
+    const zgdSteps = steps.filter((step) => !step.unit_id && step.user?.role === 'zgd');
+    zgdSteps.forEach((step, index) => {
+      const childY = step.child_step_ids
+        .map((childId) => positions.get(childId)?.y)
+        .filter((value): value is number => value !== undefined);
+      positions.set(step.id, {
+        x: zgdX,
+        y: childY.length ? childY.reduce((total, value) => total + value, 0) / childY.length : 96 + index * rowSize,
+      });
+    });
+    const maxY = Math.max(96, ...steps.map((step) => {
+      const position = positions.get(step.id)!;
+      return position.y + (nodeHeights.get(step.id) || leafNodeHeight);
+    }));
+    const deepestStep = steps.reduce((current, step) => (
+      (depth.get(step.id) || 0) > (depth.get(current.id) || 0) ? step : current
+    ), steps[0]);
+    const longestChain: ApprovalStep[] = [];
+    let chainStep: ApprovalStep | undefined = deepestStep;
+    while (chainStep) {
+      longestChain.push(chainStep);
+      chainStep = chainStep.child_step_ids
+        .map((childId) => byId.get(childId))
+        .filter((step): step is ApprovalStep => Boolean(step))
+        .sort((left, right) => (depth.get(right.id) || 0) - (depth.get(left.id) || 0))[0];
     }
-    const maxY = Math.max(96, ...[...positions.values()].map((position) => position.y));
+    const longestChainPositions = longestChain.map((step) => positions.get(step.id)!);
+    const longestRouteY = Math.min(...longestChainPositions.map((position) => position.y));
+    const longestRouteBounds = {
+      x: poolLeft,
+      y: longestRouteY,
+      width: Math.max(...longestChainPositions.map((position) => position.x + nodeWidth)) - poolLeft,
+      height: Math.max(...longestChain.map((step) => {
+        const position = positions.get(step.id)!;
+        return position.y + (nodeHeights.get(step.id) || leafNodeHeight);
+      })) - longestRouteY,
+    };
+    const departmentPools: Array<{ name: string; y: number; height: number }> = [];
+    const cfoPools: Array<{ id: string; name: string; y: number; height: number }> = [];
+    leafColumn.forEach((step) => {
+      const position = positions.get(step.id)!;
+      const department = step.department?.name || step.unit_path[0] || 'Не указано';
+      const cfo = step.cfo?.name || step.unit_path.at(-2) || 'Не указано';
+      const previousDepartment = departmentPools.at(-1);
+      if (previousDepartment?.name === department) {
+        previousDepartment.height = position.y + leafNodeHeight - previousDepartment.y;
+      } else {
+        departmentPools.push({ name: department, y: position.y, height: leafNodeHeight });
+      }
+      const previousCfo = cfoPools.at(-1);
+      if (previousCfo?.id === cfoKey(step) && previousDepartment?.name === department) {
+        previousCfo.height = position.y + leafNodeHeight - previousCfo.y;
+      } else {
+        cfoPools.push({ id: cfoKey(step), name: cfo, y: position.y, height: leafNodeHeight });
+      }
+    });
     return {
       positions,
+      departmentPools,
+      cfoPools,
+      longestRouteBounds,
+      poolLeft,
+      poolWidth,
+      poolGap,
       nodeWidth,
-      nodeHeight,
-      width: 224 + (maxDepth + 1) * nodeWidth + maxDepth * horizontalGap,
-      height: maxY + nodeHeight + 96,
+      nodeHeights,
+      reviewerArea: { x: graphLeft + nodeWidth + horizontalGap - 24, y: 48, width: nodeWidth + 48, height: maxY + 24 },
+      width: zgdX + nodeWidth + 112,
+      height: maxY + 96,
     };
-  }, [steps]);
+  }, [steps, openContactStepId, cfoOrder]);
+
+  useEffect(() => {
+    const viewport = graphViewportRef.current;
+    if (!viewport || !steps.length || hasAutoFramedGraph.current) return;
+    const availableWidth = Math.max(1, viewport.clientWidth - 48);
+    const availableHeight = Math.max(1, viewport.clientHeight - 48);
+    const { longestRouteBounds } = layout;
+    const fittedZoom = Math.max(0.1, Math.min(
+      1,
+      Number(Math.min(
+        availableWidth / longestRouteBounds.width,
+        availableHeight / longestRouteBounds.height,
+      ).toFixed(2)),
+    ));
+    setZoom(fittedZoom);
+    setPan({
+      x: (viewport.clientWidth - longestRouteBounds.width * fittedZoom) / 2 - longestRouteBounds.x * fittedZoom,
+      y: (viewport.clientHeight - longestRouteBounds.height * fittedZoom) / 2 - longestRouteBounds.y * fittedZoom,
+    });
+    hasAutoFramedGraph.current = true;
+  }, [layout.longestRouteBounds, steps.length]);
+
+  useEffect(() => {
+    const cancelPendingConnection = (event: KeyboardEvent) => {
+      if (event.code !== 'Space' || !pendingConnectionChildId) return;
+      event.preventDefault();
+      setPendingConnectionChildId(null);
+      setPendingConnectionCursor(null);
+    };
+    window.addEventListener('keydown', cancelPendingConnection);
+    return () => window.removeEventListener('keydown', cancelPendingConnection);
+  }, [pendingConnectionChildId]);
 
   if (!steps.length) {
     return <Alert severity="info">Листовые шаги появятся автоматически, когда ответственный отправит первую заявку модуля на проверку.</Alert>;
   }
 
   const changeZoom = (delta: number) => {
-    setZoom((current) => Math.min(1.6, Math.max(0.55, Number((current + delta).toFixed(2)))));
+    setZoom((current) => Math.max(0.1, Number((current + delta).toFixed(2))));
   };
   const resetViewport = () => {
     setZoom(0.75);
     setPan({ x: 72, y: 56 });
   };
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || (event.target as HTMLElement).closest('button, a, input, textarea, select, [draggable="true"], .approval-graph-card')) return;
+    if (event.button !== 0 || (event.target as HTMLElement).closest('button, a, input, textarea, select, [draggable="true"], .approval-graph-card, .approval-graph-pool.is-draggable, .approval-edge-delete')) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     panStart.current = { pointerX: event.clientX, pointerY: event.clientY, ...pan };
     setIsPanning(true);
   };
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (pendingConnectionChildId) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      setPendingConnectionCursor({
+        x: (event.clientX - bounds.left - pan.x) / zoom,
+        y: (event.clientY - bounds.top - pan.y) / zoom,
+      });
+      return;
+    }
     if (!isPanning) return;
     setPan({ x: panStart.current.x + event.clientX - panStart.current.pointerX, y: panStart.current.y + event.clientY - panStart.current.pointerY });
   };
@@ -306,60 +468,185 @@ function ApprovalGraph({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     setIsPanning(false);
   };
+  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.altKey) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const pointerX = event.clientX - bounds.left;
+      const pointerY = event.clientY - bounds.top;
+      if (!zoomGestureRef.current) {
+        zoomGestureRef.current = { pointerX, pointerY, zoom, pan, deltaY: 0 };
+      }
+      const gesture = zoomGestureRef.current;
+      gesture.deltaY += event.deltaY;
+      const nextZoom = Math.max(0.1, gesture.zoom * Math.exp(-gesture.deltaY * 0.0015));
+      const anchorX = (gesture.pointerX - gesture.pan.x) / gesture.zoom;
+      const anchorY = (gesture.pointerY - gesture.pan.y) / gesture.zoom;
+      setZoom(nextZoom);
+      setPan({
+        x: gesture.pointerX - anchorX * nextZoom,
+        y: gesture.pointerY - anchorY * nextZoom,
+      });
+      if (zoomGestureTimer.current) clearTimeout(zoomGestureTimer.current);
+      zoomGestureTimer.current = setTimeout(() => {
+        zoomGestureRef.current = null;
+        zoomGestureTimer.current = null;
+      }, 140);
+      return;
+    }
+    setPan((current) => ({ ...current, y: current.y - event.deltaY }));
+  };
+  const reorderCfo = (sourceKey: string, targetKey: string) => {
+    if (sourceKey === targetKey || sourceKey.split('\u0000')[0] !== targetKey.split('\u0000')[0]) return;
+    setCfoOrder((current) => {
+      const ordered = [...new Set([...current, ...layout.cfoPools.map((pool) => pool.id)])];
+      const sourceIndex = ordered.indexOf(sourceKey);
+      const targetIndex = ordered.indexOf(targetKey);
+      if (sourceIndex < 0 || targetIndex < 0) return current;
+      ordered.splice(sourceIndex, 1);
+      ordered.splice(targetIndex, 0, sourceKey);
+      return ordered;
+    });
+  };
 
   return (
     <>
-      <Stack className="org-chart-toolbar" direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
-        <Typography className="org-chart-zoom-value" variant="caption">{Math.round(zoom * 100)}%</Typography>
-        <Tooltip title="Отдалить"><span><IconButton size="small" onClick={() => changeZoom(-0.1)} disabled={zoom <= 0.55} aria-label="Отдалить граф"><ZoomOutIcon fontSize="small" /></IconButton></span></Tooltip>
-        <Tooltip title="Приблизить"><span><IconButton size="small" onClick={() => changeZoom(0.1)} disabled={zoom >= 1.6} aria-label="Приблизить граф"><ZoomInIcon fontSize="small" /></IconButton></span></Tooltip>
-        <Tooltip title="Сбросить масштаб и положение"><IconButton size="small" onClick={resetViewport} aria-label="Сбросить масштаб и положение графа"><CenterFocusStrongIcon fontSize="small" /></IconButton></Tooltip>
+      <Stack className="org-chart-toolbar" direction="row" alignItems="center" justifyContent="space-between">
+        <Button variant="outlined" size="small" startIcon={<AddIcon />} onClick={onCreateStep} disabled={!canEdit} sx={{ visibility: canEdit ? 'visible' : 'hidden' }}>
+          Добавить проверяющего
+        </Button>
+        <Stack direction="row" spacing={0.5} alignItems="center">
+          <Typography className="org-chart-zoom-value" variant="caption">{Math.round(zoom * 100)}%</Typography>
+          <Tooltip title="Отдалить"><span><IconButton size="small" onClick={() => changeZoom(-0.1)} disabled={zoom <= 0.1} aria-label="Отдалить граф"><ZoomOutIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title="Приблизить"><span><IconButton size="small" onClick={() => changeZoom(0.1)} aria-label="Приблизить граф"><ZoomInIcon fontSize="small" /></IconButton></span></Tooltip>
+          <Tooltip title="Сбросить масштаб и положение"><IconButton size="small" onClick={resetViewport} aria-label="Сбросить масштаб и положение графа"><CenterFocusStrongIcon fontSize="small" /></IconButton></Tooltip>
+        </Stack>
       </Stack>
       <Box
+        ref={graphViewportRef}
         className={`org-chart-viewport approval-chart-viewport ${isPanning ? 'is-panning' : ''}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={stopPanning}
         onPointerCancel={stopPanning}
+        onWheel={handleWheel}
       >
       <Box className="approval-chart-stage" sx={{ width: layout.width, minHeight: layout.height, transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}>
         <svg className="approval-chart-lines" width={layout.width} height={layout.height} role="img" aria-label="Связи графа маршрута согласования">
-        <defs>
-          <marker id="approval-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L9,3 z" fill="#263238" />
-          </marker>
-        </defs>
+        {pendingConnectionChildId && pendingConnectionCursor && (() => {
+          const source = layout.positions.get(pendingConnectionChildId);
+          if (!source) return null;
+          const sourceHeight = layout.nodeHeights.get(pendingConnectionChildId) || 0;
+          const x1 = source.x + layout.nodeWidth;
+          const y1 = source.y + sourceHeight / 2;
+          const x2 = pendingConnectionCursor.x;
+          const y2 = pendingConnectionCursor.y;
+          const bend = Math.max(36, Math.abs(x2 - x1) / 2);
+          return <path className="approval-pending-edge" d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} fill="none" />;
+        })()}
         {steps.flatMap((parent) => parent.child_step_ids.map((childId) => ({ parent, childId }))).map(({ parent, childId }) => {
           const child = layout.positions.get(childId);
           const parentPosition = layout.positions.get(parent.id);
           if (!child || !parentPosition) return null;
           const x1 = child.x + layout.nodeWidth;
-          const y1 = child.y + layout.nodeHeight / 2;
+          const y1 = child.y + (layout.nodeHeights.get(childId) || 0) / 2;
           const x2 = parentPosition.x;
-          const y2 = parentPosition.y + layout.nodeHeight / 2;
+          const y2 = parentPosition.y + (layout.nodeHeights.get(parent.id) || 0) / 2;
           const bend = Math.max(36, (x2 - x1) / 2);
-          return <path key={`${parent.id}:${childId}`} d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} fill="none" stroke="#263238" strokeWidth="1.7" markerEnd="url(#approval-arrow)" />;
+          const edgeKey = `${parent.id}:${childId}`;
+          const path = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+          const controlX = (x1 + x2) / 2;
+          const controlY = (y1 + y2) / 2;
+          return (
+            <g key={edgeKey} onMouseEnter={() => setHoveredEdgeKey(edgeKey)} onMouseLeave={() => setHoveredEdgeKey(null)}>
+              <path d={path} fill="none" stroke="#263238" strokeWidth="1.7" />
+              <path className="approval-edge-hit-area" d={path} fill="none" stroke="transparent" strokeWidth="14" />
+              {canEdit && hoveredEdgeKey === edgeKey && (
+                <g
+                  className="approval-edge-delete"
+                  role="button"
+                  aria-label="Удалить связь"
+                  onClick={() => onDisconnect(childId, parent.id)}
+                >
+                  <circle cx={controlX} cy={controlY} r="13" />
+                  <path d={`M ${controlX - 4} ${controlY - 4} L ${controlX + 4} ${controlY + 4} M ${controlX + 4} ${controlY - 4} L ${controlX - 4} ${controlY + 4}`} />
+                </g>
+              )}
+            </g>
+          );
         })}
         </svg>
+        {layout.departmentPools.map((pool) => (
+          <Box
+            key={`department:${pool.name}:${pool.y}`}
+            className="approval-graph-pool"
+            sx={{ left: layout.poolLeft, top: pool.y, width: layout.poolWidth, height: pool.height }}
+          >
+            <Box className="approval-graph-pool-content">
+              <Typography variant="body2" fontWeight={700}>{pool.name}</Typography>
+            </Box>
+          </Box>
+        ))}
+        {layout.cfoPools.map((pool) => (
+          <Box
+            key={`cfo:${pool.id}`}
+            className={`approval-graph-pool ${canEdit ? 'is-draggable' : ''} ${draggedCfoKey === pool.id ? 'is-dragging' : ''}`}
+            draggable={canEdit}
+            onDragStart={(event) => {
+              event.stopPropagation();
+              event.dataTransfer.effectAllowed = 'move';
+              event.dataTransfer.setData('text/plain', pool.id);
+              setDraggedCfoKey(pool.id);
+            }}
+            onDragOver={(event) => {
+              if (canEdit && draggedCfoKey && draggedCfoKey !== pool.id && draggedCfoKey.split('\u0000')[0] === pool.id.split('\u0000')[0]) {
+                event.preventDefault();
+              }
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (draggedCfoKey) reorderCfo(draggedCfoKey, pool.id);
+              setDraggedCfoKey(null);
+            }}
+            onDragEnd={() => setDraggedCfoKey(null)}
+            sx={{ left: layout.poolLeft + layout.poolWidth + layout.poolGap, top: pool.y, width: layout.poolWidth, height: pool.height }}
+          >
+            {canEdit && <DragHandleIcon className="approval-cfo-drag-handle" fontSize="small" aria-label="Переместить ЦФО" />}
+            <Box className="approval-graph-pool-content">
+              <Typography variant="body2" fontWeight={700}>{pool.name}</Typography>
+            </Box>
+          </Box>
+        ))}
         {steps.map((step) => {
           const position = layout.positions.get(step.id)!;
           const isLeaf = Boolean(step.unit_id);
           const isFinal = !isLeaf && step.user?.role === 'zgd';
           const isSelected = step.id === selectedStepId;
+          const contact = step.user?.profile;
+          const isContactOpen = openContactStepId === step.id;
           return (
             <Card
               key={step.id}
-              className={`approval-graph-card ${isLeaf ? 'is-leaf' : 'is-review'} ${isSelected ? 'is-selected' : ''}`}
-              onClick={() => onSelect(step.id)}
+              className={`approval-graph-card ${isLeaf ? 'is-leaf' : 'is-review'} ${isFinal ? 'is-final' : ''} ${isSelected ? 'is-selected' : ''} ${canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id ? 'is-connect-target' : ''}`}
+              onClick={() => {
+                if (canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id) {
+                  onConnect(pendingConnectionChildId, step.id);
+                  setPendingConnectionChildId(null);
+                  setPendingConnectionCursor(null);
+                  return;
+                }
+                onSelect(step.id);
+              }}
               onDragOver={(event) => {
-                if (draggedChildId && draggedChildId !== step.id && !isLeaf) event.preventDefault();
+                if (canEdit && draggedChildId && draggedChildId !== step.id && !isLeaf) event.preventDefault();
               }}
               onDrop={(event) => {
                 event.preventDefault();
-                if (draggedChildId && draggedChildId !== step.id && !isLeaf) onConnect(draggedChildId, step.id);
+                if (canEdit && draggedChildId && draggedChildId !== step.id && !isLeaf) onConnect(draggedChildId, step.id);
                 setDraggedChildId(null);
               }}
-              sx={{ left: position.x, top: position.y, width: layout.nodeWidth, height: layout.nodeHeight, overflow: 'visible' }}
+              sx={{ left: position.x, top: position.y, width: layout.nodeWidth, height: layout.nodeHeights.get(step.id), overflow: 'visible' }}
             >
               <Stack spacing={0.75} sx={{ p: 1.5, height: '100%' }}>
                 <Stack spacing={0.5} alignItems="flex-start">
@@ -370,6 +657,7 @@ function ApprovalGraph({
                     size="small"
                     variant="outlined"
                     label={stepStatusLabels[step.status]}
+                    sx={{ height: 'auto', '& .MuiChip-label': { display: 'block', py: 0.45, whiteSpace: 'normal', lineHeight: 1.2 } }}
                   />
                 </Stack>
                 {isLeaf ? (
@@ -382,39 +670,118 @@ function ApprovalGraph({
                   </>
                 ) : (
                   <>
-                    <Typography variant="body2" color="text.secondary">Назначенный проверяющий</Typography>
-                    <Typography variant="body2" fontWeight={700}>{personName(step.user)}</Typography>
+                    {isFinal ? (
+                      <Typography variant="body2" fontWeight={700} mt="auto">{personName(step.user)}</Typography>
+                    ) : (
+                      <Box className="approval-reviewer-select" sx={{ mt: 'auto' }} onPointerDown={(event) => event.stopPropagation()}>
+                        <Box
+                          className="approval-reviewer-select-trigger"
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={openReviewerStepId === step.id}
+                          onClick={(event) => {
+                            if (!canEdit) return;
+                            event.stopPropagation();
+                            setOpenReviewerStepId((current) => current === step.id ? null : step.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (!canEdit) return;
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              setOpenReviewerStepId((current) => current === step.id ? null : step.id);
+                            }
+                          }}
+                        >
+                          <Typography variant="body2" noWrap>{personName(step.user)}</Typography>
+                          <KeyboardArrowDownIcon fontSize="small" />
+                        </Box>
+                        {canEdit && openReviewerStepId === step.id && (
+                          <Paper className="approval-reviewer-select-menu" elevation={6}>
+                            {reviewers.map((user) => (
+                              <MenuItem
+                                key={user.id}
+                                className="approval-reviewer-select-option"
+                                selected={user.id === step.user_id}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenReviewerStepId(null);
+                                  if (user.id !== step.user_id) onAssign(step, user.id);
+                                }}
+                              >
+                                {personName(user)}
+                              </MenuItem>
+                            ))}
+                          </Paper>
+                        )}
+                      </Box>
+                    )}
+                    <Box className="approval-contact" onPointerDown={(event) => event.stopPropagation()}>
+                        <Box
+                          className="approval-contact-toggle"
+                          role="button"
+                          tabIndex={0}
+                          aria-expanded={isContactOpen}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setOpenContactStepId((current) => current === step.id ? null : step.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              setOpenContactStepId((current) => current === step.id ? null : step.id);
+                            }
+                          }}
+                        >
+                          <Typography variant="caption" color="text.secondary">Контактная информация</Typography>
+                          <KeyboardArrowDownIcon className={isContactOpen ? 'is-open' : ''} fontSize="small" />
+                        </Box>
+                        {isContactOpen && (
+                          <Stack spacing={0.25} sx={{ pt: 0.25 }}>
+                            {contact?.phone && <Typography variant="caption">{contact.phone}</Typography>}
+                            {contact?.email && <Typography variant="caption" noWrap>{contact.email}</Typography>}
+                            {!contact?.phone && !contact?.email && <Typography variant="caption" color="text.secondary">Контактные данные не указаны</Typography>}
+                          </Stack>
+                        )}
+                    </Box>
                   </>
                 )}
-                <Stack direction="row" justifyContent="flex-end" spacing={0.5} mt="auto">
-                  {!isLeaf && (
-                    <Tooltip title="Назначить проверяющего">
-                      <IconButton size="small" onClick={(event) => { event.stopPropagation(); onAssign(step); }} aria-label="Назначить проверяющего">
-                        <EditOutlinedIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  )}
-                  <Tooltip title="Создать самостоятельный шаг">
-                    <IconButton size="small" color="primary" onClick={(event) => { event.stopPropagation(); onCreateStep(); }} aria-label="Создать самостоятельный шаг">
-                      <AddIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                </Stack>
+                {canEdit && !isLeaf && (
+                  <Box className="approval-graph-link-handle is-inbound" aria-hidden="true">
+                    <AddIcon fontSize="small" />
+                  </Box>
+                )}
                 <Tooltip title="Потяните стрелку на проверяющего или ЗГД, чтобы создать связь">
                   <Box
-                    className={`approval-graph-link-handle ${draggedChildId === step.id ? 'is-dragging' : ''}`}
-                    sx={{ display: isFinal ? 'none' : undefined }}
-                    draggable={!isFinal}
+                    className={`approval-graph-link-handle is-outbound ${draggedChildId === step.id ? 'is-dragging' : ''}`}
+                    sx={{ display: !canEdit || isFinal ? 'none' : undefined }}
+                    draggable={canEdit && !isFinal}
                     onDragStart={(event) => {
+                      if (!canEdit) return;
                       event.stopPropagation();
                       event.dataTransfer.effectAllowed = 'link';
                       event.dataTransfer.setData('text/plain', step.id);
                       setDraggedChildId(step.id);
                     }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (pendingConnectionChildId === step.id) {
+                        setPendingConnectionChildId(null);
+                        setPendingConnectionCursor(null);
+                        return;
+                      }
+                      const bounds = graphViewportRef.current?.getBoundingClientRect();
+                      if (bounds) {
+                        setPendingConnectionCursor({
+                          x: (event.clientX - bounds.left - pan.x) / zoom,
+                          y: (event.clientY - bounds.top - pan.y) / zoom,
+                        });
+                      }
+                      setPendingConnectionChildId(step.id);
+                    }}
                     onDragEnd={() => setDraggedChildId(null)}
                     aria-label="Связать шаг перетаскиванием"
                   >
-                    <ArrowForwardIcon fontSize="small" />
+                    <AddIcon fontSize="small" />
                   </Box>
                 </Tooltip>
               </Stack>
@@ -423,7 +790,11 @@ function ApprovalGraph({
         })}
       </Box>
     </Box>
-      <Typography className="org-chart-pan-hint" variant="caption">Зажмите пустую область и перетащите граф. Используйте кнопки справа для масштаба.</Typography>
+      <Typography className="org-chart-pan-hint" variant="caption">
+        {pendingConnectionChildId
+          ? 'Проведите линию к карточке проверяющего или ЗГД и кликните по ней. Нажмите Пробел, чтобы отменить связь.'
+          : 'Нажмите пустую область и перетащите граф. Используйте колесо для прокрутки и Alt + колесо для масштаба.'}
+      </Typography>
     </>
   );
 }
@@ -551,50 +922,48 @@ function AdminApprovalPage() {
   })));
   const dialogUsers = stepDialog?.kind === 'assign'
     ? eligibleUsers.filter((item) => item.role === stepDialog.step.user?.role)
-    : eligibleUsers;
+    : eligibleUsers.filter((item) => item.role === 'approver');
   const openCreateStep = () => {
     setDialogUserId('');
     setStepDialog({ kind: 'create' });
   };
-  const openAssign = (step: ApprovalStep) => {
-    setDialogUserId(step.user_id);
-    setStepDialog({ kind: 'assign', step });
-  };
-
   return (
     <Stack spacing={3}>
-      <Box>
+      <Box sx={{ display: 'none' }}>
         <Typography variant="h5">Маршрут согласования</Typography>
         <Typography color="text.secondary" sx={{ mt: 0.5 }}>
           Согласование бюджета организаций на 2027 год
         </Typography>
       </Box>
 
-      {validation && (
+      <Box sx={{ display: 'none' }}>{validation && (
         <Alert severity={validation.valid ? 'success' : 'warning'}>
           {validation.valid
             ? `Маршрут валиден. Корневой шаг: ${validation.root_step_id?.slice(0, 8)}`
             : validation.errors.join(' · ')}
         </Alert>
-      )}
+      )}</Box>
 
       <Paper className="surface-pad">
         <Stack spacing={1.5}>
           <Typography variant="h6">Граф шагов</Typography>
           <Typography variant="body2" color="text.secondary">
-            Стрелка показывает движение заявки: от модуля и экономиста к проверяющим, затем к ЗГД. Потяните стрелку справа от карточки на проверяющего или ЗГД, чтобы создать связь.
+            Стрелка показывает движение заявки: от модуля и экономиста к проверяющим, затем к ЗГД. Наведите курсор на карточку и перетащите кнопку «+» на проверяющего или ЗГД, чтобы создать связь.
           </Typography>
           <ApprovalGraph
             steps={steps}
             selectedStepId={selectedStepId}
             onSelect={setSelectedStepId}
             onCreateStep={openCreateStep}
-            onAssign={openAssign}
+            onAssign={(step, userId) => patchStep.mutate({ id: step.id, patch: { user_id: userId } })}
             onConnect={(childStepId, parentStepId) => createEdge.mutate({ child_step_id: childStepId, parent_step_id: parentStepId })}
+            onDisconnect={(childStepId, parentStepId) => deleteEdge.mutate({ child_step_id: childStepId, parent_step_id: parentStepId })}
+            reviewers={eligibleUsers.filter((user) => user.role === 'approver')}
           />
         </Stack>
       </Paper>
 
+      <Box sx={{ display: 'none' }}>
       <TableContainer component={Paper} className="table-surface">
         <Table size="small">
           <TableHead>
@@ -718,21 +1087,22 @@ function AdminApprovalPage() {
         </Stack>
         <StepLogsTable logs={logs} technical />
       </Stack>
+      </Box>
 
       <Dialog open={Boolean(stepDialog)} onClose={() => setStepDialog(null)} fullWidth maxWidth="xs">
         <DialogTitle>
-          {stepDialog?.kind === 'assign' ? 'Назначить проверяющего' : 'Добавить шаг'}
+          {stepDialog?.kind === 'assign' ? 'Назначить проверяющего' : 'Добавить проверяющего'}
         </DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2} sx={{ pt: 1 }}>
             {stepDialog?.kind === 'create' && (
               <Alert severity="info">
-                Новый шаг создаётся отдельно. Затем перетащите стрелку из дочерней карточки на него, чтобы задать связь.
+                Новый блок проверяющего создаётся отдельно. Затем перетащите кнопку связи из дочерней карточки на него, чтобы задать связь.
               </Alert>
             )}
             <TextField
               select
-              label={stepDialog?.kind === 'assign' ? 'Проверяющий' : 'Пользователь нового шага'}
+              label="Проверяющий"
               value={dialogUserId}
               onChange={(event) => setDialogUserId(event.target.value)}
               fullWidth
@@ -744,7 +1114,7 @@ function AdminApprovalPage() {
                 </MenuItem>
               ))}
             </TextField>
-            {!dialogUsers.length && <Alert severity="warning">Сначала создайте пользователя с ролью «Согласующий» или «ЗГД».</Alert>}
+            {!dialogUsers.length && <Alert severity="warning">Сначала создайте пользователя с ролью «Согласующий».</Alert>}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -763,7 +1133,7 @@ function AdminApprovalPage() {
               disabled={!dialogUserId || createStep.isPending}
               onClick={() => createStep.mutate({ userId: dialogUserId })}
             >
-              Создать шаг
+              Добавить
             </Button>
           )}
         </DialogActions>
@@ -1134,6 +1504,36 @@ function ApprovalTaskStep({ step }: { step: ApprovalStep }) {
   );
 }
 
+function RouteGraphPage() {
+  const [selectedStepId, setSelectedStepId] = useState('');
+  const { data: steps = [], isLoading } = useQuery({
+    queryKey: ['approval-route-graph'],
+    queryFn: async () => (await api.get<ApprovalStep[]>('/steps')).data,
+  });
+
+  useEffect(() => {
+    if (!selectedStepId && steps.length) setSelectedStepId(steps[0].id);
+  }, [selectedStepId, steps]);
+
+  if (isLoading) return <CircularProgress />;
+
+  return (
+    <Paper className="org-chart-card" sx={{ p: 2, minHeight: 'calc(100vh - 132px)' }}>
+      <ApprovalGraph
+        steps={steps}
+        selectedStepId={selectedStepId}
+        onSelect={setSelectedStepId}
+        onCreateStep={() => undefined}
+        onAssign={() => undefined}
+        onConnect={() => undefined}
+        onDisconnect={() => undefined}
+        reviewers={[]}
+        canEdit={false}
+      />
+    </Paper>
+  );
+}
+
 function SimpleUserApprovalPage({ user }: { user: User }) {
   const { data: steps = [], isLoading } = useQuery({
     queryKey: ['my-approval-steps'],
@@ -1159,5 +1559,5 @@ function SimpleUserApprovalPage({ user }: { user: User }) {
 }
 
 export default function ApprovalPage({ user }: { user: User }) {
-  return user.role === 'admin' ? <AdminApprovalPage /> : <UserApprovalPage user={user} />;
+  return user.role === 'admin' ? <AdminApprovalPage /> : <RouteGraphPage />;
 }

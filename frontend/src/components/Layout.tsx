@@ -41,6 +41,7 @@ import { api } from '../api/client';
 import { chatNotificationsWebSocketUrl } from '../api/websocket';
 import type { Profile, User } from '../types';
 import { roleLabels } from '../utils/labels';
+import { canAccessApproval } from '../utils/roles';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 import { AppBreadcrumbs, breadcrumblessPaths } from './AppBreadcrumbs';
 import { ChatInboxDrawer } from './ChatInboxDrawer';
@@ -247,7 +248,7 @@ export function Layout({
   const items = [
     ...(user.role !== 'employee' ? [{ label: 'Сводка', to: '/', icon: <DashboardIcon /> }] : []),
     { label: 'Заявки', to: '/requests', icon: <FolderIcon /> },
-    ...(user.role === 'admin'
+    ...(canAccessApproval(user.role)
       ? [{
           label: 'Маршрут согласования',
           to: '/approval',

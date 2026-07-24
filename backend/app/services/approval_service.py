@@ -250,9 +250,45 @@ class ApprovalService:
         ]
 
     def list_steps(self, user: dict) -> list[dict]:
-        self.permissions.require_admin(user)
-        steps = self.repo.load_all("steps")
+        """Return the editable graph for admins and the caller's route branches otherwise."""
+        all_steps = self.repo.load_all("steps")
+        if user.get("role") in {"admin", "zgd"}:
+            steps = all_steps
+        else:
+            edges = self._edges(self.repo)
+            children: dict[str, list[str]] = {}
+            parents: dict[str, list[str]] = {}
+            for edge in edges:
+                children.setdefault(edge["parent_step_id"], []).append(edge["child_step_id"])
+                parents.setdefault(edge["child_step_id"], []).append(edge["parent_step_id"])
+
+            if user.get("role") == "employee":
+                module_ids = self.permissions.employee_module_ids(user["id"])
+                seed_ids = {step["id"] for step in all_steps if step.get("unit_id") in module_ids}
+            else:
+                seed_ids = {step["id"] for step in all_steps if step.get("user_id") == user["id"]}
+
+            visible_ids: set[str] = set()
+            for seed_id in seed_ids:
+                # A participant sees their own branch: all upstream stages and all
+                # modules which reach their stage, but not neighbouring branches
+                # attached to a shared higher-level stage.
+                for adjacency in (children, parents):
+                    stack = [seed_id]
+                    seen: set[str] = set()
+                    while stack:
+                        step_id = stack.pop()
+                        if step_id in seen:
+                            continue
+                        seen.add(step_id)
+                        visible_ids.add(step_id)
+                        stack.extend(adjacency.get(step_id, []))
+            steps = [step for step in all_steps if step["id"] in visible_ids]
         public_steps = self._public_steps(self.repo, steps)
+        visible_ids = {step["id"] for step in public_steps}
+        for public_step in public_steps:
+            public_step["parent_step_ids"] = [step_id for step_id in public_step["parent_step_ids"] if step_id in visible_ids]
+            public_step["child_step_ids"] = [step_id for step_id in public_step["child_step_ids"] if step_id in visible_ids]
         steps_by_id = {step["id"]: step for step in steps}
         for public_step in public_steps:
             status, active_count = self._step_progress(self.repo, steps_by_id[public_step["id"]])
@@ -672,9 +708,6 @@ class ApprovalService:
         with self.repo.transaction() as repo:
             parent = repo.lock_by_id("steps", parent_id)
             child = repo.lock_by_id("steps", child_id)
-            parent_user = repo.get_by_id("users", parent.get("user_id")) if parent else None
-            if parent_user and parent_user.get("role") == "zgd":
-                raise HTTPException(status_code=400, detail="\u041f\u043e\u0441\u043b\u0435 \u0417\u0413\u0414 \u043d\u0435 \u043c\u043e\u0436\u0435\u0442 \u0431\u044b\u0442\u044c \u0443\u0437\u043b\u043e\u0432 \u043c\u0430\u0440\u0448\u0440\u0443\u0442\u0430")
             if not parent or not child:
                 raise HTTPException(status_code=404, detail="Шаг не найден")
             if parent.get("unit_id") is not None:
