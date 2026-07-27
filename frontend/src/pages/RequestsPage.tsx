@@ -65,6 +65,7 @@ type DeletePreviewRow = {
 
 type ZgdDetailRow = {
   request_id: string;
+  organization: string;
   cfo: string;
   article: string;
   kind: 'dds' | 'invest';
@@ -88,12 +89,24 @@ type ZgdCfoGroup = {
   articles: ZgdArticleGroup[];
 };
 
+type ZgdDepartmentGroup = {
+  id: string;
+  department: string;
+  planned: number;
+  approved: number;
+  cfoGroups: ZgdCfoGroup[];
+};
+
 type ZgdArticleAccumulator = ZgdArticleGroup & {
   requestsById: Map<string, { request: BudgetRequest; planned: number; approved: number }>;
 };
 
 type ZgdCfoAccumulator = ZgdCfoGroup & {
   articlesById: Map<string, ZgdArticleAccumulator>;
+};
+
+type ZgdDepartmentAccumulator = ZgdDepartmentGroup & {
+  cfoGroupsById: Map<string, ZgdCfoGroup>;
 };
 
 const REQUEST_TABLE_COLUMN_WIDTHS: Record<RequestTableColumn, number> = {
@@ -123,6 +136,7 @@ export default function RequestsPage({ user }: { user: User }) {
   const theme = useTheme();
   const fullScreenDialog = useMediaQuery(theme.breakpoints.down('sm'));
   const [filters, setFilters] = useState({ status: '', frozen: '' });
+  const [expandedZgdDepartments, setExpandedZgdDepartments] = useState<string[]>([]);
   const [expandedZgdCfos, setExpandedZgdCfos] = useState<string[]>([]);
   const [expandedZgdArticles, setExpandedZgdArticles] = useState<string[]>([]);
   const [requestColumnOrder, setRequestColumnOrder] = useState<RequestTableColumn[]>(['actions', 'unit', 'status', 'my_step', 'planned', 'approved', 'items_count']);
@@ -137,7 +151,7 @@ export default function RequestsPage({ user }: { user: User }) {
     export_kind: 'all' as 'all' | 'expense' | 'income',
     department_ids: [] as string[],
     module_ids: [] as string[],
-    include_files: false,
+    include_files: user.role === 'zgd',
   });
   const [deleteTarget, setDeleteTarget] = useState<BudgetRequest | null>(null);
   const deleteTargetId = deleteTarget?.id || '';
@@ -207,18 +221,20 @@ export default function RequestsPage({ user }: { user: User }) {
     }),
     [data, filters.frozen],
   );
-  const zgdGroups = useMemo<ZgdCfoGroup[]>(() => {
+  const zgdGroups = useMemo<ZgdDepartmentGroup[]>(() => {
     if (user.role !== 'zgd') return [];
     const visibleRequests = new Map(filteredRequests.map((request) => [request.id, request]));
     const cfoGroups = new Map<string, ZgdCfoAccumulator>();
+    const departmentByCfoId = new Map<string, string>();
 
     zgdDetailRows.forEach((row) => {
       const request = visibleRequests.get(row.request_id);
       if (!request) return;
       const cfoId = row.cfo || 'Не указан';
       const articleId = `${row.kind}\u0000${row.article}`;
-      const cfoGroup = cfoGroups.get(cfoId) || {
-        id: cfoId,
+      const cfoGroupId = (row.organization || '') + '\u0000' + cfoId;
+      const cfoGroup = cfoGroups.get(cfoGroupId) || {
+        id: cfoGroupId,
         cfo: cfoId,
         planned: 0,
         approved: 0,
@@ -242,11 +258,22 @@ export default function RequestsPage({ user }: { user: User }) {
       cfoGroup.articlesById.set(articleId, articleGroup);
       cfoGroup.planned += row.planned;
       cfoGroup.approved += row.approved;
-      cfoGroups.set(cfoId, cfoGroup);
+      cfoGroups.set(cfoGroupId, cfoGroup);
+      departmentByCfoId.set(cfoGroupId, row.organization || 'Не указано');
     });
 
-    return [...cfoGroups.values()]
-      .map(({ articlesById, ...cfo }) => ({
+    const departmentGroups = new Map<string, ZgdDepartmentAccumulator>();
+    [...cfoGroups.values()].forEach(({ articlesById, ...cfo }) => {
+      const departmentId = departmentByCfoId.get(cfo.id) || 'Не указано';
+      const departmentGroup = departmentGroups.get(departmentId) || {
+        id: departmentId,
+        department: departmentId,
+        planned: 0,
+        approved: 0,
+        cfoGroups: [],
+        cfoGroupsById: new Map(),
+      };
+      departmentGroup.cfoGroupsById.set(cfo.id, {
         ...cfo,
         articles: [...articlesById.values()]
           .map(({ requestsById, ...article }) => ({
@@ -254,8 +281,18 @@ export default function RequestsPage({ user }: { user: User }) {
             requests: [...requestsById.values()].sort((left, right) => (left.request.unit_id || '').localeCompare(right.request.unit_id || '')),
           }))
           .sort((left, right) => left.article.localeCompare(right.article, 'ru')),
+      });
+      departmentGroup.planned += cfo.planned;
+      departmentGroup.approved += cfo.approved;
+      departmentGroups.set(departmentId, departmentGroup);
+    });
+
+    return [...departmentGroups.values()]
+      .map(({ cfoGroupsById, ...department }) => ({
+        ...department,
+        cfoGroups: [...cfoGroupsById.values()].sort((left, right) => left.cfo.localeCompare(right.cfo, 'ru')),
       }))
-      .sort((left, right) => left.cfo.localeCompare(right.cfo, 'ru'));
+      .sort((left, right) => left.department.localeCompare(right.department, 'ru'));
   }, [filteredRequests, user.role, zgdDetailRows]);
 
   const forwardPackage = useMutation({
@@ -386,7 +423,9 @@ export default function RequestsPage({ user }: { user: User }) {
         },
         responseType: 'blob',
       });
-      const baseFilename = exportSettings.export_kind === 'income'
+      const baseFilename = user.role === 'zgd'
+        ? 'Заявки_ЗГД'
+        : exportSettings.export_kind === 'income'
         ? 'Доходы_бюджета'
         : exportSettings.export_kind === 'expense'
           ? 'Расходы_бюджета'
@@ -669,7 +708,7 @@ export default function RequestsPage({ user }: { user: User }) {
           ) : null}
           {user.role === 'zgd' ? (
             <Alert severity="info" variant="outlined">
-              Заявки сгруппированы по ЦФО и статьям. Раскройте группу, затем статью, чтобы перейти к конкретной заявке.
+              Заявки сгруппированы по подразделениям, группам и статьям. Раскройте группу и статью, чтобы перейти к конкретной заявке.
             </Alert>
           ) : ['economist', 'approver'].includes(user.role) ? (
             <Alert severity="info" variant="outlined">
@@ -809,72 +848,96 @@ export default function RequestsPage({ user }: { user: User }) {
 
       {user.role === 'zgd' ? (
         <Paper className="table-surface" elevation={0}>
-          <Table size="small" sx={{ minWidth: 820, tableLayout: 'fixed' }}>
+          <Table size="small" sx={{ minWidth: 980, tableLayout: 'fixed' }}>
             <TableHead>
               <TableRow>
-                <TableCell sx={{ width: '22%' }}>ЦФО</TableCell>
+                <TableCell sx={{ width: '22%' }}>Подразделение</TableCell>
                 <TableCell>Статья / заявка</TableCell>
                 <TableCell sx={{ width: 210 }}>Статус</TableCell>
                 <TableCell align="right" sx={{ width: 160 }}>План</TableCell>
                 <TableCell align="right" sx={{ width: 170 }}>Факт</TableCell>
+                <TableCell align="right" sx={{ width: 170 }}>Корректировка</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {zgdGroups.map((cfoGroup) => {
-                const cfoExpanded = expandedZgdCfos.includes(cfoGroup.id);
+              {zgdGroups.map((departmentGroup) => {
+                const departmentExpanded = expandedZgdDepartments.includes(departmentGroup.id);
                 return (
-                  <Fragment key={cfoGroup.id}>
+                  <Fragment key={departmentGroup.id}>
                     <TableRow sx={{ bgcolor: '#F3F7FF' }}>
-                      <TableCell colSpan={5} sx={{ py: 0.75 }}>
+                      <TableCell colSpan={6} sx={{ py: 0.75 }}>
                         <Stack direction="row" spacing={1} alignItems="center">
                           <IconButton
                             size="small"
-                            aria-label={`${cfoExpanded ? 'Свернуть' : 'Раскрыть'} ЦФО ${cfoGroup.cfo}`}
-                            onClick={() => setExpandedZgdCfos((current) => current.includes(cfoGroup.id) ? current.filter((id) => id !== cfoGroup.id) : [...current, cfoGroup.id])}
+                            aria-label={`${departmentExpanded ? 'Свернуть' : 'Раскрыть'} подразделение ${departmentGroup.department}`}
+                            onClick={() => setExpandedZgdDepartments((current) => current.includes(departmentGroup.id) ? current.filter((id) => id !== departmentGroup.id) : [...current, departmentGroup.id])}
                           >
-                            <ExpandMoreIcon sx={{ transform: cfoExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />
+                            <ExpandMoreIcon sx={{ transform: departmentExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />
                           </IconButton>
-                          <Typography fontWeight={700}>ЦФО: {cfoGroup.cfo}</Typography>
+                          <Typography fontWeight={700}>{departmentGroup.department}</Typography>
                           <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
-                            Статей: {cfoGroup.articles.length} · План: {money(cfoGroup.planned)} · Факт: {money(cfoGroup.approved)}
+                            Групп: {departmentGroup.cfoGroups.length} · План: {money(departmentGroup.planned)} · Факт: {money(departmentGroup.approved)} · Корректировка: {money(departmentGroup.approved - departmentGroup.planned)}
                           </Typography>
                         </Stack>
                       </TableCell>
                     </TableRow>
-                    {cfoExpanded && cfoGroup.articles.map((articleGroup) => {
-                      const articleExpanded = expandedZgdArticles.includes(articleGroup.id);
+                    {departmentExpanded && departmentGroup.cfoGroups.map((cfoGroup) => {
+                      const cfoExpanded = expandedZgdCfos.includes(cfoGroup.id);
                       return (
-                        <Fragment key={articleGroup.id}>
-                          <TableRow hover sx={{ bgcolor: '#FBFCFE', cursor: 'pointer' }} onClick={() => setExpandedZgdArticles((current) => current.includes(articleGroup.id) ? current.filter((id) => id !== articleGroup.id) : [...current, articleGroup.id])}>
-                            <TableCell />
-                            <TableCell>
-                              <Stack direction="row" spacing={0.75} alignItems="center">
-                                <ExpandMoreIcon fontSize="small" sx={{ transform: articleExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />
-                                <Typography fontWeight={600}>{articleGroup.article}</Typography>
-                                <Typography variant="caption" color="text.secondary">Заявок: {articleGroup.requests.length}</Typography>
+                        <Fragment key={cfoGroup.id}>
+                          <TableRow sx={{ bgcolor: '#F9FBFF' }}>
+                            <TableCell colSpan={6} sx={{ py: 0.5, pl: 2 }}>
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <IconButton
+                                  size="small"
+                                  aria-label={`${cfoExpanded ? 'Свернуть' : 'Раскрыть'} ${cfoGroup.cfo}`}
+                                  onClick={() => setExpandedZgdCfos((current) => current.includes(cfoGroup.id) ? current.filter((id) => id !== cfoGroup.id) : [...current, cfoGroup.id])}
+                                >
+                                  <ExpandMoreIcon sx={{ transform: cfoExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />
+                                </IconButton>
+                                <Typography fontWeight={600}>{cfoGroup.cfo}</Typography>
+                                <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
+                                  Статей: {cfoGroup.articles.length} · План: {money(cfoGroup.planned)} · Факт: {money(cfoGroup.approved)} · Корректировка: {money(cfoGroup.approved - cfoGroup.planned)}
+                                </Typography>
                               </Stack>
                             </TableCell>
-                            <TableCell />
-                            <TableCell align="right">{money(articleGroup.planned)}</TableCell>
-                            <TableCell align="right">{money(articleGroup.approved)}</TableCell>
                           </TableRow>
-                          {articleExpanded && articleGroup.requests.map(({ request, planned, approved }) => (
-                            <TableRow key={request.id} hover sx={{ cursor: 'pointer' }} onClick={() => navigate(`/requests/${request.id}`)}>
-                              <TableCell />
-                              <TableCell sx={{ pl: 6 }}>
-                                <Typography variant="body2" fontWeight={600}>{formatUnitName(request.unit_id)}</Typography>
-                                <Typography variant="caption" color="text.secondary">Открыть заявку и её строки</Typography>
-                              </TableCell>
-                              <TableCell>
-                                <Stack direction="row" spacing={0.75} alignItems="center">
-                                  <RequestStatusBadge status={request.status} />
-                                  {request.frozen && <LockOutlinedIcon color={request.fixed ? 'success' : 'warning'} fontSize="small" />}
-                                </Stack>
-                              </TableCell>
-                              <TableCell align="right">{money(planned)}</TableCell>
-                              <TableCell align="right">{money(approved)}</TableCell>
-                            </TableRow>
-                          ))}
+                          {cfoExpanded && cfoGroup.articles.map((articleGroup) => {
+                            const articleExpanded = expandedZgdArticles.includes(articleGroup.id);
+                            return (
+                              <Fragment key={articleGroup.id}>
+                                <TableRow hover sx={{ bgcolor: '#FBFCFE', cursor: 'pointer' }} onClick={() => setExpandedZgdArticles((current) => current.includes(articleGroup.id) ? current.filter((id) => id !== articleGroup.id) : [...current, articleGroup.id])}>
+                                  <TableCell colSpan={3} sx={{ pl: 7 }}>
+                                    <Stack direction="row" spacing={0.75} alignItems="center">
+                                      <ExpandMoreIcon fontSize="small" sx={{ transform: articleExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />
+                                      <Typography fontWeight={600}>{articleGroup.article}</Typography>
+                                      <Typography variant="caption" color="text.secondary">Заявок: {articleGroup.requests.length}</Typography>
+                                    </Stack>
+                                  </TableCell>
+                                  <TableCell align="right">{money(articleGroup.planned)}</TableCell>
+                                  <TableCell align="right">{money(articleGroup.approved)}</TableCell>
+                                  <TableCell align="right">{money(articleGroup.approved - articleGroup.planned)}</TableCell>
+                                </TableRow>
+                                {articleExpanded && articleGroup.requests.map(({ request, planned, approved }) => (
+                                  <TableRow key={request.id} hover sx={{ cursor: 'pointer' }} onClick={() => navigate(`/requests/${request.id}`)}>
+                                    <TableCell colSpan={2} sx={{ pl: 10 }}>
+                                      <Typography variant="body2" fontWeight={600}>{formatUnitName(request.unit_id)}</Typography>
+                                      <Typography variant="caption" color="text.secondary">Открыть заявку и её строки</Typography>
+                                    </TableCell>
+                                    <TableCell>
+                                      <Stack direction="row" spacing={0.75} alignItems="center">
+                                        <RequestStatusBadge status={request.status} />
+                                        {request.frozen && <LockOutlinedIcon color={request.fixed ? 'success' : 'warning'} fontSize="small" />}
+                                      </Stack>
+                                    </TableCell>
+                                    <TableCell align="right">{money(planned)}</TableCell>
+                                    <TableCell align="right">{money(approved)}</TableCell>
+                                    <TableCell align="right">{money(approved - planned)}</TableCell>
+                                  </TableRow>
+                                ))}
+                              </Fragment>
+                            );
+                          })}
                         </Fragment>
                       );
                     })}
@@ -882,7 +945,7 @@ export default function RequestsPage({ user }: { user: User }) {
                 );
               })}
               {zgdGroups.length === 0 && (
-                <TableRow><TableCell colSpan={5} align="center">Заявки по выбранным фильтрам не найдены</TableCell></TableRow>
+                <TableRow><TableCell colSpan={6} align="center">Заявки по выбранным фильтрам не найдены</TableCell></TableRow>
               )}
             </TableBody>
           </Table>
