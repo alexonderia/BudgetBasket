@@ -62,6 +62,12 @@ CREATE TABLE req_items (
     CONSTRAINT req_items_status_chk CHECK (status IN ('on_review', 'rejected', 'approved_with_changes', 'approved', 'deleted')),
     CONSTRAINT req_items_article_chk CHECK ((dds_id IS NULL) <> (invest_id IS NULL))
 );
+CREATE TABLE req_item_month_plans (
+    req_item_id uuid NOT NULL REFERENCES req_items(id) ON DELETE CASCADE,
+    month smallint NOT NULL CHECK (month BETWEEN 1 AND 12),
+    sum_plan numeric(14,2) NOT NULL DEFAULT 0 CHECK (sum_plan >= 0),
+    PRIMARY KEY (req_item_id, month)
+);
 
 CREATE TABLE storage_objects (
     id bigserial PRIMARY KEY, storage_bucket text NOT NULL, storage_key text NOT NULL UNIQUE,

@@ -535,7 +535,7 @@ def list_request_items(request: Request, request_id: str, user: User, include_de
 
 @router.post("/requests/{request_id}/items")
 def create_request_item(request: Request, request_id: str, payload: ItemCreate, user: User):
-    return request.app.state.budget_item_service.create_item(user, request_id, payload.model_dump())
+    return request.app.state.budget_item_service.create_item(user, request_id, payload.model_dump(exclude_unset=True))
 
 
 @router.patch("/items/{item_id}")
