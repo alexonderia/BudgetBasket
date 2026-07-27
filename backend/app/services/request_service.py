@@ -220,11 +220,205 @@ class RequestService:
                 for item in self.repo.load_all("requests")
                 if item["id"] in (visible or set())
             }
+        table_units = [
+            {"id": item["id"], "name": item["name"], "parent_id": item.get("parent_id")}
+            for item in units.values()
+            if item["id"] in available_department_ids
+        ]
         return {
-            "scope": {"unit_id": unit_id, "available_units": [{"id": item["id"], "name": item["name"], "parent_id": item.get("parent_id")} for item in units.values() if item["id"] in available_department_ids]},
+            "scope": {"unit_id": unit_id, "available_units": [{"id": item["id"], "name": item["name"], "parent_id": item.get("parent_id")} for item in units.values() if item["id"] in available_department_ids], "table_units": sorted(table_units, key=lambda item: item["name"])},
             "totals": {"planned": total_plan, "approved": total_fact, "frozen": frozen_total, "remaining": max(total_plan - total_fact, 0), "requests_count": len(matching_requests), "approved_requests_count": sum(item.get("status") in APPROVED_ITEM_STATUSES for item in matching_requests), "review_requests_count": sum(item.get("status") == RequestStatus.on_review for item in matching_requests), "frozen_requests_count": sum(item.get("frozen") for item in matching_requests)},
             "by_unit": ordered(by_unit), "by_category": ordered(by_category), "by_article": ordered(by_article),
         }
+
+    def dashboard_article_cfo(self, user: dict, article_key: str, unit_id: str | None = None, *, is_income: bool = False) -> list[dict]:
+        """Return one selected article split by the request's parent CFO."""
+        kind, separator, article_id = article_key.partition(":")
+        if separator != ":" or kind not in {"dds", "invest"} or not article_id:
+            return []
+
+        visible = self.permissions.visible_request_ids(user)
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+
+        def path(value: str | None) -> list[dict]:
+            result: list[dict] = []
+            current, seen = value, set()
+            while current and current not in seen:
+                seen.add(current)
+                item = units.get(current)
+                if not item:
+                    break
+                result.append(item)
+                current = item.get("parent_id")
+            return list(reversed(result))
+
+        def root(value: str | None) -> str | None:
+            hierarchy = path(value)
+            return hierarchy[0]["id"] if hierarchy else value
+
+        requests = {
+            item["id"]: item for item in self.repo.load_all("requests")
+            if (visible is None or item["id"] in visible)
+            and item.get("status") not in {RequestStatus.draft, RequestStatus.cancelled}
+            and (not unit_id or root(item.get("unit_id")) == unit_id)
+        }
+        by_cfo: dict[str, dict] = {}
+
+        def add(cfo_id: str, name: str, planned: float, approved: float) -> None:
+            row = by_cfo.setdefault(cfo_id, {"id": cfo_id, "name": name, "kind": "unit", "planned": 0.0, "approved": 0.0, "items_count": 0})
+            row["planned"] += planned
+            row["approved"] += approved
+            row["items_count"] += 1
+
+        for item in self.repo.load_all("req_items"):
+            budget_request = requests.get(item.get("request_id"))
+            item_kind = "dds" if item.get("dds_id") else "invest"
+            item_article_id = item.get("dds_id") or item.get("invest_id")
+            if (
+                not budget_request
+                or item.get("is_income", False) != is_income
+                or item.get("status") == ItemStatus.deleted
+                or item_kind != kind
+                or item_article_id != article_id
+            ):
+                continue
+            hierarchy = path(budget_request.get("unit_id"))
+            cfo = hierarchy[-2] if len(hierarchy) >= 2 else (hierarchy[-1] if hierarchy else {})
+            approved = float(item.get("sum_fact") or 0) if item.get("status") in APPROVED_ITEM_STATUSES else 0.0
+            add(cfo.get("id", "unknown"), cfo.get("name", "Не указано"), float(item.get("sum_plan") or 0), approved)
+
+        return sorted(by_cfo.values(), key=lambda item: (-item["planned"], item["name"]))
+
+    def dashboard_articles_cfo(self, user: dict, unit_id: str | None = None, *, is_income: bool = False) -> list[dict]:
+        """Return every article with its planned amount split by parent CFO."""
+        visible = self.permissions.visible_request_ids(user)
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+        dds_catalog = {item["id"]: item for item in self.repo.load_all("dds_catalog")}
+        invest_catalog = {item["id"]: item for item in self.repo.load_all("invests_catalog")}
+
+        def path(value: str | None) -> list[dict]:
+            result: list[dict] = []
+            current, seen = value, set()
+            while current and current not in seen:
+                seen.add(current)
+                item = units.get(current)
+                if not item:
+                    break
+                result.append(item)
+                current = item.get("parent_id")
+            return list(reversed(result))
+
+        def root(value: str | None) -> str | None:
+            hierarchy = path(value)
+            return hierarchy[0]["id"] if hierarchy else value
+
+        requests = {
+            item["id"]: item for item in self.repo.load_all("requests")
+            if (visible is None or item["id"] in visible)
+            and item.get("status") not in {RequestStatus.draft, RequestStatus.cancelled}
+            and (not unit_id or root(item.get("unit_id")) == unit_id)
+        }
+        articles: dict[str, dict] = {}
+
+        for item in self.repo.load_all("req_items"):
+            budget_request = requests.get(item.get("request_id"))
+            if not budget_request or item.get("is_income", False) != is_income or item.get("status") == ItemStatus.deleted:
+                continue
+            kind = "dds" if item.get("dds_id") else "invest"
+            article_id = item.get("dds_id") or item.get("invest_id")
+            catalog = dds_catalog if kind == "dds" else invest_catalog
+            article = catalog.get(article_id, {})
+            key = f"{kind}:{article_id or 'unknown'}"
+            article_row = articles.setdefault(key, {
+                "id": key,
+                "name": article.get("name", "Не указано"),
+                "kind": kind,
+                "planned": 0.0,
+                "approved": 0.0,
+                "items_count": 0,
+                "cfo": {},
+            })
+            planned = float(item.get("sum_plan") or 0)
+            approved = float(item.get("sum_fact") or 0) if item.get("status") in APPROVED_ITEM_STATUSES else 0.0
+            article_row["planned"] += planned
+            article_row["approved"] += approved
+            article_row["items_count"] += 1
+
+            hierarchy = path(budget_request.get("unit_id"))
+            cfo = hierarchy[-2] if len(hierarchy) >= 2 else (hierarchy[-1] if hierarchy else {})
+            cfo_id = cfo.get("id", "unknown")
+            cfo_row = article_row["cfo"].setdefault(cfo_id, {"id": cfo_id, "name": cfo.get("name", "Не указано"), "kind": "unit", "planned": 0.0, "approved": 0.0, "items_count": 0})
+            cfo_row["planned"] += planned
+            cfo_row["approved"] += approved
+            cfo_row["items_count"] += 1
+
+        result = []
+        for article in articles.values():
+            article["cfo"] = sorted(article["cfo"].values(), key=lambda item: (-item["planned"], item["name"]))
+            result.append(article)
+        return sorted(result, key=lambda item: (-item["planned"], item["name"]))
+
+    def dashboard_table(self, user: dict, unit_id: str | None = None, *, is_income: bool = False) -> list[dict]:
+        """Detailed dashboard rows.  Keep hierarchy labels on the server so the
+        table and an exported view use the same access scope as the dashboard."""
+        visible = self.permissions.visible_request_ids(user)
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+
+        def path(value: str | None) -> list[dict]:
+            result: list[dict] = []
+            current, seen = value, set()
+            while current and current not in seen:
+                seen.add(current)
+                item = units.get(current)
+                if not item:
+                    break
+                result.append(item)
+                current = item.get("parent_id")
+            return list(reversed(result))
+
+        def department_id(value: str | None) -> str | None:
+            hierarchy = path(value)
+            return hierarchy[0]["id"] if hierarchy else value
+
+        requests = {
+            item["id"]: item for item in self.repo.load_all("requests")
+            if (visible is None or item["id"] in visible)
+            and item.get("status") not in {RequestStatus.draft, RequestStatus.cancelled}
+            and (
+                not unit_id
+                or item.get("unit_id") == unit_id
+                or (not units.get(unit_id, {}).get("parent_id") and department_id(item.get("unit_id")) == unit_id)
+            )
+        }
+        dds_catalog = {item["id"]: item for item in self.repo.load_all("dds_catalog")}
+        invest_catalog = {item["id"]: item for item in self.repo.load_all("invests_catalog")}
+        rows: list[dict] = []
+        for item in self.repo.load_all("req_items"):
+            budget_request = requests.get(item.get("request_id"))
+            if not budget_request or item.get("is_income", False) != is_income or item.get("status") == ItemStatus.deleted:
+                continue
+            hierarchy = path(budget_request.get("unit_id"))
+            department = hierarchy[0] if hierarchy else {}
+            cfo = hierarchy[-2] if len(hierarchy) >= 2 else (hierarchy[-1] if hierarchy else {})
+            kind = "dds" if item.get("dds_id") else "invest"
+            catalog = dds_catalog if kind == "dds" else invest_catalog
+            article = catalog.get(item.get("dds_id") or item.get("invest_id"), {})
+            category = catalog.get(article.get("parent_id")) or article
+            approved = float(item.get("sum_fact") or 0) if item.get("status") in APPROVED_ITEM_STATUSES else 0.0
+            rows.append({
+                "id": item["id"],
+                "request_id": budget_request["id"],
+                "organization": department.get("name", "Не указано"),
+                "cfo": cfo.get("name", "Не указано"),
+                "unit": units.get(budget_request.get("unit_id"), {}).get("name", "Не указано"),
+                "article": article.get("name", "Не указано"),
+                "category": category.get("name", "Не указано"),
+                "kind": kind,
+                "status": str(budget_request.get("status")),
+                "planned": float(item.get("sum_plan") or 0),
+                "approved": approved,
+            })
+        return rows
 
     def get_request(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)

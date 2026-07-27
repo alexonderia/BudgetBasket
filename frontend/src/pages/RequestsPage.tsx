@@ -63,6 +63,39 @@ type DeletePreviewRow = {
   sum: number;
 };
 
+type ZgdDetailRow = {
+  request_id: string;
+  cfo: string;
+  article: string;
+  kind: 'dds' | 'invest';
+  planned: number;
+  approved: number;
+};
+
+type ZgdArticleGroup = {
+  id: string;
+  article: string;
+  planned: number;
+  approved: number;
+  requests: Array<{ request: BudgetRequest; planned: number; approved: number }>;
+};
+
+type ZgdCfoGroup = {
+  id: string;
+  cfo: string;
+  planned: number;
+  approved: number;
+  articles: ZgdArticleGroup[];
+};
+
+type ZgdArticleAccumulator = ZgdArticleGroup & {
+  requestsById: Map<string, { request: BudgetRequest; planned: number; approved: number }>;
+};
+
+type ZgdCfoAccumulator = ZgdCfoGroup & {
+  articlesById: Map<string, ZgdArticleAccumulator>;
+};
+
 const REQUEST_TABLE_COLUMN_WIDTHS: Record<RequestTableColumn, number> = {
   unit: 300,
   status: 380,
@@ -90,6 +123,8 @@ export default function RequestsPage({ user }: { user: User }) {
   const theme = useTheme();
   const fullScreenDialog = useMediaQuery(theme.breakpoints.down('sm'));
   const [filters, setFilters] = useState({ status: '', frozen: '' });
+  const [expandedZgdCfos, setExpandedZgdCfos] = useState<string[]>([]);
+  const [expandedZgdArticles, setExpandedZgdArticles] = useState<string[]>([]);
   const [requestColumnOrder, setRequestColumnOrder] = useState<RequestTableColumn[]>(['actions', 'unit', 'status', 'my_step', 'planned', 'approved', 'items_count']);
   const [draggedRequestColumn, setDraggedRequestColumn] = useState<RequestTableColumn | null>(null);
   const [createError, setCreateError] = useState('');
@@ -152,6 +187,17 @@ export default function RequestsPage({ user }: { user: User }) {
         })
       ).data,
   });
+  const { data: zgdDetailRows = [] } = useQuery({
+    queryKey: ['zgd-request-groups'],
+    queryFn: async () => {
+      const [expenses, income] = await Promise.all([
+        api.get<ZgdDetailRow[]>('/dashboard/table', { params: { is_income: false } }),
+        api.get<ZgdDetailRow[]>('/dashboard/table', { params: { is_income: true } }),
+      ]);
+      return [...expenses.data, ...income.data];
+    },
+    enabled: user.role === 'zgd',
+  });
   const filteredRequests = useMemo(
     () => data.filter((request) => {
       if (!filters.frozen) return true;
@@ -161,6 +207,56 @@ export default function RequestsPage({ user }: { user: User }) {
     }),
     [data, filters.frozen],
   );
+  const zgdGroups = useMemo<ZgdCfoGroup[]>(() => {
+    if (user.role !== 'zgd') return [];
+    const visibleRequests = new Map(filteredRequests.map((request) => [request.id, request]));
+    const cfoGroups = new Map<string, ZgdCfoAccumulator>();
+
+    zgdDetailRows.forEach((row) => {
+      const request = visibleRequests.get(row.request_id);
+      if (!request) return;
+      const cfoId = row.cfo || 'Не указан';
+      const articleId = `${row.kind}\u0000${row.article}`;
+      const cfoGroup = cfoGroups.get(cfoId) || {
+        id: cfoId,
+        cfo: cfoId,
+        planned: 0,
+        approved: 0,
+        articles: [],
+        articlesById: new Map(),
+      };
+      const articleGroup = cfoGroup.articlesById.get(articleId) || {
+        id: `${cfoId}\u0000${articleId}`,
+        article: row.article,
+        planned: 0,
+        approved: 0,
+        requests: [],
+        requestsById: new Map(),
+      };
+      const requestGroup = articleGroup.requestsById.get(request.id) || { request, planned: 0, approved: 0 };
+      requestGroup.planned += row.planned;
+      requestGroup.approved += row.approved;
+      articleGroup.requestsById.set(request.id, requestGroup);
+      articleGroup.planned += row.planned;
+      articleGroup.approved += row.approved;
+      cfoGroup.articlesById.set(articleId, articleGroup);
+      cfoGroup.planned += row.planned;
+      cfoGroup.approved += row.approved;
+      cfoGroups.set(cfoId, cfoGroup);
+    });
+
+    return [...cfoGroups.values()]
+      .map(({ articlesById, ...cfo }) => ({
+        ...cfo,
+        articles: [...articlesById.values()]
+          .map(({ requestsById, ...article }) => ({
+            ...article,
+            requests: [...requestsById.values()].sort((left, right) => (left.request.unit_id || '').localeCompare(right.request.unit_id || '')),
+          }))
+          .sort((left, right) => left.article.localeCompare(right.article, 'ru')),
+      }))
+      .sort((left, right) => left.cfo.localeCompare(right.cfo, 'ru'));
+  }, [filteredRequests, user.role, zgdDetailRows]);
 
   const forwardPackage = useMutation({
     mutationFn: ({ stepId, requestIds }: { stepId: string; requestIds: string[] }) => api.post(`/steps/${stepId}/approve`, { request_ids: requestIds }),
@@ -543,15 +639,17 @@ export default function RequestsPage({ user }: { user: User }) {
                 <MenuItem value="fixed">Зафиксированные ЗГД</MenuItem>
                 <MenuItem value="unfrozen">Доступные для изменения</MenuItem>
               </TextField>
-              <TableColumnTools
-                columns={requestTableColumns}
-                visibility={requestVisibility}
-                onToggleColumn={toggleRequestVisibility}
-                onResetColumns={resetRequestVisibility}
-                onResetFilters={resetRequestFilters}
-                onResetWidths={resetRequestColumnWidths}
-                hasActiveFilters={hasActiveRequestFilters}
-              />
+              {user.role !== 'zgd' && (
+                <TableColumnTools
+                  columns={requestTableColumns}
+                  visibility={requestVisibility}
+                  onToggleColumn={toggleRequestVisibility}
+                  onResetColumns={resetRequestVisibility}
+                  onResetFilters={resetRequestFilters}
+                  onResetWidths={resetRequestColumnWidths}
+                  hasActiveFilters={hasActiveRequestFilters}
+                />
+              )}
             </Stack>
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               {user.role === 'employee' ? (
@@ -569,7 +667,11 @@ export default function RequestsPage({ user }: { user: User }) {
               Объединение сотрудника: {employeeUnitNames.length ? employeeUnitNames.join(', ') : 'не назначено'}
             </Alert>
           ) : null}
-          {['economist', 'approver', 'zgd'].includes(user.role) ? (
+          {user.role === 'zgd' ? (
+            <Alert severity="info" variant="outlined">
+              Заявки сгруппированы по ЦФО и статьям. Раскройте группу, затем статью, чтобы перейти к конкретной заявке.
+            </Alert>
+          ) : ['economist', 'approver'].includes(user.role) ? (
             <Alert severity="info" variant="outlined">
               Здесь собраны заявки вашего маршрута. Откройте заявку, чтобы просмотреть её шаги и выполнить доступное действие согласования.
             </Alert>
@@ -705,6 +807,87 @@ export default function RequestsPage({ user }: { user: User }) {
         </DialogActions>
       </Dialog>
 
+      {user.role === 'zgd' ? (
+        <Paper className="table-surface" elevation={0}>
+          <Table size="small" sx={{ minWidth: 820, tableLayout: 'fixed' }}>
+            <TableHead>
+              <TableRow>
+                <TableCell sx={{ width: '22%' }}>ЦФО</TableCell>
+                <TableCell>Статья / заявка</TableCell>
+                <TableCell sx={{ width: 210 }}>Статус</TableCell>
+                <TableCell align="right" sx={{ width: 160 }}>План</TableCell>
+                <TableCell align="right" sx={{ width: 170 }}>Факт</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {zgdGroups.map((cfoGroup) => {
+                const cfoExpanded = expandedZgdCfos.includes(cfoGroup.id);
+                return (
+                  <Fragment key={cfoGroup.id}>
+                    <TableRow sx={{ bgcolor: '#F3F7FF' }}>
+                      <TableCell colSpan={5} sx={{ py: 0.75 }}>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <IconButton
+                            size="small"
+                            aria-label={`${cfoExpanded ? 'Свернуть' : 'Раскрыть'} ЦФО ${cfoGroup.cfo}`}
+                            onClick={() => setExpandedZgdCfos((current) => current.includes(cfoGroup.id) ? current.filter((id) => id !== cfoGroup.id) : [...current, cfoGroup.id])}
+                          >
+                            <ExpandMoreIcon sx={{ transform: cfoExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />
+                          </IconButton>
+                          <Typography fontWeight={700}>ЦФО: {cfoGroup.cfo}</Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ ml: 'auto' }}>
+                            Статей: {cfoGroup.articles.length} · План: {money(cfoGroup.planned)} · Факт: {money(cfoGroup.approved)}
+                          </Typography>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                    {cfoExpanded && cfoGroup.articles.map((articleGroup) => {
+                      const articleExpanded = expandedZgdArticles.includes(articleGroup.id);
+                      return (
+                        <Fragment key={articleGroup.id}>
+                          <TableRow hover sx={{ bgcolor: '#FBFCFE', cursor: 'pointer' }} onClick={() => setExpandedZgdArticles((current) => current.includes(articleGroup.id) ? current.filter((id) => id !== articleGroup.id) : [...current, articleGroup.id])}>
+                            <TableCell />
+                            <TableCell>
+                              <Stack direction="row" spacing={0.75} alignItems="center">
+                                <ExpandMoreIcon fontSize="small" sx={{ transform: articleExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 150ms ease' }} />
+                                <Typography fontWeight={600}>{articleGroup.article}</Typography>
+                                <Typography variant="caption" color="text.secondary">Заявок: {articleGroup.requests.length}</Typography>
+                              </Stack>
+                            </TableCell>
+                            <TableCell />
+                            <TableCell align="right">{money(articleGroup.planned)}</TableCell>
+                            <TableCell align="right">{money(articleGroup.approved)}</TableCell>
+                          </TableRow>
+                          {articleExpanded && articleGroup.requests.map(({ request, planned, approved }) => (
+                            <TableRow key={request.id} hover sx={{ cursor: 'pointer' }} onClick={() => navigate(`/requests/${request.id}`)}>
+                              <TableCell />
+                              <TableCell sx={{ pl: 6 }}>
+                                <Typography variant="body2" fontWeight={600}>{formatUnitName(request.unit_id)}</Typography>
+                                <Typography variant="caption" color="text.secondary">Открыть заявку и её строки</Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Stack direction="row" spacing={0.75} alignItems="center">
+                                  <RequestStatusBadge status={request.status} />
+                                  {request.frozen && <LockOutlinedIcon color={request.fixed ? 'success' : 'warning'} fontSize="small" />}
+                                </Stack>
+                              </TableCell>
+                              <TableCell align="right">{money(planned)}</TableCell>
+                              <TableCell align="right">{money(approved)}</TableCell>
+                            </TableRow>
+                          ))}
+                        </Fragment>
+                      );
+                    })}
+                  </Fragment>
+                );
+              })}
+              {zgdGroups.length === 0 && (
+                <TableRow><TableCell colSpan={5} align="center">Заявки по выбранным фильтрам не найдены</TableCell></TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </Paper>
+      ) : (
       <Paper className="table-surface" elevation={0}>
         <Table size="small" sx={{ width: requestTableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
           <colgroup>
@@ -850,6 +1033,7 @@ export default function RequestsPage({ user }: { user: User }) {
           </TableBody>
         </Table>
       </Paper>
+      )}
 
       <ConfirmDialog
         open={!!deleteTarget}

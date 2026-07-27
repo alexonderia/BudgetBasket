@@ -198,6 +198,18 @@
     transition: background-color 0.2s ease, padding 0.3s ease, margin 0.3s ease;
   }
 
+  .drawer-summary-popup .MuiPaper-root {
+    min-width: 204px;
+    margin-left: 8px;
+    border: 1px solid var(--bb-line);
+    border-radius: 12px;
+    box-shadow: var(--bb-shadow);
+  }
+
+  .drawer-summary-popup .MuiMenuItem-root {
+    min-height: 42px;
+  }
+
   .drawer-footer {
     flex: 0 0 auto;
     margin-top: auto;
@@ -897,6 +909,22 @@
     min-height: 122px;
   }
 
+  .dashboard-metric-value {
+    overflow: hidden;
+    font-size: clamp(1.25rem, 1.45vw, 1.85rem) !important;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .dashboard-metric .MuiTypography-body2 {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
   .request-summary-content {
     padding: 16px !important;
   }
@@ -974,6 +1002,7 @@
 
   .dashboard-panel {
     height: 100%;
+    min-width: 0;
     padding: 22px;
   }
 
@@ -983,6 +1012,15 @@
     justify-content: space-between;
     gap: 12px;
     margin-bottom: 24px;
+  }
+
+  .dashboard-panel-heading > :first-child {
+    min-width: 0;
+  }
+
+  .dashboard-article-filter {
+    flex: 0 1 340px;
+    min-width: 240px;
   }
 
   .dashboard-donut {
@@ -1045,11 +1083,32 @@
   .dashboard-donut-value .MuiTypography-subtitle2 {
     max-width: 128px;
     line-height: 1.25;
+    font-variant-numeric: tabular-nums;
   }
 
   .dashboard-legend {
     width: 100%;
     min-width: 0;
+    max-height: 300px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .dashboard-legend-row {
+    min-width: 0;
+    border-radius: 8px;
+  }
+
+  .dashboard-legend-name {
+    flex: 1 1 auto;
+  }
+
+  .dashboard-legend-name .MuiTypography-root {
+    min-width: 0;
+  }
+
+  .dashboard-legend-values {
+    font-variant-numeric: tabular-nums;
   }
 
   .dashboard-legend-dot {
@@ -1106,6 +1165,59 @@
   .dashboard-article-amounts {
     flex: 0 0 auto;
     min-width: 156px;
+  }
+
+  .dashboard-cfo-bars {
+    width: 100%;
+  }
+
+  .dashboard-cfo-segmented-bar {
+    display: flex;
+    width: 100%;
+    height: 14px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #edf0f5;
+  }
+
+  .dashboard-cfo-segment {
+    display: block;
+    min-width: 0;
+    height: 100%;
+    border-right: 1px solid rgba(255, 255, 255, 0.8);
+    transition: opacity 120ms ease;
+  }
+
+  .dashboard-cfo-segment:hover {
+    opacity: 0.78;
+  }
+
+  .dashboard-cfo-legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 8px 20px;
+    margin-top: 12px;
+  }
+
+  .dashboard-cfo-legend-item {
+    min-width: 0;
+  }
+
+  .dashboard-cfo-legend-item > .MuiTypography-root {
+    flex: 1 1 auto;
+  }
+
+  .dashboard-cfo-values {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dashboard-cfo-article + .dashboard-cfo-article {
+    padding-top: 20px;
+    border-top: 1px solid var(--bb-line);
+  }
+
+  .dashboard-cfo-article .dashboard-cfo-bars {
+    margin-top: 12px;
   }
 
   .dashboard-empty-chart {
@@ -1417,6 +1529,31 @@
 
   .approval-graph-card.is-review {
     border-left: 4px solid #1976d2;
+  }
+
+  .approval-graph-card.is-status-waiting {
+    border-left-color: #94a3b8;
+    background: #f8fafc;
+  }
+
+  .approval-graph-card.is-status-on_approval {
+    border-left-color: #2563eb;
+    background: #eff6ff;
+  }
+
+  .approval-graph-card.is-status-on_revision {
+    border-left-color: #ea580c;
+    background: #fff7ed;
+  }
+
+  .approval-graph-card.is-status-approved {
+    border-left-color: #059669;
+    background: #ecfdf5;
+  }
+
+  .approval-graph-card.is-status-closed {
+    border-left-color: #64748b;
+    background: #f1f5f9;
   }
 
   .approval-graph-card.is-selected {
@@ -1943,6 +2080,11 @@
   }
 
   .dashboard-unit-filter {
+    flex-basis: auto;
+    width: 100%;
+  }
+
+  .dashboard-article-filter {
     flex-basis: auto;
     width: 100%;
   }

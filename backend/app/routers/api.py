@@ -386,6 +386,21 @@ def income_dashboard(request: Request, user: User, unit_id: str | None = None):
     return request.app.state.request_service.dashboard(user, unit_id, is_income=True)
 
 
+@router.get("/dashboard/article-cfo")
+def dashboard_article_cfo(request: Request, user: User, article_key: str, unit_id: str | None = None, is_income: bool = False):
+    return request.app.state.request_service.dashboard_article_cfo(user, article_key, unit_id, is_income=is_income)
+
+
+@router.get("/dashboard/articles-cfo")
+def dashboard_articles_cfo(request: Request, user: User, unit_id: str | None = None, is_income: bool = False):
+    return request.app.state.request_service.dashboard_articles_cfo(user, unit_id, is_income=is_income)
+
+
+@router.get("/dashboard/table")
+def dashboard_table(request: Request, user: User, unit_id: str | None = None, is_income: bool = False):
+    return request.app.state.request_service.dashboard_table(user, unit_id, is_income=is_income)
+
+
 @router.get("/requests/export/closed")
 @router.get("/requests/export/fixed")
 def export_closed_requests(

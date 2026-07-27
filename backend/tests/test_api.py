@@ -71,6 +71,63 @@ def test_expense_and_income_dashboards_are_separate(tmp_path):
     assert incomes["totals"]["planned"] == initial_income_total + 250
 
 
+def test_dashboard_table_returns_hierarchical_request_rows(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    admin = auth(client, "admin", "admin")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    assert client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "License", "sum_plan": 100, "justification": "Plan"},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    rows = client.get("/dashboard/table", headers=admin).json()
+    row = next(item for item in rows if item["request_id"] == request["id"])
+    assert row["organization"]
+    assert row["cfo"]
+    assert row["unit"]
+    assert row["article"] == "Лицензии и подписки"
+    assert row["planned"] == 100
+
+
+def test_dashboard_article_cfo_returns_selected_article_breakdown(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    admin = auth(client, "admin", "admin")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    assert client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "License", "sum_plan": 100, "justification": "Plan"},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    rows = client.get("/dashboard/article-cfo", params={"article_key": f"dds:{DDS_LICENSE_ID}"}, headers=admin).json()
+    assert rows
+    assert rows[0]["name"] == "ЦФО цифровых продуктов"
+    assert rows[0]["planned"] >= 100
+
+
+def test_dashboard_articles_cfo_returns_all_articles(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    admin = auth(client, "admin", "admin")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    assert client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "License", "sum_plan": 100, "justification": "Plan"},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    articles = client.get("/dashboard/articles-cfo", headers=admin).json()
+    article = next(item for item in articles if item["id"] == f"dds:{DDS_LICENSE_ID}")
+    assert article["planned"] >= 100
+    assert article["cfo"][0]["name"] == "ЦФО цифровых продуктов"
+
+
 def test_draft_request_shows_module_economist_contact(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")

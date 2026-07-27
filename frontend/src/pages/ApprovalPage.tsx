@@ -48,6 +48,7 @@ import type {
   ApprovalStep,
   StepLog,
   StepRequest,
+  StepStatus,
   User,
 } from '../types';
 import { money, roleLabels, stepStatusLabels } from '../utils/labels';
@@ -63,6 +64,14 @@ type EdgeDeletePreviewNode = {
 type EdgeDeletePreviewGraph = {
   nodes: EdgeDeletePreviewNode[];
   edges: { parent_step_id: string; child_step_id: string }[];
+};
+
+const graphStepStatusTones: Record<StepStatus, { background: string; border: string; color: string }> = {
+  waiting: { background: '#F8FAFC', border: '#94A3B8', color: '#475569' },
+  on_approval: { background: '#EFF6FF', border: '#2563EB', color: '#1D4ED8' },
+  on_revision: { background: '#FFF7ED', border: '#EA580C', color: '#C2410C' },
+  approved: { background: '#ECFDF5', border: '#059669', color: '#047857' },
+  closed: { background: '#F1F5F9', border: '#64748B', color: '#334155' },
 };
 
 type EdgeDeletePreview = {
@@ -872,10 +881,11 @@ function ApprovalGraph({
           const isSelected = step.id === selectedStepId;
           const contact = step.user?.profile;
           const isContactOpen = openContactStepId === step.id;
+          const statusTone = graphStepStatusTones[step.status];
           return (
             <Card
               key={step.id}
-              className={`approval-graph-card ${isLeaf ? 'is-leaf' : 'is-review'} ${isFinal ? 'is-final' : ''} ${isSelected ? 'is-selected' : ''} ${canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id ? 'is-connect-target' : ''}`}
+              className={`approval-graph-card ${isLeaf ? 'is-leaf' : 'is-review'} is-status-${step.status} ${isFinal ? 'is-final' : ''} ${isSelected ? 'is-selected' : ''} ${canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id ? 'is-connect-target' : ''}`}
               onClick={() => {
                 if (canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id) {
                   onConnect(pendingConnectionChildId, step.id);
@@ -921,10 +931,18 @@ function ApprovalGraph({
                     )}
                   </Stack>
                   <Chip
+                    className="approval-graph-status"
                     size="small"
                     variant="outlined"
                     label={stepStatusLabels[step.status]}
-                    sx={{ height: 'auto', '& .MuiChip-label': { display: 'block', py: 0.45, whiteSpace: 'normal', lineHeight: 1.2 } }}
+                    sx={{
+                      height: 'auto',
+                      bgcolor: statusTone.background,
+                      borderColor: statusTone.border,
+                      color: statusTone.color,
+                      fontWeight: 700,
+                      '& .MuiChip-label': { display: 'block', py: 0.45, whiteSpace: 'normal', lineHeight: 1.2 },
+                    }}
                   />
                 </Stack>
                 {isLeaf ? (

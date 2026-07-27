@@ -411,17 +411,19 @@ function OrgUnitCard({
         </Box>}
       </Box>
 
-      <Box className={`org-connector ${hasChildren ? 'with-children' : 'leaf-end'}`}>
-        <span className="org-connector-line org-connector-line-top" />
-        {canCreateChild && (
-          <Tooltip title="Добавить объединение">
-            <IconButton className="org-add-on-line" size="small" onClick={onCreateChild} aria-label="Добавить объединение">
-              <AddIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-        )}
-        {hasChildren && <span className="org-connector-line org-connector-line-bottom" />}
-      </Box>
+      {(hasChildren || canCreateChild) && (
+        <Box className={`org-connector ${hasChildren ? 'with-children' : 'leaf-end'}`}>
+          <span className="org-connector-line org-connector-line-top" />
+          {canCreateChild && (
+            <Tooltip title="Добавить объединение">
+              <IconButton className="org-add-on-line" size="small" onClick={onCreateChild} aria-label="Добавить объединение">
+                <AddIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          )}
+          {hasChildren && <span className="org-connector-line org-connector-line-bottom" />}
+        </Box>
+      )}
 
       {children}
     </Box>

@@ -1,6 +1,8 @@
 import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 import CloseIcon from '@mui/icons-material/Close';
 import DashboardIcon from '@mui/icons-material/Dashboard';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FolderIcon from '@mui/icons-material/Folder';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
@@ -11,10 +13,13 @@ import MenuOpenIcon from '@mui/icons-material/MenuOpen';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import PeopleIcon from '@mui/icons-material/People';
 import SchemaIcon from '@mui/icons-material/Schema';
+import SpaceDashboardIcon from '@mui/icons-material/SpaceDashboard';
+import TableChartIcon from '@mui/icons-material/TableChart';
 import Alert from '@mui/material/Alert';
 import Badge from '@mui/material/Badge';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import Collapse from '@mui/material/Collapse';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -26,6 +31,8 @@ import List from '@mui/material/List';
 import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
+import Menu from '@mui/material/Menu';
+import MenuItem from '@mui/material/MenuItem';
 import Snackbar from '@mui/material/Snackbar';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
@@ -129,6 +136,8 @@ export function Layout({
   const [profileOpen, setProfileOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [chatInboxOpen, setChatInboxOpen] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(true);
+  const [summaryMenuAnchor, setSummaryMenuAnchor] = useState<HTMLElement | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileDraft>(emptyProfile);
   const showPageChrome = isMobile || !breadcrumblessPaths.has(location.pathname) || !!actions || !!leading;
   const chrome = useMemo(() => ({ setActions, setLeading }), []);
@@ -247,7 +256,6 @@ export function Layout({
     (!!profileForm.phone && !PHONE_RE.test(profileForm.phone));
 
   const items = [
-    ...(user.role !== 'employee' ? [{ label: 'Сводка', to: '/', icon: <DashboardIcon /> }] : []),
     { label: 'Заявки', to: '/requests', icon: <FolderIcon /> },
     ...(canAccessApproval(user.role)
       ? [{
@@ -264,10 +272,16 @@ export function Layout({
         ]
       : []),
   ];
+  const summaryItems = [
+    { label: 'Дашборд', view: 'dashboard', icon: <SpaceDashboardIcon fontSize="small" /> },
+    { label: 'Табличный вид', view: 'table', icon: <TableChartIcon fontSize="small" /> },
+  ];
   const drawerCollapsed = !isMobile && desktopDrawerCollapsed;
   const drawerWidth = drawerCollapsed ? collapsedDrawerWidth : expandedDrawerWidth;
+  const summaryMenuOpen = Boolean(summaryMenuAnchor);
 
   const toggleDesktopDrawer = () => {
+    setSummaryMenuAnchor(null);
     setDesktopDrawerCollapsed((current) => {
       window.localStorage.setItem('budgetbasket:drawer-collapsed', String(!current));
       return !current;
@@ -325,6 +339,79 @@ export function Layout({
         </Box>
         <Divider />
         <List>
+          {user.role !== 'employee' && (
+            <>
+              <Tooltip title="Сводка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+                <ListItemButton
+                  className="drawer-nav-item"
+                  selected={location.pathname === '/'}
+                  onClick={(event) => {
+                    if (drawerCollapsed) {
+                      setSummaryMenuAnchor(event.currentTarget);
+                    } else {
+                      setSummaryOpen((current) => !current);
+                    }
+                  }}
+                  aria-haspopup={drawerCollapsed ? 'menu' : undefined}
+                  aria-expanded={drawerCollapsed ? summaryMenuOpen : summaryOpen}
+                >
+                  <ListItemIcon><DashboardIcon /></ListItemIcon>
+                  {!drawerCollapsed && <ListItemText primary="Сводка" />}
+                  {!drawerCollapsed && (summaryOpen ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />)}
+                </ListItemButton>
+              </Tooltip>
+              <Collapse in={summaryOpen && !drawerCollapsed} timeout="auto" unmountOnExit>
+                <List component="div" disablePadding>
+                  {summaryItems.map((summaryItem) => {
+                    const selected = location.pathname === '/' && (summaryItem.view === 'table' ? new URLSearchParams(location.search).get('view') === 'table' : new URLSearchParams(location.search).get('view') !== 'table');
+                    return (
+                      <Tooltip key={summaryItem.view} title={summaryItem.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+                        <ListItemButton
+                          className="drawer-nav-item"
+                          selected={selected}
+                          onClick={() => {
+                            navigate(`/?view=${summaryItem.view}`);
+                            setMobileDrawerOpen(false);
+                          }}
+                          sx={{ pl: drawerCollapsed ? undefined : 4.5 }}
+                        >
+                          <ListItemIcon sx={{ minWidth: 36 }}>{summaryItem.icon}</ListItemIcon>
+                          {!drawerCollapsed && <ListItemText primary={summaryItem.label} />}
+                        </ListItemButton>
+                      </Tooltip>
+                    );
+                  })}
+                </List>
+              </Collapse>
+              <Menu
+                open={drawerCollapsed && summaryMenuOpen}
+                anchorEl={summaryMenuAnchor}
+                onClose={() => setSummaryMenuAnchor(null)}
+                anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+                className="drawer-summary-popup"
+                MenuListProps={{ 'aria-label': 'Разделы сводки' }}
+              >
+                {summaryItems.map((summaryItem) => {
+                  const selected = location.pathname === '/' && (summaryItem.view === 'table' ? new URLSearchParams(location.search).get('view') === 'table' : new URLSearchParams(location.search).get('view') !== 'table');
+                  return (
+                    <MenuItem
+                      key={summaryItem.view}
+                      selected={selected}
+                      onClick={() => {
+                        navigate(`/?view=${summaryItem.view}`);
+                        setSummaryMenuAnchor(null);
+                        setMobileDrawerOpen(false);
+                      }}
+                    >
+                      <ListItemIcon>{summaryItem.icon}</ListItemIcon>
+                      {summaryItem.label}
+                    </MenuItem>
+                  );
+                })}
+              </Menu>
+            </>
+          )}
           {items.map((item) => {
             const selected = item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to);
             return (

@@ -2184,7 +2184,7 @@ class ApprovalService:
             apply(transaction_repo)
 
     def resume_economist_review(self, user: dict, request_id: str) -> dict:
-        """Unfreeze a returned request so its economist can revise it before resubmission."""
+        """Unfreeze a returned or locally completed request for economist revision."""
         with self.repo.transaction() as repo:
             request = get_required(repo, "requests", request_id)
             route = self._request_route(repo, request["unit_id"])
@@ -2193,7 +2193,9 @@ class ApprovalService:
             leaf = route[0]
             self._require_assignee_action(repo, user, leaf)
             state = self._request_step_state(repo, leaf, request_id)
-            if state["status"] != StepStatus.on_revision or not request.get("frozen"):
+            can_resume_returned = state["status"] == StepStatus.on_revision
+            can_undo_local_review = state["status"] == StepStatus.approved
+            if not (can_resume_returned or can_undo_local_review) or not request.get("frozen"):
                 raise HTTPException(status_code=409, detail="Заявка не ожидает доработки экономистом")
             if request.get("fixed"):
                 raise HTTPException(status_code=409, detail="Окончательно зафиксированную заявку нельзя разморозить")
