@@ -139,6 +139,8 @@ class BudgetItemService:
                 normalized["invest_id"] = article_id if kind == "invest" else None
             if "name" in normalized:
                 normalized["name"] = normalized["name"].strip()
+                if not normalized["name"]:
+                    raise HTTPException(status_code=400, detail="Укажите наименование строки заявки")
             if "justification" in normalized:
                 normalized["justification"] = normalized["justification"].strip()
         if not normalized:

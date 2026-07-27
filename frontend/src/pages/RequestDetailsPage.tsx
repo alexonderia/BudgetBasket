@@ -7,6 +7,7 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
@@ -44,18 +45,19 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { requestChatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { FilePreviewDialog } from '../components/FilePreviewDialog';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
 import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
 import type { ApprovalStep, BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, Profile, StepLog, StepStatus, Unit, User } from '../types';
 import { CLOSED_REQUEST_STATUSES } from '../types';
-import { downloadAuthorized, downloadBlob } from '../utils/download';
+import { downloadBlob } from '../utils/download';
 import { itemStatusLabels, money, requestStatusLabels, stepStatusLabels } from '../utils/labels';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { normalizePositiveAmount } from '../utils/validation';
@@ -225,6 +227,83 @@ type RequestLog = {
     changes: Record<string, { from: unknown; to: unknown }>;
   };
 };
+
+type CatalogOption = CatalogItem & { label: string };
+type DraftChangeHandler = (itemId: string, patch: Partial<BudgetItem>) => void;
+
+const ItemArticleEditor = memo(function ItemArticleEditor({
+  articleField,
+  catalogById,
+  itemId,
+  options,
+  selectableIds,
+  value,
+  onDraftChange,
+}: {
+  articleField: 'dds_id' | 'invest_id';
+  catalogById: Map<string, CatalogOption>;
+  itemId: string;
+  options: CatalogOption[];
+  selectableIds: Set<string>;
+  value: string | null | undefined;
+  onDraftChange: DraftChangeHandler;
+}) {
+  const selected = value ? catalogById.get(value) || null : null;
+  const optionsWithSelected = useMemo(
+    () => selected && !selectableIds.has(selected.id) ? [selected, ...options] : options,
+    [options, selectableIds, selected],
+  );
+
+  return (
+    <Autocomplete
+      size="small"
+      options={optionsWithSelected}
+      value={selected}
+      onChange={(_, next) => {
+        if (next && selectableIds.has(next.id)) onDraftChange(itemId, { [articleField]: next.id });
+      }}
+      isOptionEqualToValue={(option, selectedOption) => option.id === selectedOption.id}
+      getOptionLabel={(option) => option.label}
+      getOptionDisabled={(option) => !selectableIds.has(option.id)}
+      renderInput={(params) => (
+        <TextField
+          {...params}
+          label={articleField === 'dds_id' ? 'Статья ДДС' : 'Инвест-проект'}
+          placeholder="Поиск по НСИ"
+        />
+      )}
+      sx={{ width: '100%', minWidth: 0 }}
+    />
+  );
+});
+
+const ItemTextEditor = memo(function ItemTextEditor({
+  field,
+  itemId,
+  multiline = false,
+  onDraftChange,
+  required = false,
+  value,
+}: {
+  field: 'name' | 'justification';
+  itemId: string;
+  multiline?: boolean;
+  onDraftChange: DraftChangeHandler;
+  required?: boolean;
+  value: string;
+}) {
+  return (
+    <TextField
+      size="small"
+      required={required}
+      multiline={multiline}
+      minRows={multiline ? 2 : undefined}
+      value={value}
+      onChange={(event) => onDraftChange(itemId, { [field]: event.target.value })}
+      sx={{ width: '100%', minWidth: 0 }}
+    />
+  );
+});
 
 const historyActionLabels: Record<string, string> = {
   created: 'Заявка создана',
@@ -465,6 +544,7 @@ function ItemFilesCell({
   onRestoreDelete: (fileId: number) => void;
   disabled: boolean;
 }) {
+  const [previewFile, setPreviewFile] = useState<FileAttachment | null>(null);
   const { data: files = [] } = useQuery({
     queryKey: ['item-files', kind, itemId],
     queryFn: async () => (await api.get<FileAttachment[]>(`/items/${itemId}/files`)).data,
@@ -479,9 +559,9 @@ function ItemFilesCell({
           <Tooltip title={file.original_name} disableInteractive>
           <Button
             size="small"
-            startIcon={<FileDownloadIcon />}
-            onClick={() => downloadAuthorized(`/files/${file.id}/download`, file.original_name)}
-            aria-label={`Скачать ${file.original_name}`}
+            startIcon={<VisibilityOutlinedIcon />}
+            onClick={() => setPreviewFile(file)}
+            aria-label={`Открыть предпросмотр ${file.original_name}`}
             sx={{
               justifyContent: 'flex-start',
               minWidth: 0,
@@ -533,6 +613,7 @@ function ItemFilesCell({
           sx={{ maxWidth: '100%', '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' } }}
         />
       ))}
+      <FilePreviewDialog file={previewFile} open={!!previewFile} onClose={() => setPreviewFile(null)} />
     </Stack>
   );
 }
@@ -742,7 +823,7 @@ function ItemsTable({
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const [drafts, setDrafts] = useState<Record<string, Partial<BudgetItem>>>({});
-  const [isEmployeeEditing, setIsEmployeeEditing] = useState(false);
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [stagedFilesByItem, setStagedFilesByItem] = useState<Record<string, File[]>>({});
   const [pendingDeletedFileIdsByItem, setPendingDeletedFileIdsByItem] = useState<Record<string, number[]>>({});
   const [deleteTarget, setDeleteTarget] = useState<BudgetItem | null>(null);
@@ -752,8 +833,27 @@ function ItemsTable({
   const canEconomist = user.role === 'economist' && request.status === 'on_review' && !request.frozen;
   const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
+  const catalogById = useMemo(
+    () => new Map(catalog.map((entry) => [entry.id, { ...entry, label: catalogLabel(entry, catalog) }])),
+    [catalog],
+  );
+  const selectableCatalogOptions = useMemo(
+    () => selectableItems(catalog).map((entry) => catalogById.get(entry.id)!),
+    [catalog, catalogById],
+  );
+  const selectableCatalogIds = useMemo(
+    () => new Set(selectableCatalogOptions.map((entry) => entry.id)),
+    [selectableCatalogOptions],
+  );
+  const updateEmployeeDraft = useCallback<DraftChangeHandler>((itemId, patch) => {
+    setDrafts((current) => ({
+      ...current,
+      [itemId]: { ...current[itemId], ...patch },
+    }));
+  }, []);
 
   const itemTableDefinitions = useMemo<TableColumnDefinition<BudgetItem, ItemTableColumn>[]>(() => [
+    { id: 'actions', label: '\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F', sortable: false, filterable: false, hideable: false, getValue: () => '' },
     {
       id: 'article',
       label: kind === 'dds' ? '\u0421\u0442\u0430\u0442\u044C\u044F \u0414\u0414\u0421' : '\u0418\u043D\u0432\u0435\u0441\u0442-\u043F\u0440\u043E\u0435\u043A\u0442',
@@ -776,7 +876,6 @@ function ItemsTable({
       getValue: (item) => item.comment || (item.status === 'rejected' ? '\u041A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439 \u0440\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u0442\u0441\u044F' : '?'),
     },
     { id: 'files', label: '\u0424\u0430\u0439\u043B', sortable: false, filterable: false, getValue: () => '' },
-    { id: 'actions', label: '\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F', sortable: false, filterable: false, hideable: false, getValue: () => '' },
   ], [catalog, kind]);
   const {
     clearColumnFilter: clearItemColumnFilter,
@@ -858,6 +957,7 @@ function ItemsTable({
     item: BudgetItem,
     local: Partial<BudgetItem>,
     isDeleted: boolean,
+    isEditingItem: boolean,
     draftStatus: ItemStatus,
     inactiveCatalogSelection: boolean,
     catalogId: string | null,
@@ -872,26 +972,16 @@ function ItemsTable({
       case 'article':
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
-            {isEmployeeEditing && !isDeleted ? (
-              <TextField
-                select
-                size="small"
-                value={(kind === 'dds' ? local.dds_id : local.invest_id) || catalogId || ''}
-                onChange={(event) =>
-                  setDrafts({
-                    ...drafts,
-                    [item.id]: { ...local, [kind === 'dds' ? 'dds_id' : 'invest_id']: event.target.value },
-                  })
-                }
-                sx={{ width: '100%', minWidth: 0 }}
-              >
-                {selectableItems(catalog).map((entry) => <MenuItem key={entry.id} value={entry.id}>{catalogLabel(entry, catalog)}</MenuItem>)}
-                {inactiveCatalogSelection && catalogId && (
-                  <MenuItem value={catalogId} disabled>
-                    {catalogLabel(catalog.find((entry) => entry.id === catalogId)!, catalog)} (неактивна)
-                  </MenuItem>
-                )}
-              </TextField>
+            {isEditingItem && !isDeleted ? (
+              <ItemArticleEditor
+                articleField={kind === 'dds' ? 'dds_id' : 'invest_id'}
+                catalogById={catalogById}
+                itemId={item.id}
+                options={selectableCatalogOptions}
+                selectableIds={selectableCatalogIds}
+                value={(kind === 'dds' ? local.dds_id : local.invest_id) || catalogId}
+                onDraftChange={updateEmployeeDraft}
+              />
             ) : (
               <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
                 <Stack spacing={0.25}>
@@ -903,20 +993,42 @@ function ItemsTable({
           </TableCell>
         );
       case 'name':
-        return <TableCell key={columnId} sx={bodyCellSx(columnId)}>{item.name || '—'}</TableCell>;
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            {isEditingItem && !isDeleted ? (
+              <ItemTextEditor
+                field="name"
+                itemId={item.id}
+                required
+                value={local.name ?? item.name}
+                onDraftChange={updateEmployeeDraft}
+              />
+            ) : item.name || '—'}
+          </TableCell>
+        );
       case 'justification':
-        return <TableCell key={columnId} sx={bodyCellSx(columnId)}>{item.justification || '—'}</TableCell>;
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            {isEditingItem && !isDeleted ? (
+              <ItemTextEditor
+                field="justification"
+                itemId={item.id}
+                multiline
+                value={local.justification ?? item.justification}
+                onDraftChange={updateEmployeeDraft}
+              />
+            ) : item.justification || '—'}
+          </TableCell>
+        );
       case 'plan':
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
-            {isEmployeeEditing && !isDeleted ? (
+            {isEditingItem && !isDeleted ? (
               <TextField
                 size="small"
                 type="number"
                 value={local.sum_plan ?? item.sum_plan}
-                onChange={(event) =>
-                  setDrafts({ ...drafts, [item.id]: { ...local, sum_plan: Number(event.target.value) } })
-                }
+                onChange={(event) => updateEmployeeDraft(item.id, { sum_plan: Number(event.target.value) })}
                 inputProps={{ min: 0 }}
                 sx={{ width: '100%', minWidth: 0 }}
               />
@@ -1006,7 +1118,7 @@ function ItemsTable({
             <ItemFilesCell
               kind={kind}
               itemId={item.id}
-              editing={isEmployeeEditing && !isDeleted}
+              editing={isEditingItem && !isDeleted}
               stagedFiles={stagedFiles}
               pendingDeletedFileIds={pendingDeletedFileIds}
               onRemoveStagedFile={(file) =>
@@ -1027,7 +1139,7 @@ function ItemsTable({
                   [item.id]: (current[item.id] || []).filter((id) => id !== fileId),
                 }))
               }
-              disabled={saveEmployeeChanges.isPending || isDeleted}
+              disabled={saveEmployeeItemChanges.isPending || isDeleted}
             />
           </TableCell>
         );
@@ -1035,12 +1147,6 @@ function ItemsTable({
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
             <Stack direction="row" spacing={0.5} justifyContent="flex-start" alignItems="center">
-              {isEmployeeEditing && !isDeleted && (
-                <FileAttachAction
-                  disabled={saveEmployeeChanges.isPending}
-                  onUpload={(file) => stageFile(item.id, file)}
-                />
-              )}
               {canEconomist && !isDeleted ? (
                 <Tooltip title={validationError || 'Сохранить изменения строки'}>
                   <IconButton
@@ -1053,29 +1159,64 @@ function ItemsTable({
                     <SaveOutlinedIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>
-              ) : employeeCanEdit && !isEmployeeEditing && !isDeleted ? (
-                <Tooltip title="Удалить строку">
-                  <IconButton
-                    size="small"
-                    color="error"
-                    onClick={() => setDeleteTarget(item)}
-                    aria-label="Удалить строку"
-                  >
-                    <DeleteOutlineIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              ) : canDeleteItem && !isEmployeeEditing && !isDeleted ? (
-                <Tooltip title="Удалить строку">
-                  <IconButton
-                    size="small"
-                    color="error"
-                    onClick={() => setDeleteTarget(item)}
-                    aria-label="Удалить строку"
-                  >
-                    <DeleteOutlineIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              ) : null}
+              ) : employeeCanEdit && !isDeleted && (isEditingItem ? (
+                <>
+                  <FileAttachAction
+                    disabled={saveEmployeeItemChanges.isPending}
+                    onUpload={(file) => stageFile(item.id, file)}
+                  />
+                  <Tooltip title="Сохранить изменения строки">
+                    <span>
+                      <IconButton
+                        size="small"
+                        color="primary"
+                        onClick={() => saveEmployeeItemChanges.mutate(item.id)}
+                        disabled={saveEmployeeItemChanges.isPending}
+                        aria-label="Сохранить изменения строки"
+                      >
+                        <SaveOutlinedIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Отменить изменения">
+                    <span>
+                      <IconButton
+                        size="small"
+                        onClick={() => cancelEmployeeEdit(item.id)}
+                        disabled={saveEmployeeItemChanges.isPending}
+                        aria-label="Отменить изменения"
+                      >
+                        <CloseIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </>
+              ) : !editingItemId ? (
+                <>
+                  <Tooltip title="Изменить строку">
+                    <IconButton
+                      size="small"
+                      color="primary"
+                      onClick={() => setEditingItemId(item.id)}
+                      aria-label="Изменить строку"
+                    >
+                      <EditOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  {canDeleteItem && (
+                    <Tooltip title="Удалить строку">
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => setDeleteTarget(item)}
+                        aria-label="Удалить строку"
+                      >
+                        <DeleteOutlineIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  )}
+                </>
+              ) : null)}
             </Stack>
           </TableCell>
         );
@@ -1130,55 +1271,64 @@ function ItemsTable({
     },
   });
 
-  const saveEmployeeChanges = useMutation({
-    mutationFn: async () => {
-      const changedItemIds = new Set([
-        ...Object.keys(drafts),
-        ...Object.keys(stagedFilesByItem),
-        ...Object.keys(pendingDeletedFileIdsByItem),
-      ]);
-      for (const itemId of changedItemIds) {
-        const body = drafts[itemId] || {};
-        if (Object.keys(body).length > 0) {
-          await api.patch(`/items/${itemId}`, body);
-        }
-        for (const file of stagedFilesByItem[itemId] || []) {
-          const form = new FormData();
-          form.append('file', file);
-          await api.post(`/items/${itemId}/files`, form);
-          setStagedFilesByItem((current) => ({
-            ...current,
-            [itemId]: (current[itemId] || []).filter((entry) => entry !== file),
-          }));
-        }
-        for (const fileId of pendingDeletedFileIdsByItem[itemId] || []) {
-          await api.delete(`/items/${itemId}/files/${fileId}`);
-          setPendingDeletedFileIdsByItem((current) => ({
-            ...current,
-            [itemId]: (current[itemId] || []).filter((id) => id !== fileId),
-          }));
-        }
+  const saveEmployeeItemChanges = useMutation({
+    mutationFn: async (itemId: string) => {
+      const body = drafts[itemId] || {};
+      if (Object.keys(body).length > 0) {
+        await api.patch(`/items/${itemId}`, body);
+      }
+      for (const file of stagedFilesByItem[itemId] || []) {
+        const form = new FormData();
+        form.append('file', file);
+        await api.post(`/items/${itemId}/files`, form);
+      }
+      for (const fileId of pendingDeletedFileIdsByItem[itemId] || []) {
+        await api.delete(`/items/${itemId}/files/${fileId}`);
       }
     },
-    onSuccess: () => {
-      setIsEmployeeEditing(false);
-      setDrafts({});
-      setStagedFilesByItem({});
-      setPendingDeletedFileIdsByItem({});
+    onSuccess: (_data, itemId) => {
+      setEditingItemId(null);
+      setDrafts((current) => {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
+      setStagedFilesByItem((current) => {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
+      setPendingDeletedFileIdsByItem((current) => {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
       refresh();
       queryClient.invalidateQueries({ queryKey: ['item-files', kind] });
-      toast('Все изменения сохранены', 'success');
+      toast('Строка сохранена', 'success');
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось сохранить все изменения'), 'error');
+      toast(getErrorMessage(error, 'Не удалось сохранить строку'), 'error');
     },
   });
 
-  const cancelEmployeeEdit = () => {
-    setIsEmployeeEditing(false);
-    setDrafts({});
-    setStagedFilesByItem({});
-    setPendingDeletedFileIdsByItem({});
+  const cancelEmployeeEdit = (itemId: string) => {
+    setEditingItemId(null);
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+    setStagedFilesByItem((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+    setPendingDeletedFileIdsByItem((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
   };
 
   const stageFile = (itemId: string, file: File) => {
@@ -1213,35 +1363,6 @@ function ItemsTable({
             />
           </Stack>
           <Stack direction="row" spacing={0.5} alignItems="center">
-            {employeeCanEdit && (isEmployeeEditing ? (
-              <>
-                <Button
-                  size="small"
-                  variant="contained"
-                  startIcon={<SaveOutlinedIcon />}
-                  onClick={() => saveEmployeeChanges.mutate()}
-                  disabled={saveEmployeeChanges.isPending}
-                >
-                  Сохранить
-                </Button>
-                <Tooltip title="Отменить редактирование">
-                  <span>
-                    <IconButton
-                      size="small"
-                      onClick={cancelEmployeeEdit}
-                      disabled={saveEmployeeChanges.isPending}
-                      aria-label="Отменить редактирование"
-                    >
-                      <CloseIcon fontSize="small" />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              </>
-            ) : (
-              <Button size="small" variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => setIsEmployeeEditing(true)}>
-                Изменить
-              </Button>
-            ))}
             <Tooltip title="Сбросить ширину колонок">
               <IconButton
                 size="small"
@@ -1257,14 +1378,14 @@ function ItemsTable({
           {canEconomist
             ? 'Проверьте строки, укажите статус, утверждённую сумму и комментарий.'
             : employeeCanEdit
-              ? 'Нажмите «Изменить», чтобы изменить статьи, планы и файлы. Изменения применятся только после общего сохранения.'
+              ? 'Для изменения строки нажмите кнопку редактирования в столбце действий. Каждая строка сохраняется отдельно.'
               : 'Строки заявки показаны в режиме просмотра. Редактирование и работа с файлами доступны только сотруднику в черновике.'}
         </Typography>
         <Typography variant="caption" color="text.secondary">
           Перетаскивайте границы заголовков, чтобы настроить ширину колонок.
         </Typography>
       </Stack>
-      {employeeCanEdit && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || isEmployeeEditing} />}
+      {employeeCanEdit && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || !!editingItemId} />}
       <TableContainer className="request-items-table">
         <Table size="small" sx={{ width: tableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
           <colgroup>
@@ -1304,6 +1425,7 @@ function ItemsTable({
             {visibleItems.map((item) => {
               const local = drafts[item.id] || {};
               const isDeleted = item.status === 'deleted';
+              const isEditingItem = editingItemId === item.id;
               const draftStatus = local.status || item.status;
               const hasDraftChanges = hasEffectiveItemChanges(item, local);
               const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
@@ -1329,6 +1451,7 @@ function ItemsTable({
                     item,
                     local,
                     isDeleted,
+                    isEditingItem,
                     draftStatus,
                     inactiveCatalogSelection,
                     catalogId ?? null,

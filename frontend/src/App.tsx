@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './api/client';
+import { FilePreviewDialog } from './components/FilePreviewDialog';
 import { Layout } from './components/Layout';
 import CatalogsPage from './pages/CatalogsPage';
 import ApprovalPage from './pages/ApprovalPage';
@@ -18,6 +19,23 @@ function RequestDetailsRoute({ user }: { user: User }) {
   const { id = '' } = useParams();
   // Remount on :id change so dialogs, chat drafts and local UI never leak between requests.
   return <RequestDetailsPage key={id} user={user} />;
+}
+
+function FilePreviewRoute() {
+  const { fileId = '' } = useParams();
+  const [searchParams] = useSearchParams();
+  const id = Number(fileId);
+  if (!Number.isInteger(id) || id <= 0) return <Navigate to="/" replace />;
+
+  return (
+    <FilePreviewDialog
+      file={{ id, id_storage_object: 0, original_name: searchParams.get('name') || `Файл ${id}` }}
+      open
+      fullScreen
+      showOpenInNewWindow={false}
+      onClose={() => window.close()}
+    />
+  );
 }
 
 export default function App() {
@@ -68,6 +86,7 @@ export default function App() {
 
   return (
     <Routes>
+      <Route path="/file-preview/:fileId" element={<FilePreviewRoute />} />
       <Route element={<Layout user={user} onLogout={logout} onUserChange={persistUser} />}>
         <Route path="/" element={user.role === 'employee' ? <Navigate to="/requests" replace /> : <DashboardPage user={user} />} />
         <Route path="/income-dashboard" element={<Navigate to="/" replace />} />
