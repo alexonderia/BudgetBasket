@@ -52,6 +52,7 @@ import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { requestChatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { FilePreviewDialog } from '../components/FilePreviewDialog';
+import { ChatMessageImages } from '../components/ChatMessageImages';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
 import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
@@ -270,6 +271,7 @@ type ChatMessage = {
   created_at: string;
   is_system?: boolean;
   sender: { id: string; login: string; role: 'economist' | 'employee'; profile?: Profile | null } | null;
+  files: FileAttachment[];
 };
 type RequestChat = {
   participants: { user_id: string; last_read_message_id: string | null }[];
@@ -1750,6 +1752,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     [logs],
   );
   const [chatText, setChatText] = useState('');
+  const [chatImages, setChatImages] = useState<File[]>([]);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const chatMessages = chat?.messages || [];
   useEffect(() => {
@@ -1818,9 +1821,16 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     };
   }, [chat, id, queryClient, request?.id, request?.status]);
   const sendChatMessage = useMutation({
-    mutationFn: () => api.post(`/requests/${id}/chat/messages`, { text: chatText }),
+    mutationFn: () => {
+      if (!chatImages.length) return api.post(`/requests/${id}/chat/messages`, { text: chatText.trim() });
+      const form = new FormData();
+      form.append('text', chatText.trim());
+      chatImages.forEach((image) => form.append('images', image));
+      return api.post(`/requests/${id}/chat/messages/images`, form);
+    },
     onSuccess: () => {
       setChatText('');
+      setChatImages([]);
       queryClient.invalidateQueries({ queryKey: [...detailsKey, 'chat'] });
       queryClient.invalidateQueries({ queryKey: [...detailsKey, 'logs'] });
     },
@@ -2343,6 +2353,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                   <Box className="request-chat-bubble">
                     {!isOwn && !isSystem && <Typography className="request-chat-sender" variant="caption">{chatSenderName(message.sender)}</Typography>}
                     {isSystem && <Typography className="request-chat-system-label" variant="caption">Системное сообщение</Typography>}
+                    <ChatMessageImages files={message.files || []} />
                     <Typography className="request-chat-text">{message.text}</Typography>
                     <Typography className="request-chat-time" variant="caption">{chatTime(message.created_at)}</Typography>
                   </Box>
@@ -2357,7 +2368,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               className="request-chat-composer"
               onSubmit={(event) => {
                 event.preventDefault();
-                if (chatText.trim() && !sendChatMessage.isPending) sendChatMessage.mutate();
+                if ((chatText.trim() || chatImages.length) && !sendChatMessage.isPending) sendChatMessage.mutate();
               }}
             >
               <TextField
@@ -2366,7 +2377,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && !event.shiftKey) {
                     event.preventDefault();
-                    if (chatText.trim() && !sendChatMessage.isPending) sendChatMessage.mutate();
+                    if ((chatText.trim() || chatImages.length) && !sendChatMessage.isPending) sendChatMessage.mutate();
                   }
                 }}
                 placeholder="Напишите сообщение…"
@@ -2376,7 +2387,18 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 minRows={1}
                 maxRows={4}
               />
-              <Button type="submit" className="request-chat-send" variant="contained" endIcon={<SendIcon />} disabled={!chatText.trim() || sendChatMessage.isPending}>
+              <IconButton component="label" aria-label="Прикрепить изображения" disabled={sendChatMessage.isPending}>
+                <AttachFileIcon />
+                <input hidden type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple onChange={(event) => {
+                  const images = Array.from(event.target.files || []).filter((file) => file.type === "image/png" || file.type === "image/jpeg" || file.type === "image/gif" || file.type === "image/webp");
+                  setChatImages((current) => [...current, ...images.filter((file) => !current.some((item) => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified))]);
+                  event.currentTarget.value = "";
+                }} />
+              </IconButton>
+              {!!chatImages.length && <Box className="chat-pending-images">{chatImages.map((image) => (
+                <Chip key={`${image.name}-${image.lastModified}`} size="small" label={image.name} onDelete={() => setChatImages((current) => current.filter((item) => item !== image))} />
+              ))}</Box>}
+              <Button type="submit" className="request-chat-send" variant="contained" endIcon={<SendIcon />} disabled={(!chatText.trim() && !chatImages.length) || sendChatMessage.isPending}>
                 Отправить
               </Button>
           </Box>

@@ -93,6 +93,11 @@ CREATE TABLE chat_messages (
     sender_id uuid REFERENCES users(id) ON DELETE RESTRICT,
     text text NOT NULL, is_system boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE message_files (
+    file_id bigint NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    message_id uuid NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    PRIMARY KEY (file_id, message_id)
+);
 CREATE TABLE chats_participants (
     chat_id uuid NOT NULL REFERENCES req_chats(id) ON DELETE CASCADE,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -162,6 +167,7 @@ CREATE INDEX idx_storage_objects_storage_key ON storage_objects(storage_key);
 CREATE INDEX idx_storage_objects_content_sha256 ON storage_objects(content_sha256);
 CREATE INDEX idx_chat_messages_chat_id_created_at ON chat_messages(chat_id, created_at);
 CREATE INDEX idx_chat_messages_reply_to ON chat_messages(reply_to);
+CREATE INDEX idx_message_files_message_id ON message_files(message_id);
 CREATE INDEX idx_chats_participants_user_id ON chats_participants(user_id);
 CREATE INDEX idx_req_logs_req_id_created_at ON req_logs(req_id, created_at);
 CREATE INDEX idx_req_logs_user_id ON req_logs(user_id);

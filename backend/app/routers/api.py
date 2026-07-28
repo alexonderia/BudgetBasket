@@ -3,7 +3,7 @@ from typing import Annotated
 from io import BytesIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.dependencies import current_user
@@ -645,6 +645,39 @@ def list_chats(request: Request, user: User):
 @router.post("/requests/{request_id}/chat/messages")
 async def send_chat_message(request: Request, request_id: str, payload: ChatMessageCreate, user: User):
     message = request.app.state.chat_service.send(user, request_id, payload.model_dump())
+    await request.app.state.chat_connections.broadcast(
+        request_id,
+        {"type": "chat.message.created", "message_id": message["id"]},
+    )
+    event = {"type": "chat.message.created", "request_id": request_id, "message_id": message["id"], "text": message["text"]}
+    for user_id in request.app.state.chat_service.notification_recipient_ids(request_id, user["id"]):
+        await request.app.state.chat_connections.broadcast_user(user_id, event)
+    return message
+
+
+@router.post("/requests/{request_id}/chat/messages/images")
+async def send_chat_message_with_images(
+    request: Request,
+    request_id: str,
+    user: User,
+    images: list[UploadFile] = File(...),
+    text: str = Form(""),
+    reply_to: str | None = Form(None),
+):
+    if not images:
+        raise HTTPException(status_code=400, detail="Добавьте хотя бы одно изображение")
+    await request.app.state.file_service.validate_chat_images(images)
+    message = request.app.state.chat_service.send(
+        user,
+        request_id,
+        {"text": text, "reply_to": reply_to},
+        allow_empty=True,
+    )
+    files = [
+        await request.app.state.file_service.upload_for_chat_message(user, request_id, message["id"], image)
+        for image in images
+    ]
+    message["files"] = files
     await request.app.state.chat_connections.broadcast(
         request_id,
         {"type": "chat.message.created", "message_id": message["id"]},

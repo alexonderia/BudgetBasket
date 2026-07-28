@@ -172,6 +172,13 @@ chat_messages = Table(
     Index("idx_chat_messages_chat_id_created_at", "chat_id", "created_at"), Index("idx_chat_messages_reply_to", "reply_to"),
 )
 
+message_files = Table(
+    "message_files", metadata,
+    Column("file_id", BigInteger, ForeignKey("files.id", ondelete="CASCADE"), nullable=False),
+    Column("message_id", PgUUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="CASCADE"), nullable=False),
+    PrimaryKeyConstraint("file_id", "message_id"), Index("idx_message_files_message_id", "message_id"),
+)
+
 chats_participants = Table(
     "chats_participants", metadata,
     Column("chat_id", PgUUID(as_uuid=True), ForeignKey("req_chats.id", ondelete="CASCADE"), nullable=False),
