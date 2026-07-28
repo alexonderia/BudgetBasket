@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+MIME_TYPE_ALIASES = {"application/x-zip-compressed": "application/zip"}
 
 
 class FileService:
@@ -44,7 +45,9 @@ class FileService:
 
     def _allowed_mime(self, original_name: str, content_type: str | None) -> str:
         expected, _ = mimetypes.guess_type(original_name)
+        expected = MIME_TYPE_ALIASES.get(expected or "", expected)
         actual = (content_type or expected or "application/octet-stream").split(";")[0]
+        actual = MIME_TYPE_ALIASES.get(actual, actual)
         if actual not in self.settings.allowed_upload_mime_types:
             raise HTTPException(status_code=400, detail="Неподдерживаемый тип файла")
         if expected and actual != expected:

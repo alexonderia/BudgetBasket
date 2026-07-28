@@ -63,7 +63,7 @@ import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinitio
 import { normalizePositiveAmount } from '../utils/validation';
 import { AUTH_TOKEN_KEY } from '../utils/session';
 
-const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx';
+const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx,.zip';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const UPLOAD_EXTENSIONS = new Set(UPLOAD_ACCEPT.split(','));
 
@@ -864,7 +864,7 @@ function AddItemForm({
           }} />
         </Button>
         <Typography variant="body2" color="text.secondary">
-          PDF, PNG, JPG, XLSX, DOCX; до 25 МБ каждый.
+          PDF, PNG, JPG, XLSX, DOCX, ZIP; до 25 МБ каждый.
         </Typography>
       </Stack>
       {pendingFiles.length > 0 && (
