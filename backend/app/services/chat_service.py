@@ -16,11 +16,19 @@ class ChatService:
     def _participant_ids(self, request: dict, *, repo: Repository | None = None) -> set[str]:
         storage = repo or self.repo
         users = {item["id"]: item for item in storage.load_all("users")}
-        employee_ids = {
+        module_employee_ids = {
             item["user_id"] for item in storage.load_all("units_responsibles")
             if item.get("unit_id") == request["unit_id"] and item.get("is_active") and users.get(item.get("user_id"), {}).get("role") == "employee"
         }
-        return employee_ids | ({request["economist_id"]} if request.get("economist_id") else set())
+        cfo_id = self.permissions.cfo_for_module(request["unit_id"])
+        cfo_participant_ids = {
+            item["user_id"]
+            for item in storage.load_all("units_responsibles")
+            if item.get("unit_id") == cfo_id
+            and item.get("is_active")
+            and users.get(item.get("user_id"), {}).get("role") in {"employee", "economist"}
+        }
+        return module_employee_ids | cfo_participant_ids
 
     def notification_recipient_ids(self, request_id: str, sender_id: str) -> set[str]:
         request = get_required(self.repo, "requests", request_id)

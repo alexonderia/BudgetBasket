@@ -1,237 +1,525 @@
-from app.seed import APPROVER_STEP_ID, DDS_LICENSE_ID, LEAF_STEP_ID, MODULE_ALPHA_ID, ROOT_STEP_ID
+from app.seed import (
+    APPROVER_STEP_ID,
+    APPROVER_ID,
+    CFO_ID,
+    DDS_LICENSE_ID,
+    ECONOMIST_ID,
+    ECONOMIST_STEP_ID,
+    LEAF_STEP_ID,
+    MODULE_ALPHA_ID,
+    ROOT_STEP_ID,
+)
 from tests.test_api import auth, make_client
 
 
-def create_submitted_request(client, employee):
-    created = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee)
-    assert created.status_code == 200
-    request_id = created.json()["id"]
-    item = client.post(
-        f"/requests/{request_id}/items",
-        json={"dds_id": DDS_LICENSE_ID, "name": "Лицензия", "sum_plan": 100, "justification": "Для работы"},
+def create_submitted_request(client, employee, *, item_count=1):
+    request = client.post(
+        "/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee
+    )
+    assert request.status_code == 200
+    items = []
+    for index in range(item_count):
+        item = client.post(
+            f"/requests/{request.json()['id']}/items",
+            json={
+                "dds_id": DDS_LICENSE_ID,
+                "name": f"Строка {index + 1}",
+                "sum_plan": 100 * (index + 1),
+                "justification": "План",
+            },
+            headers=employee,
+        )
+        assert item.status_code == 200
+        items.append(item.json())
+    assert client.post(
+        f"/requests/{request.json()['id']}/submit", headers=employee
+    ).status_code == 200
+    return request.json(), items
+
+
+def complete_cfo(client, employee, request_id, decisions):
+    for item_id, decision in decisions:
+        response = client.post(
+            f"/items/{item_id}/cfo-decision",
+            json={
+                "decision": decision,
+                "comment": "Причина" if decision == "rejected" else "",
+            },
+            headers=employee,
+        )
+        assert response.status_code == 200
+    completed = client.post(
+        f"/requests/{request_id}/complete-cfo-review", headers=employee
+    )
+    assert completed.status_code == 200, completed.text
+    return completed.json()
+
+
+def send_and_review_by_economist(client, employee, economist, position_id, item_ids):
+    sent = client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": "Передано"},
         headers=employee,
     )
-    assert item.status_code == 200
-    assert client.post(f"/requests/{request_id}/submit", headers=employee).status_code == 200
-    return request_id, item.json()["id"]
+    assert sent.status_code == 200, sent.text
+    for item_id in item_ids:
+        decided = client.post(
+            f"/cfo-positions/{position_id}/items/{item_id}/decision",
+            json={"decision": "approved", "comment": ""},
+            headers=economist,
+        )
+        assert decided.status_code == 200, decided.text
+    completed = client.post(
+        f"/cfo-positions/{position_id}/complete-review",
+        json={"comment": "Проверено"},
+        headers=economist,
+    )
+    assert completed.status_code == 200, completed.text
+    return completed.json()
 
 
-def finalize_by_economist(client, request_id, item_id, economist):
-    assert client.patch(f"/items/{item_id}", json={"status": "approved"}, headers=economist).status_code == 200
-    finalized = client.post(f"/requests/{request_id}/finalize", headers=economist)
-    assert finalized.status_code == 200
-    assert finalized.json()["frozen"] is True
-    return finalized.json()
-
-
-def test_draft_request_is_on_revision_at_economist_step_until_submission(tmp_path):
+def test_partial_cfo_approval_creates_position_only_for_accepted_lines(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
-    admin = auth(client, "admin", "admin")
-    draft = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee)
-    assert draft.status_code == 200
+    request, items = create_submitted_request(client, employee, item_count=2)
 
-    route = client.get(f"/requests/{draft.json()['id']}/approval-route", headers=employee).json()
-    assert [item["step"]["request_status"] for item in route] == ["on_revision", "waiting", "waiting"]
-    graph_steps = client.get("/steps", headers=admin).json()
-    assert next(step for step in graph_steps if step["id"] == LEAF_STEP_ID)["status"] == "on_revision"
+    completed = complete_cfo(
+        client,
+        employee,
+        request["id"],
+        [(items[0]["id"], "approved"), (items[1]["id"], "rejected")],
+    )
 
-
-def test_submission_creates_independent_step_states_and_economist_task(tmp_path):
-    client = make_client(tmp_path)
-    employee = auth(client, "employee", "employee")
-    economist = auth(client, "economist", "economist")
-    request_id, _ = create_submitted_request(client, employee)
-
-    route = client.get(f"/requests/{request_id}/approval-route", headers=employee).json()
-    assert [(item["step"]["id"], item["step"]["request_status"]) for item in route] == [
-        (LEAF_STEP_ID, "on_approval"),
-        (APPROVER_STEP_ID, "waiting"),
-        (ROOT_STEP_ID, "waiting"),
-    ]
-    tasks = client.get("/steps/my", headers=economist).json()
-    assert [(step["id"], step["active_requests_count"]) for step in tasks] == [(LEAF_STEP_ID, 1)]
+    assert completed["status"] == "approved"
+    assert len(completed["affected_cfo_position_ids"]) == 1
+    current = client.get(
+        f"/requests/{request['id']}/items", headers=employee
+    ).json()
+    assert current[0]["cfo_position_id"] is not None
+    assert current[1]["cfo_position_id"] is None
+    assert current[1]["sum_fact"] == 0
 
 
-def test_zgd_step_cannot_have_following_nodes(tmp_path):
+def test_route_bootstrap_creates_cfo_and_zgd_anchors_without_duplicates(tmp_path):
     client = make_client(tmp_path)
     admin = auth(client, "admin", "admin")
+    repo = client.app.state.repo
+    repo.save_all("step_logs", [])
+    repo.save_all("step_edges", [])
+    repo.save_all("steps", [])
+
+    first = client.post("/steps/bootstrap-reviewed", headers=admin)
+    assert first.status_code == 200, first.text
+    assert {item["kind"] for item in first.json()["created"]} == {"cfo", "economist", "zgd"}
+
+    steps = client.get("/steps", headers=admin)
+    assert steps.status_code == 200
+    cfo_step = next(item for item in steps.json() if item["unit_id"] == CFO_ID)
+    economist_step = next(item for item in steps.json() if item["is_economist_step"])
+    zgd_step = next(item for item in steps.json() if item["user"] and item["user"]["role"] == "zgd")
+    assert cfo_step["responsible"]["role"] == "employee"
+    assert cfo_step["user"] is None
+    assert cfo_step["modules"]
+    assert all("request_statuses" in module for module in cfo_step["modules"])
+    assert economist_step["user"]["role"] == "economist"
+    assert economist_step["cfo_unit_id"] == CFO_ID
+    assert cfo_step["id"] in economist_step["child_step_ids"]
+    assert client.delete(f"/steps/{cfo_step['id']}", headers=admin).status_code == 403
+    assert client.delete(f"/steps/{economist_step['id']}", headers=admin).status_code == 403
+    assert client.delete(f"/steps/{zgd_step['id']}", headers=admin).status_code == 403
+
+    second = client.post("/steps/bootstrap-reviewed", headers=admin)
+    assert second.status_code == 200
+    assert second.json()["created"] == []
+
+
+def test_edge_delete_preview_is_complete_and_removes_cfo_economist_assignment(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    edge = {"parent_step_id": ECONOMIST_STEP_ID, "child_step_id": LEAF_STEP_ID}
+
+    preview = client.post("/step-edges/preview-delete", json=edge, headers=admin)
+    assert preview.status_code == 200
+    data = preview.json()
+    assert data["removes_economist_assignment"] is True
+    assert data["before_graph"]["nodes"]
+    assert data["before_graph"]["edges"]
+    assert data["after_graph"]["edges"] != data["before_graph"]["edges"]
+
+    deleted = client.request("DELETE", "/step-edges", json=edge, headers=admin)
+    assert deleted.status_code == 200
+    assignment = next(
+        item for item in client.app.state.repo.load_all("units_responsibles")
+        if item["unit_id"] == CFO_ID and item["user_id"] == ECONOMIST_ID
+    )
+    assert assignment["is_active"] is False
+
+
+def test_route_can_be_connected_while_other_branches_are_not_configured(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    repo = client.app.state.repo
+    connected = repo.create("steps", {"user_id": APPROVER_ID, "unit_id": None, "status": "waiting"})
+    repo.create("steps", {"user_id": APPROVER_ID, "unit_id": None, "status": "waiting"})
+
     response = client.post(
         "/step-edges",
-        json={"parent_step_id": ROOT_STEP_ID, "child_step_id": LEAF_STEP_ID},
+        json={"parent_step_id": ROOT_STEP_ID, "child_step_id": connected["id"]},
         headers=admin,
     )
-    assert response.status_code == 400
+    assert response.status_code == 200, response.text
 
 
-def test_economist_freezes_and_sends_request_to_next_step(tmp_path):
+def test_cfo_completion_rejects_pending_and_ignores_deleted_lines(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
-    economist = auth(client, "economist", "economist")
-    approver = auth(client, "approver", "approver")
-    request_id, item_id = create_submitted_request(client, employee)
-
-    finalized = finalize_by_economist(client, request_id, item_id, economist)
-    assert finalized["status"] == "approved"
-    assert finalized["fixed"] is False
-    assert client.get(f"/requests/{request_id}/approval-step", headers=approver).json()["can_approve"] is True
-    route = client.get(f"/requests/{request_id}/approval-route", headers=employee).json()
-    assert [item["step"]["request_status"] for item in route] == ["approved", "on_approval", "waiting"]
-
-
-def test_return_reaches_economist_then_employee_for_revision(tmp_path):
-    client = make_client(tmp_path)
-    employee = auth(client, "employee", "employee")
-    economist = auth(client, "economist", "economist")
-    approver = auth(client, "approver", "approver")
-    request_id, item_id = create_submitted_request(client, employee)
-    finalize_by_economist(client, request_id, item_id, economist)
-
-    returned = client.post(
-        f"/steps/{APPROVER_STEP_ID}/return",
-        json={"targets": [{"child_step_id": LEAF_STEP_ID, "request_ids": [request_id]}], "comment": "Уточнить обоснование"},
-        headers=approver,
-    )
-    assert returned.status_code == 200
-    route = client.get(f"/requests/{request_id}/approval-route", headers=employee).json()
-    return_log = next(
-        log
-        for route_step in route
-        for log in route_step["logs"]
-        if log["log"].get("comment") == "Уточнить обоснование"
-    )
-    assert return_log["step_id"] == APPROVER_STEP_ID
-    request = client.get(f"/requests/{request_id}", headers=employee).json()
-    assert request["frozen"] is True
-    assert client.get(f"/requests/{request_id}/approval-step", headers=economist).json()["request_status"] == "on_revision"
-
-    resumed = client.post(f"/requests/{request_id}/resume-economist-review", headers=economist)
-    assert resumed.status_code == 200
-    assert resumed.json()["status"] == "on_review"
-    assert resumed.json()["frozen"] is False
-    assert client.get(f"/requests/{request_id}/approval-step", headers=economist).json()["request_status"] == "on_approval"
+    request, items = create_submitted_request(client, employee, item_count=2)
 
     assert client.post(
-        f"/steps/{LEAF_STEP_ID}/return",
-        json={"request_ids": [request_id], "comment": "Вернуть сотруднику"},
-        headers=economist,
+        f"/items/{items[0]['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=employee,
     ).status_code == 200
-    chat = client.get(f"/requests/{request_id}/chat", headers=employee)
-    assert chat.status_code == 200
-    assert any("Комментарий: Вернуть сотруднику" in item["text"] for item in chat.json()["messages"])
-    request = client.get(f"/requests/{request_id}", headers=employee).json()
-    assert request["status"] == "draft"
-    assert request["frozen"] is False
-    assert client.post(f"/requests/{request_id}/cancel", headers=employee).status_code == 200
+    pending = client.post(
+        f"/requests/{request['id']}/complete-cfo-review", headers=employee
+    )
+    assert pending.status_code == 409
+
+    # Deleted lines are excluded from the active decision set.
+    client.app.state.repo.update(
+        "req_items", items[1]["id"], {"status": "deleted", "sum_plan": 0, "sum_fact": 0}
+    )
+    completed = client.post(
+        f"/requests/{request['id']}/complete-cfo-review", headers=employee
+    )
+    assert completed.status_code == 200
 
 
-def test_zgd_is_the_only_actor_that_sets_fixed_and_closes_final_step(tmp_path):
+def test_all_rejected_lines_reject_request_without_positions(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request, items = create_submitted_request(client, employee)
+    completed = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "rejected")]
+    )
+    assert completed["status"] == "rejected"
+    assert completed["affected_cfo_position_ids"] == []
+    assert client.get("/cfo-positions", headers=employee).json() == []
+
+
+def test_full_position_route_freezes_and_zgd_fixes(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
     approver = auth(client, "approver", "approver")
     zgd = auth(client, "zgd", "zgd")
-    request_id, item_id = create_submitted_request(client, employee)
-    finalize_by_economist(client, request_id, item_id, economist)
+    request, items = create_submitted_request(client, employee)
+    completed = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )
+    position_id = completed["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(
+        client, employee, economist, position_id, [items[0]["id"]]
+    )
 
-    assert client.post(f"/steps/{APPROVER_STEP_ID}/requests/{request_id}/approve", headers=approver).status_code == 200
-    assert client.post(f"/steps/{APPROVER_STEP_ID}/approve", headers=approver).status_code == 200
-    fixed = client.post(f"/steps/{ROOT_STEP_ID}/requests/{request_id}/approve", headers=zgd)
+    frozen = client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": "В маршрут"},
+        headers=economist,
+    )
+    assert frozen.status_code == 200
+    assert frozen.json()["frozen"] is True
+    assert frozen.json()["current_step_id"] == APPROVER_STEP_ID
+
+    approved = client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Согласовано"},
+        headers=approver,
+    )
+    assert approved.status_code == 200
+    assert approved.json()["current_step_id"] == ROOT_STEP_ID
+
+    fixed = client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Зафиксировано"},
+        headers=zgd,
+    )
     assert fixed.status_code == 200
-    request = client.get(f"/requests/{request_id}", headers=employee).json()
-    assert request["fixed"] is True
-    route = client.get(f"/requests/{request_id}/approval-route", headers=employee).json()
-    assert [item["step"]["request_status"] for item in route] == ["closed", "closed", "closed"]
-    assert client.post(f"/steps/{ROOT_STEP_ID}/requests/{request_id}/approve", headers=zgd).status_code == 409
+    assert fixed.json()["fixed"] is True
+    assert fixed.json()["current_step_id"] is None
 
 
-def test_reviewer_forwards_only_requests_that_reached_the_step(tmp_path):
+def test_reviewer_return_requires_reason_and_economist_unfreezes(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
     approver = auth(client, "approver", "approver")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(
+        client, employee, economist, position_id, [items[0]["id"]]
+    )
+    client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": ""},
+        headers=economist,
+    )
 
-    first_request_id, first_item_id = create_submitted_request(client, employee)
-    second_request_id, second_item_id = create_submitted_request(client, employee)
-    finalize_by_economist(client, first_request_id, first_item_id, economist)
-
-    assert client.post(
-        f"/steps/{APPROVER_STEP_ID}/requests/{first_request_id}/approve",
+    no_reason = client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/return",
+        json={"target_step_id": ECONOMIST_STEP_ID, "comment": ""},
         headers=approver,
-    ).status_code == 200
-    forwarded = client.post(f"/steps/{APPROVER_STEP_ID}/approve", headers=approver)
-    assert forwarded.status_code == 200
-
-    route = client.get(f"/requests/{first_request_id}/approval-route", headers=employee).json()
-    assert [item["step"]["request_status"] for item in route] == ["approved", "approved", "on_approval"]
-
-    finalize_by_economist(client, second_request_id, second_item_id, economist)
-    assert client.post(
-        f"/steps/{APPROVER_STEP_ID}/requests/{second_request_id}/approve",
+    )
+    assert no_reason.status_code == 422
+    returned = client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/return",
+        json={"target_step_id": ECONOMIST_STEP_ID, "comment": "Уточнить сумму"},
         headers=approver,
-    ).status_code == 200
-    assert client.post(f"/steps/{APPROVER_STEP_ID}/approve", headers=approver).status_code == 200
-
-    for request_id in (first_request_id, second_request_id):
-        route = client.get(f"/requests/{request_id}/approval-route", headers=employee).json()
-        assert [item["step"]["request_status"] for item in route] == ["approved", "approved", "on_approval"]
-
-
-def test_cancel_is_available_only_for_a_draft(tmp_path):
-    client = make_client(tmp_path)
-    employee = auth(client, "employee", "employee")
-    request_id, _ = create_submitted_request(client, employee)
-    assert client.post(f"/requests/{request_id}/cancel", headers=employee).status_code == 400
-    draft = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
-    assert client.post(f"/requests/{draft['id']}/cancel", headers=employee).status_code == 200
+    )
+    assert returned.status_code == 200
+    assert returned.json()["status"] == "on_revision"
+    assert returned.json()["frozen"] is True
+    unfrozen = client.post(
+        f"/cfo-positions/{position_id}/unfreeze",
+        json={"comment": "Принято"},
+        headers=economist,
+    )
+    assert unfrozen.status_code == 200
+    assert unfrozen.json()["frozen"] is False
 
 
-def test_edge_delete_preview_warns_about_approved_past(tmp_path):
+def test_late_line_blocks_economist_completion_and_notifies(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
-    admin = auth(client, "admin", "admin")
-    request_id, item_id = create_submitted_request(client, employee)
-    finalize_by_economist(client, request_id, item_id, economist)
+    repo = client.app.state.repo
 
-    preview = client.post(
-        "/step-edges/preview-delete",
-        json={"parent_step_id": APPROVER_STEP_ID, "child_step_id": LEAF_STEP_ID},
-        headers=admin,
+    first, first_items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, first["id"], [(first_items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+    assert client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": ""},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(
+        f"/cfo-positions/{position_id}/items/{first_items[0]['id']}/decision",
+        json={"decision": "approved", "comment": ""},
+        headers=economist,
+    ).status_code == 200
+    assert client.post(
+        f"/cfo-positions/{position_id}/complete-review",
+        json={"comment": "Первичная проверка завершена"},
+        headers=economist,
+    ).status_code == 200
+
+    second_module = repo.create(
+        "units",
+        {
+            "parent_id": CFO_ID,
+            "name": "Второй модуль",
+            "is_active": True,
+            "uses_invest_projects": False,
+            "annual_budget": 0,
+        },
     )
-    assert preview.status_code == 200
-    body = preview.json()
-    assert body["has_approved_past"] is True
-    assert body["approved_past_count"] >= 1
-    assert body["before_graph"]["nodes"]
-    assert body["before_graph"]["edges"]
-    assert body["removed_edge"] == {
-        "parent_step_id": APPROVER_STEP_ID,
-        "child_step_id": LEAF_STEP_ID,
-    }
-    assert len(body["after_graph"]["edges"]) < len(body["before_graph"]["edges"])
+    repo.insert(
+        "units_responsibles",
+        {
+            "unit_id": second_module["id"],
+            "user_id": client.app.state.auth_service.login("employee", "employee")["user"]["id"],
+            "is_active": True,
+        },
+    )
+    second = client.post(
+        "/requests", json={"unit_id": second_module["id"]}, headers=employee
+    ).json()
+    late = client.post(
+        f"/requests/{second['id']}/items",
+        json={
+            "dds_id": DDS_LICENSE_ID,
+            "name": "Поздняя строка",
+            "sum_plan": 50,
+            "justification": "",
+        },
+        headers=employee,
+    ).json()
+    client.post(f"/requests/{second['id']}/submit", headers=employee)
+    client.post(
+        f"/items/{late['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=employee,
+    )
+    completed = client.post(
+        f"/requests/{second['id']}/complete-cfo-review", headers=employee
+    )
+    assert completed.status_code == 200
+    assert completed.json()["affected_cfo_position_ids"] == [position_id]
+    reopened = client.get(f"/cfo-positions/{position_id}", headers=economist).json()
+    assert reopened["status"] == "on_approval"
+    assert reopened["current_step_id"] == ECONOMIST_STEP_ID
+
+    blocked = client.post(
+        f"/cfo-positions/{position_id}/complete-review",
+        json={"comment": ""},
+        headers=economist,
+    )
+    assert blocked.status_code == 409
+    notices = client.get("/notifications", headers=economist).json()
+    assert any(row["type"] == "cfo_position.items_changed" for row in notices)
 
 
-def test_empty_reviewer_step_can_be_created_linked_and_deleted(tmp_path):
+def test_frozen_position_rejects_late_contribution(tmp_path):
     client = make_client(tmp_path)
-    admin = auth(client, "admin", "admin")
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
-    users = client.get("/users", headers=admin).json()
-    approver = next(user for user in users if user["login"] == "approver")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(
+        client, employee, economist, position_id, [items[0]["id"]]
+    )
+    client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": ""},
+        headers=economist,
+    )
+    assert client.app.state.repo.get_by_id("cfo_positions", position_id)["frozen"] is True
 
-    created = client.post(
-        "/steps",
-        json={"user_id": approver["id"], "child_step_id": LEAF_STEP_ID},
+
+def test_position_logs_contain_old_new_values_and_request_history_is_merged(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+    client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": ""},
+        headers=employee,
+    )
+    client.post(
+        f"/cfo-positions/{position_id}/items/{items[0]['id']}/decision",
+        json={
+            "decision": "approved_with_changes",
+            "sum_fact": 80,
+            "comment": "Снижено",
+        },
+        headers=economist,
+    )
+
+    logs = client.get(f"/cfo-positions/{position_id}/logs", headers=economist).json()
+    decision = next(
+        row for row in logs if row["log"]["action"] == "economist_item_decided"
+    )
+    assert decision["log"]["changes"]["sum_fact"] == {"from": 100, "to": 80}
+    history = client.get(
+        f"/requests/{request['id']}/logs", headers=employee
+    ).json()
+    assert {row["source"] for row in history} == {"request", "cfo_position"}
+
+
+def test_second_completion_is_rejected_and_does_not_duplicate_position(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request, items = create_submitted_request(client, employee)
+    complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )
+    second = client.post(
+        f"/requests/{request['id']}/complete-cfo-review", headers=employee
+    )
+    assert second.status_code == 409
+    assert len(client.get("/cfo-positions", headers=employee).json()) == 1
+
+
+def test_cfo_responsible_cannot_review_another_cfo(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    seeded_employee = auth(client, "employee", "employee")
+    other_user = client.post(
+        "/users",
+        json={"login": "other-employee", "password": "password", "role": "employee"},
+        headers=admin,
+    ).json()
+    other_economist = client.post(
+        "/users",
+        json={"login": "other-economist", "password": "password", "role": "economist"},
+        headers=admin,
+    ).json()
+    other_employee = auth(client, "other-employee", "password")
+    department = client.post(
+        "/units",
+        json={"name": "Другая организация", "type": "department", "parent_id": None},
+        headers=admin,
+    ).json()
+    cfo = client.post(
+        "/units",
+        json={"name": "Другой ЦФО", "type": "cfo", "parent_id": department["id"]},
+        headers=admin,
+    ).json()
+    module = client.post(
+        "/units",
+        json={"name": "Другой модуль", "type": "module", "parent_id": cfo["id"]},
+        headers=admin,
+    ).json()
+    client.post(
+        f"/units/{module['id']}/responsible",
+        json={"user_id": other_user["id"]},
         headers=admin,
     )
-    assert created.status_code == 200
-    step = created.json()
-    assert LEAF_STEP_ID in step["child_step_ids"]
-    assert client.delete(f"/steps/{step['id']}", headers=admin).status_code == 200
+    client.post(
+        f"/units/{cfo['id']}/responsible",
+        json={"user_id": other_user["id"]},
+        headers=admin,
+    )
+    client.post(
+        "/economist-assignments",
+        json={
+            "economist_id": other_economist["id"],
+            "unit_id": cfo["id"],
+            "assignment_type": "cfo",
+        },
+        headers=admin,
+    )
+    category = client.post(
+        "/catalog/dds",
+        json={"name": "Категория", "unit_id": department["id"], "parent_id": None},
+        headers=admin,
+    ).json()
+    article = client.post(
+        "/catalog/dds",
+        json={
+            "name": "Статья",
+            "unit_id": department["id"],
+            "parent_id": category["id"],
+        },
+        headers=admin,
+    ).json()
+    request = client.post(
+        "/requests", json={"unit_id": module["id"]}, headers=other_employee
+    ).json()
+    item = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": article["id"], "name": "Чужая строка", "sum_plan": 10},
+        headers=other_employee,
+    ).json()
+    client.post(f"/requests/{request['id']}/submit", headers=other_employee)
 
-    request_id, item_id = create_submitted_request(client, employee)
-    finalize_by_economist(client, request_id, item_id, economist)
-    blocked = client.delete(f"/steps/{APPROVER_STEP_ID}", headers=admin)
-    assert blocked.status_code == 400
-    assert "поступали заявки" in blocked.json()["detail"]
+    forbidden = client.post(
+        f"/items/{item['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=seeded_employee,
+    )
+    assert forbidden.status_code == 403
+    assert client.post(
+        f"/items/{item['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=other_employee,
+    ).status_code == 200

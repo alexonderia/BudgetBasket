@@ -23,6 +23,7 @@ from app.services import (
     ChatService,
     ExcelService,
     FileService,
+    NotificationService,
     PermissionService,
     RequestService,
     UnitService,
@@ -50,9 +51,16 @@ def create_app(*, repository: Repository | None = None, settings: Settings | Non
     seed_data(repository)
 
     permissions = PermissionService(repository)
+    notification_service = NotificationService(repository)
     request_service = RequestService(repository, permissions)
+    request_service.notifications = notification_service
     chat_service = ChatService(repository, permissions, request_service)
     approval_service = ApprovalService(repository, permissions, chat_service)
+    approval_service.notifications = notification_service
+    # Persisted installations receive their CFO and ZGD route anchors at startup.
+    # In-memory repositories stay deterministic for isolated tests.
+    if engine is not None:
+        approval_service.sync_automatic_steps()
     request_service.approval_service = approval_service
     file_guard = FileGuardClient(settings)
 
@@ -70,6 +78,7 @@ def create_app(*, repository: Repository | None = None, settings: Settings | Non
     app.state.chat_connections = ChatConnectionManager()
     app.state.file_guard_client = file_guard
     app.state.file_service = FileService(repository, permissions, upload_dir, settings, file_guard, request_service=request_service)
+    app.state.notification_service = notification_service
     app.state.excel_service = ExcelService(repository, permissions, request_service, app.state.file_service, export_dir, file_guard)
     app.add_middleware(
         CORSMiddleware,

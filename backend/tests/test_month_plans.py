@@ -96,18 +96,32 @@ def test_economist_month_plan_changes_adjust_approved_amount(tmp_path):
         headers=employee,
     ).json()
     assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+    assert client.post(
+        f"/items/{item['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=employee,
+    ).status_code == 200
+    reviewed = client.post(
+        f"/requests/{request['id']}/complete-cfo-review", headers=employee
+    ).json()
+    position_id = reviewed["affected_cfo_position_ids"][0]
+    assert client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": ""},
+        headers=employee,
+    ).status_code == 200
 
-    approved = client.patch(
-        f"/items/{item['id']}",
-        json={"status": "approved_with_changes", "sum_fact": "150.00"},
+    approved = client.post(
+        f"/cfo-positions/{position_id}/items/{item['id']}/decision",
+        json={"decision": "approved_with_changes", "sum_fact": "150.00", "comment": "Снижено"},
         headers=economist,
     )
 
     assert approved.status_code == 422
 
-    adjusted = client.patch(
-        f"/items/{item['id']}",
-        json={"status": "approved_with_changes", "month_plans": [{"month": 1, "sum_plan": "50.00"}, {"month": 2, "sum_plan": "100.00"}]},
+    adjusted = client.post(
+        f"/cfo-positions/{position_id}/items/{item['id']}/decision",
+        json={"decision": "approved_with_changes", "comment": "Снижено", "month_plans": [{"month": 1, "sum_plan": "50.00"}, {"month": 2, "sum_plan": "100.00"}]},
         headers=economist,
     )
     assert adjusted.status_code == 200

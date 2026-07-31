@@ -22,6 +22,7 @@ REQUEST_ID = "40000000-0000-0000-0000-000000000001"
 LEAF_STEP_ID = "50000000-0000-0000-0000-000000000001"
 APPROVER_STEP_ID = "50000000-0000-0000-0000-000000000002"
 ROOT_STEP_ID = "50000000-0000-0000-0000-000000000003"
+ECONOMIST_STEP_ID = "50000000-0000-0000-0000-000000000004"
 
 
 COLLECTIONS = (
@@ -31,6 +32,7 @@ COLLECTIONS = (
     "units",
     "units_responsibles",
     "requests",
+    "cfo_positions",
     "req_items",
     "dds_catalog",
     "invests_catalog",
@@ -43,8 +45,9 @@ COLLECTIONS = (
     "req_logs",
     "steps",
     "step_edges",
-    "request_step_states",
     "step_logs",
+    "cfo_position_logs",
+    "notifications",
 )
 
 
@@ -93,8 +96,8 @@ def seed_data(repo: Repository) -> None:
         "units_responsibles",
         [
             {"unit_id": MODULE_ALPHA_ID, "user_id": EMPLOYEE_ID, "is_active": True},
-            {"unit_id": MODULE_ALPHA_ID, "user_id": ECONOMIST_ID, "is_active": True},
-            {"unit_id": MODULE_BETA_ID, "user_id": ECONOMIST_ID, "is_active": True},
+            {"unit_id": CFO_ID, "user_id": EMPLOYEE_ID, "is_active": True},
+            {"unit_id": CFO_ID, "user_id": ECONOMIST_ID, "is_active": True},
         ],
     )
     repo.save_all(
@@ -115,7 +118,8 @@ def seed_data(repo: Repository) -> None:
     repo.save_all(
         "steps",
         [
-            {"id": LEAF_STEP_ID, "user_id": ECONOMIST_ID, "unit_id": MODULE_ALPHA_ID, "status": "waiting"},
+            {"id": LEAF_STEP_ID, "user_id": None, "unit_id": CFO_ID, "status": "waiting"},
+            {"id": ECONOMIST_STEP_ID, "user_id": ECONOMIST_ID, "unit_id": None, "status": "waiting"},
             {"id": APPROVER_STEP_ID, "user_id": APPROVER_ID, "unit_id": None, "status": "waiting"},
             {"id": ROOT_STEP_ID, "user_id": ZGD_ID, "unit_id": None, "status": "waiting"},
         ],
@@ -123,7 +127,8 @@ def seed_data(repo: Repository) -> None:
     repo.save_all(
         "step_edges",
         [
-            {"parent_step_id": APPROVER_STEP_ID, "child_step_id": LEAF_STEP_ID},
+            {"parent_step_id": ECONOMIST_STEP_ID, "child_step_id": LEAF_STEP_ID},
+            {"parent_step_id": APPROVER_STEP_ID, "child_step_id": ECONOMIST_STEP_ID},
             {"parent_step_id": ROOT_STEP_ID, "child_step_id": APPROVER_STEP_ID},
         ],
     )

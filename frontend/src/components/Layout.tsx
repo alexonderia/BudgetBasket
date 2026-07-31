@@ -146,10 +146,11 @@ export function Layout({
   }, []);
   const toastCtx = useMemo(() => ({ showToast }), [showToast]);
   const canUseChat = user.role === 'employee' || user.role === 'economist';
+  const canUseNotifications = user.role !== 'admin';
 
   useEffect(() => {
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
-    if (!canUseChat || !token) return;
+    if (!canUseNotifications || !token) return;
 
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
@@ -165,10 +166,17 @@ export function Layout({
       socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data) as { type?: string; request_id?: string };
-          if (payload.type !== 'chat.message.created' || !payload.request_id) return;
-          queryClient.invalidateQueries({ queryKey: ['chats'] });
-          queryClient.invalidateQueries({ queryKey: ['request-details', payload.request_id, 'chat'] });
-          showToast(`Новое сообщение по заявке ${payload.request_id.slice(0, 8)}`, 'info');
+          if (payload.type === 'chat.message.created' && payload.request_id) {
+            queryClient.invalidateQueries({ queryKey: ['chats'] });
+            queryClient.invalidateQueries({ queryKey: ['request-details', payload.request_id, 'chat'] });
+            showToast(`Новое сообщение по заявке ${payload.request_id.slice(0, 8)}`, 'info');
+            return;
+          }
+          queryClient.invalidateQueries({ queryKey: ['cfo-incoming-requests'] });
+          queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
+          queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+          queryClient.invalidateQueries({ queryKey: ['requests'] });
+          showToast('Данные маршрута согласования обновились', 'info');
         } catch {
           // Ignore malformed websocket events and wait for the next message.
         }
@@ -186,7 +194,7 @@ export function Layout({
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [canUseChat, queryClient, showToast]);
+  }, [canUseNotifications, queryClient, showToast]);
 
   useEffect(() => {
     setActions(null);

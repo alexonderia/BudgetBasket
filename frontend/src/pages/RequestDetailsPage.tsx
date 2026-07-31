@@ -952,7 +952,8 @@ function ItemsTable({
   const canEmployeeChange = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const disabledForEmployee = !canEmployeeChange;
   const employeeCanEdit = canEmployeeChange;
-  const canEconomist = user.role === 'economist' && request.status === 'on_review' && !request.frozen;
+  // Downstream decisions are made from the CFO-position workspace.
+  const canEconomist = false;
   const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
   const catalogById = useMemo(
@@ -1715,7 +1716,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     queryFn: async () => (await api.get<BudgetRequest>(`/requests/${id}`)).data,
     enabled: !!id,
   });
-  const canLoadApprovalAction = ['economist', 'approver', 'zgd'].includes(user.role);
+  const canLoadApprovalAction = false;
   const { data: approvalAction, isPending: approvalActionPending } = useQuery({
     queryKey: [...detailsKey, 'approval-action', user.id],
     queryFn: async () => (await api.get<RequestApprovalAction | null>(`/requests/${id}/approval-step`)).data,
@@ -1724,7 +1725,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const { data: approvalRoute, isPending: approvalRoutePending } = useQuery({
     queryKey: [...detailsKey, 'approval-route'],
     queryFn: async () => (await api.get<RequestApprovalRouteStep[]>(`/requests/${id}/approval-route`)).data,
-    enabled: !!id,
+    enabled: false,
   });
   const { data: units = [] } = useQuery({
     queryKey: ['units'],
@@ -2065,8 +2066,8 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   );
   const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.frozen && !itemsPending && allItems.length > 0;
   const canCancel = user.role === 'employee' && request && request.status === 'draft' && !request.frozen;
-  const canFinalize = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && !itemsPending && allItems.length > 0 && allItems.every((item) => item.status !== 'on_review');
-  const canApproveAllItems = user.role === 'economist' && request && request.status === 'on_review' && !request.frozen && !itemsPending && allItems.some((item) => item.status === 'on_review');
+  const canFinalize = false;
+  const canApproveAllItems = false;
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
   const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
   const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.frozen;
@@ -2082,7 +2083,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     && request.frozen
     && approvalAction?.step.unit_id != null
     && approvalAction.request_status === 'on_revision';
-  const canRevokeFinalApproval = user.role === 'zgd' && !!request?.fixed;
+  const canRevokeFinalApproval = false;
   const approvalRequestLabel = approvalAction?.is_final ? 'Зафиксировать заявку' : 'Подтвердить проверку';
 
   const exportRequest = async () => {

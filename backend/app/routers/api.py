@@ -14,7 +14,11 @@ from app.models import (
     CatalogPatch,
     ChatMessageCreate,
     ChatReadPatch,
+    BulkItemDecisionIn,
+    CfoPositionActionIn,
+    CfoPositionReturnIn,
     ItemCreate,
+    ItemDecisionIn,
     ItemPatch,
     LoginIn,
     ProfilePatch,
@@ -25,7 +29,7 @@ from app.models import (
     StepApproveIn,
     StepEdgeIn,
     StepPatch,
-    StepReturnIn,
+    NotificationReadIn,
     UnitCreate,
     UnitPatch,
     UserCreate,
@@ -35,6 +39,15 @@ from app.models import (
 
 router = APIRouter()
 User = Annotated[dict, Depends(current_user)]
+
+
+async def _broadcast_notifications(request: Request, result: dict, event_type: str) -> dict:
+    for user_id in result.get("notification_user_ids", []):
+        await request.app.state.chat_connections.broadcast_user(
+            user_id,
+            {"type": event_type, "reload_required": True},
+        )
+    return result
 
 
 @router.post("/auth/login")
@@ -60,16 +73,6 @@ def create_step(request: Request, payload: StepCreate, user: User):
 @router.get("/steps/my")
 def my_steps(request: Request, user: User):
     return request.app.state.approval_service.my_steps(user)
-
-
-@router.get("/requests/{request_id}/approval-step")
-def request_approval_step(request: Request, request_id: str, user: User):
-    return request.app.state.approval_service.request_approval_step(user, request_id)
-
-
-@router.get("/requests/{request_id}/approval-route")
-def request_approval_route(request: Request, request_id: str, user: User):
-    return request.app.state.approval_service.request_approval_route(user, request_id)
 
 
 @router.post("/steps/validate")
@@ -138,9 +141,9 @@ def delete_step(request: Request, step_id: str, user: User):
     return {"ok": True}
 
 
-@router.get("/steps/{step_id}/requests")
-def step_requests(request: Request, step_id: str, user: User):
-    return request.app.state.approval_service.list_step_requests(user, step_id)
+@router.get("/steps/{step_id}/positions")
+def step_positions(request: Request, step_id: str, user: User):
+    return request.app.state.approval_service.list_step_positions(user, step_id)
 
 
 @router.get("/steps/{step_id}/dashboard")
@@ -149,49 +152,40 @@ def step_dashboard(request: Request, step_id: str, user: User):
 
 
 @router.post("/steps/{step_id}/approve")
-def approve_step(request: Request, step_id: str, user: User, payload: StepApproveIn | None = None):
-    return request.app.state.approval_service.approve_step(user, step_id, payload.request_ids if payload else [])
-
-
-@router.post("/steps/{step_id}/requests/{request_id}/approve")
-def approve_request_at_step(request: Request, step_id: str, request_id: str, user: User):
-    return request.app.state.approval_service.approve_request_at_step(
-        user,
-        step_id,
-        request_id,
+async def approve_step(request: Request, step_id: str, user: User, payload: StepApproveIn | None = None):
+    result = request.app.state.approval_service.approve_step(
+        user, step_id, payload.position_ids if payload else []
     )
+    for position in result["positions"]:
+        await _broadcast_notifications(request, position, "cfo_position.assigned")
+    return result
 
 
-@router.post("/steps/{step_id}/return")
-def return_step_requests(request: Request, step_id: str, payload: StepReturnIn, user: User):
-    return request.app.state.approval_service.return_requests(
-        user,
-        step_id,
-        payload.model_dump(),
+@router.post("/steps/{step_id}/positions/{position_id}/approve")
+async def approve_position_at_step(
+    request: Request, step_id: str, position_id: str,
+    payload: CfoPositionActionIn, user: User,
+):
+    result = request.app.state.approval_service.approve_position_at_step(
+        user, step_id, position_id, payload.comment
     )
+    return await _broadcast_notifications(request, result, "cfo_position.updated")
+
+
+@router.post("/steps/{step_id}/positions/{position_id}/return")
+async def return_position_at_step(
+    request: Request, step_id: str, position_id: str,
+    payload: CfoPositionReturnIn, user: User,
+):
+    result = request.app.state.approval_service.return_position(
+        user, step_id, position_id, payload.target_step_id, payload.comment
+    )
+    return await _broadcast_notifications(request, result, "cfo_position.returned")
 
 
 @router.get("/steps/{step_id}/logs")
 def step_logs(request: Request, step_id: str, user: User):
     return request.app.state.approval_service.step_logs(user, step_id=step_id)
-
-
-@router.get("/steps/{step_id}/export")
-def export_step_requests(request: Request, step_id: str, user: User):
-    request_ids = {
-        item["id"]
-        for item in request.app.state.approval_service.list_step_requests(user, step_id)
-    }
-    path = request.app.state.excel_service.export_closed_requests(
-        user,
-        statuses=request.app.state.excel_service.CLOSED_STATUSES,
-        request_ids=request_ids,
-    )
-    return FileResponse(
-        path,
-        filename=path.name,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
 
 
 @router.get("/users")
@@ -372,8 +366,16 @@ def list_requests(
     unit_id: str | None = None,
     created_from: str | None = None,
     created_to: str | None = None,
+    budget_year: int | None = None,
 ):
-    return request.app.state.request_service.list_requests(user, status, unit_id, created_from, created_to)
+    return request.app.state.request_service.list_requests(
+        user, status, unit_id, created_from, created_to, budget_year
+    )
+
+
+@router.get("/cfo/incoming-requests")
+def list_cfo_incoming_requests(request: Request, user: User):
+    return request.app.state.request_service.list_cfo_incoming(user)
 
 
 @router.get("/dashboard")
@@ -460,33 +462,9 @@ def patch_request(request: Request, request_id: str, payload: RequestPatch, user
 
 
 @router.post("/requests/{request_id}/submit")
-def submit_request(request: Request, request_id: str, user: User):
-    return request.app.state.request_service.submit(user, request_id)
-
-
-@router.post("/requests/{request_id}/freeze-budget")
-def freeze_request_budget(request: Request, request_id: str, user: User):
-    return request.app.state.request_service.freeze_budget(user, request_id)
-
-
-@router.post("/requests/{request_id}/unfreeze-budget")
-def unfreeze_request_budget(request: Request, request_id: str, user: User):
-    return request.app.state.request_service.unfreeze_budget(user, request_id)
-
-
-@router.post("/requests/{request_id}/revoke-final-approval")
-def revoke_final_approval(request: Request, request_id: str, user: User):
-    return request.app.state.approval_service.revoke_final_approval(user, request_id)
-
-
-@router.post("/requests/{request_id}/resume-economist-review")
-def resume_economist_review(request: Request, request_id: str, user: User):
-    return request.app.state.approval_service.resume_economist_review(user, request_id)
-
-
-@router.post("/requests/{request_id}/withdraw")
-def withdraw_request(request: Request, request_id: str, user: User):
-    return request.app.state.request_service.withdraw(user, request_id)
+async def submit_request(request: Request, request_id: str, user: User):
+    result = request.app.state.request_service.submit(user, request_id)
+    return await _broadcast_notifications(request, result, "request.submitted_to_cfo")
 
 
 @router.post("/requests/{request_id}/cancel")
@@ -494,26 +472,15 @@ def cancel_request(request: Request, request_id: str, user: User):
     return request.app.state.request_service.cancel(user, request_id)
 
 
-@router.post("/requests/{request_id}/start-review")
-def start_review(request: Request, request_id: str, user: User):
-    return request.app.state.request_service.start_review(user, request_id)
+@router.post("/requests/{request_id}/restore")
+def restore_request(request: Request, request_id: str, user: User):
+    return request.app.state.request_service.restore(user, request_id)
 
 
-@router.post("/requests/{request_id}/finalize")
-@router.post("/requests/{request_id}/fix")
-def finalize_request(request: Request, request_id: str, user: User):
-    return request.app.state.request_service.finalize(user, request_id)
-
-
-@router.post("/requests/{request_id}/approve-all-items")
-def approve_all_request_items(request: Request, request_id: str, user: User):
-    return request.app.state.request_service.approve_all_items(user, request_id)
-
-
-@router.post("/requests/{request_id}/reopen")
-@router.post("/requests/{request_id}/unfreeze")
-def reopen_request(request: Request, request_id: str, user: User):
-    return request.app.state.request_service.reopen(user, request_id)
+@router.post("/requests/{request_id}/complete-cfo-review")
+async def complete_cfo_review(request: Request, request_id: str, user: User):
+    result = request.app.state.request_service.complete_cfo_review(user, request_id)
+    return await _broadcast_notifications(request, result, "request.cfo_review_completed")
 
 
 @router.get("/requests/{request_id}/export")
@@ -543,6 +510,24 @@ def patch_request_item(request: Request, item_id: str, payload: ItemPatch, user:
     return request.app.state.budget_item_service.patch_item(user, item_id, clean_patch(payload))
 
 
+@router.post("/items/{item_id}/cfo-decision")
+def decide_request_item_cfo(
+    request: Request, item_id: str, payload: ItemDecisionIn, user: User
+):
+    return request.app.state.budget_item_service.decide_cfo(
+        user, item_id, payload.model_dump(exclude_unset=True)
+    )
+
+
+@router.post("/items/cfo-decision/bulk")
+def bulk_decide_request_items_cfo(
+    request: Request, payload: BulkItemDecisionIn, user: User
+):
+    return request.app.state.budget_item_service.bulk_decide_cfo(
+        user, payload.model_dump()
+    )
+
+
 @router.delete("/items/{item_id}")
 def delete_request_item(request: Request, item_id: str, user: User):
     return request.app.state.budget_item_service.delete_item(user, item_id)
@@ -569,7 +554,7 @@ def delete_request_item_file(request: Request, item_id: str, file_id: str, user:
 @router.get("/requests/{request_id}/logs")
 def request_logs(request: Request, request_id: str, user: User):
     budget_request = request.app.state.request_service.get_request(user, request_id)
-    logs = [item for item in request.app.state.repo.load_all("req_logs") if item.get("req_id") == budget_request["id"]]
+    logs = request.app.state.approval_service.request_history(user, budget_request["id"])
     users = {item["id"]: item for item in request.app.state.repo.load_all("users")}
     profiles = {item["user_id"]: item for item in request.app.state.repo.load_all("profiles")}
     request_items = {item["id"]: item for item in request.app.state.repo.load_all("req_items") if item.get("request_id") == budget_request["id"]}
@@ -630,6 +615,107 @@ def request_logs(request: Request, request_id: str, user: User):
             }
         )
     return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+
+@router.get("/cfo-positions")
+def list_cfo_positions(
+    request: Request,
+    user: User,
+    budget_year: int | None = None,
+    cfo_unit_id: str | None = None,
+    status: str | None = None,
+):
+    return request.app.state.approval_service.list_positions(
+        user, budget_year=budget_year, cfo_unit_id=cfo_unit_id, status=status
+    )
+
+
+@router.get("/cfo-positions/{position_id}")
+def get_cfo_position(request: Request, position_id: str, user: User):
+    return request.app.state.approval_service.get_position(user, position_id)
+
+
+@router.get("/cfo-positions/{position_id}/logs")
+def cfo_position_logs(request: Request, position_id: str, user: User):
+    return request.app.state.approval_service.position_logs(user, position_id)
+
+
+@router.post("/cfo-positions/{position_id}/submit-to-economist")
+async def submit_position_to_economist(
+    request: Request, position_id: str, payload: CfoPositionActionIn, user: User
+):
+    result = request.app.state.approval_service.submit_to_economist(
+        user, position_id, payload.comment
+    )
+    return await _broadcast_notifications(request, result, "cfo_position.assigned")
+
+
+@router.post("/cfo-positions/{position_id}/items/{item_id}/decision")
+def decide_position_item(
+    request: Request, position_id: str, item_id: str,
+    payload: ItemDecisionIn, user: User,
+):
+    return request.app.state.approval_service.decide_item_economist(
+        user, position_id, item_id, payload.model_dump(exclude_unset=True)
+    )
+
+
+@router.post("/cfo-positions/{position_id}/items/decision/bulk")
+def bulk_decide_position_items(
+    request: Request, position_id: str, payload: BulkItemDecisionIn, user: User
+):
+    return request.app.state.approval_service.bulk_decide_economist(
+        user, position_id, payload.model_dump()
+    )
+
+
+@router.post("/cfo-positions/{position_id}/complete-review")
+def complete_position_review(
+    request: Request, position_id: str, payload: CfoPositionActionIn, user: User
+):
+    return request.app.state.approval_service.complete_economist_review(
+        user, position_id, payload.comment
+    )
+
+
+@router.post("/cfo-positions/{position_id}/freeze")
+async def freeze_cfo_position(
+    request: Request, position_id: str, payload: CfoPositionActionIn, user: User
+):
+    result = request.app.state.approval_service.freeze_position(
+        user, position_id, payload.comment
+    )
+    return await _broadcast_notifications(request, result, "cfo_position.assigned")
+
+
+@router.post("/cfo-positions/{position_id}/unfreeze")
+def unfreeze_cfo_position(
+    request: Request, position_id: str, payload: CfoPositionActionIn, user: User
+):
+    return request.app.state.approval_service.unfreeze_position(
+        user, position_id, payload.comment
+    )
+
+
+@router.get("/notifications")
+def list_notifications(request: Request, user: User, unread_only: bool = False):
+    return request.app.state.notification_service.list_for_user(
+        user, unread_only=unread_only
+    )
+
+
+@router.patch("/notifications/{notification_id}")
+def mark_notification(
+    request: Request, notification_id: str, payload: NotificationReadIn, user: User
+):
+    return request.app.state.notification_service.mark(
+        user, notification_id, read=payload.read
+    )
+
+
+@router.post("/notifications/read-all")
+def mark_all_notifications_read(request: Request, user: User):
+    return request.app.state.notification_service.mark_all_read(user)
 
 
 @router.get("/requests/{request_id}/chat")
@@ -712,6 +798,7 @@ async def request_chat_websocket(websocket: WebSocket, request_id: str):
 
 
 @router.websocket("/ws/chat-notifications")
+@router.websocket("/ws/notifications")
 async def chat_notifications_websocket(websocket: WebSocket):
     token = websocket.query_params.get("token")
     try:

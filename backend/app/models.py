@@ -23,6 +23,7 @@ class StepStatus(StrEnum):
 
 class UnitType(StrEnum):
     department = "department"
+    cfo = "cfo"
     module = "module"
 
 
@@ -30,8 +31,6 @@ class RequestStatus(StrEnum):
     draft = "draft"
     on_review = "on_review"
     approved = "approved"
-    approved_with_changes = "approved_with_changes"
-    partially_approved = "partially_approved"
     rejected = "rejected"
     cancelled = "cancelled"
 
@@ -44,17 +43,21 @@ class ItemStatus(StrEnum):
     deleted = "deleted"
 
 
+class CfoPositionStatus(StrEnum):
+    waiting = "waiting"
+    on_review = "on_review"
+    on_approval = "on_approval"
+    approved = "approved"
+    on_revision = "on_revision"
+
+
 CLOSED_REQUEST_STATUSES = {
     RequestStatus.approved,
-    RequestStatus.approved_with_changes,
-    RequestStatus.partially_approved,
     RequestStatus.rejected,
     RequestStatus.cancelled,
 }
 EXPORTABLE_REQUEST_STATUSES = {
     RequestStatus.approved,
-    RequestStatus.approved_with_changes,
-    RequestStatus.partially_approved,
 }
 EDITABLE_REQUEST_STATUSES = {RequestStatus.draft}
 APPROVED_ITEM_STATUSES = {ItemStatus.approved, ItemStatus.approved_with_changes}
@@ -145,11 +148,10 @@ class CatalogPatch(StrictModel):
 
 class RequestCreate(StrictModel):
     unit_id: str
-    economist_id: str | None = None
 
 
 class RequestPatch(StrictModel):
-    status: RequestStatus | None = None
+    """Requests have no freely patchable workflow fields."""
 
 
 class ItemMonthPlan(StrictModel):
@@ -191,7 +193,7 @@ class ChatReadPatch(StrictModel):
 
 
 class StepCreate(StrictModel):
-    user_id: str
+    user_id: str | None = None
     unit_id: str | None = None
     status: StepStatus = StepStatus.waiting
     child_step_id: str | None = None
@@ -221,7 +223,36 @@ class StepReturnIn(StrictModel):
 
 class StepApproveIn(StrictModel):
     """The exact independent package a reviewer is forwarding."""
-    request_ids: list[str] = Field(default_factory=list)
+    position_ids: list[str] = Field(default_factory=list)
+
+
+class ItemDecisionIn(StrictModel):
+    decision: ItemStatus
+    comment: str = ""
+    sum_plan: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    sum_fact: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    name: str | None = Field(default=None, min_length=1)
+    justification: str | None = None
+    month_plans: list[ItemMonthPlan] | None = None
+
+
+class BulkItemDecisionIn(StrictModel):
+    item_ids: list[str] = Field(min_length=1)
+    decision: ItemStatus
+    comment: str = ""
+
+
+class CfoPositionActionIn(StrictModel):
+    comment: str = ""
+
+
+class CfoPositionReturnIn(StrictModel):
+    target_step_id: str
+    comment: str = Field(min_length=1)
+
+
+class NotificationReadIn(StrictModel):
+    read: bool = True
 
 
 def clean_patch(model: BaseModel) -> dict[str, Any]:

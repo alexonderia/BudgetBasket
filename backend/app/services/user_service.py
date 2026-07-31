@@ -88,11 +88,17 @@ class UserService:
                 detail="Сначала переназначьте шаги согласования пользователя",
             )
 
-        for item in self.repo.load_all("requests"):
-            if item.get("economist_id") == user_id:
-                if item.get("frozen"):
-                    raise HTTPException(status_code=400, detail="Бюджет зафиксирован")
-                self.repo.update("requests", item["id"], {"economist_id": None})
+        assigned_units = {
+            item["unit_id"]
+            for item in self.repo.load_all("units_responsibles")
+            if item.get("user_id") == user_id and item.get("is_active")
+        }
+        if any(
+            item.get("cfo_unit_id") in assigned_units
+            and (item.get("frozen") or item.get("fixed"))
+            for item in self.repo.load_all("cfo_positions")
+        ):
+            raise HTTPException(status_code=409, detail="У пользователя есть замороженные позиции ЦФО")
         self.repo.delete_where("profiles", {"user_id": user_id})
         self.repo.delete_where("units_responsibles", {"user_id": user_id})
         self.repo.delete("users", user_id)

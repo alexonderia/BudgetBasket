@@ -92,6 +92,15 @@ def test_expense_and_income_dashboards_are_separate(tmp_path):
     assert expense.status_code == 200
     assert income.status_code == 200
     assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+    for item in (expense.json(), income.json()):
+        assert client.post(
+            f"/items/{item['id']}/cfo-decision",
+            json={"decision": "approved", "comment": ""},
+            headers=employee,
+        ).status_code == 200
+    assert client.post(
+        f"/requests/{request['id']}/complete-cfo-review", headers=employee
+    ).status_code == 200
 
     expenses = client.get("/dashboard", headers=admin).json()
     incomes = client.get("/dashboard/income", headers=admin).json()
@@ -110,6 +119,13 @@ def test_dashboard_table_returns_hierarchical_request_rows(tmp_path):
         headers=employee,
     ).status_code == 200
     assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+    item = client.get(f"/requests/{request['id']}/items", headers=employee).json()[0]
+    client.post(
+        f"/items/{item['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=employee,
+    )
+    client.post(f"/requests/{request['id']}/complete-cfo-review", headers=employee)
 
     rows = client.get("/dashboard/table", headers=admin).json()
     row = next(item for item in rows if item["request_id"] == request["id"])
@@ -131,6 +147,13 @@ def test_dashboard_article_cfo_returns_selected_article_breakdown(tmp_path):
         headers=employee,
     ).status_code == 200
     assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+    item = client.get(f"/requests/{request['id']}/items", headers=employee).json()[0]
+    client.post(
+        f"/items/{item['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=employee,
+    )
+    client.post(f"/requests/{request['id']}/complete-cfo-review", headers=employee)
 
     rows = client.get("/dashboard/article-cfo", params={"article_key": f"dds:{DDS_LICENSE_ID}"}, headers=admin).json()
     assert rows
@@ -149,6 +172,13 @@ def test_dashboard_articles_cfo_returns_all_articles(tmp_path):
         headers=employee,
     ).status_code == 200
     assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+    item = client.get(f"/requests/{request['id']}/items", headers=employee).json()[0]
+    client.post(
+        f"/items/{item['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=employee,
+    )
+    client.post(f"/requests/{request['id']}/complete-cfo-review", headers=employee)
 
     articles = client.get("/dashboard/articles-cfo", headers=admin).json()
     article = next(item for item in articles if item["id"] == f"dds:{DDS_LICENSE_ID}")
@@ -156,7 +186,7 @@ def test_dashboard_articles_cfo_returns_all_articles(tmp_path):
     assert article["cfo"][0]["name"] == "ЦФО цифровых продуктов"
 
 
-def test_draft_request_shows_module_economist_contact(tmp_path):
+def test_draft_request_shows_cfo_responsible_contact(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     client.app.state.repo.create(
@@ -173,8 +203,8 @@ def test_draft_request_shows_module_economist_contact(tmp_path):
     response = client.get("/requests/draft-with-module-economist/counterparty-contact", headers=employee)
 
     assert response.status_code == 200
-    assert response.json()["role"] == "economist"
-    assert response.json()["login"] == "economist"
+    assert response.json()["role"] == "employee"
+    assert response.json()["login"] == "employee"
 
 
 def test_request_history_hides_corrupted_import_suffix(tmp_path):

@@ -1,7 +1,8 @@
 export type Role = 'admin' | 'economist' | 'employee' | 'approver' | 'zgd';
-export type RequestStatus = 'draft' | 'on_review' | 'approved' | 'approved_with_changes' | 'partially_approved' | 'rejected' | 'cancelled';
+export type RequestStatus = 'draft' | 'on_review' | 'approved' | 'rejected' | 'cancelled';
 export type ItemStatus = 'on_review' | 'rejected' | 'approved_with_changes' | 'approved' | 'deleted';
 export type StepStatus = 'waiting' | 'on_approval' | 'on_revision' | 'approved' | 'closed';
+export type CfoPositionStatus = 'waiting' | 'on_review' | 'on_approval' | 'approved' | 'on_revision';
 
 export interface User {
   id: string;
@@ -25,7 +26,7 @@ export interface Unit {
   id: string;
   parent_id: string | null;
   name: string;
-  type?: 'department' | 'module';
+  type?: 'department' | 'cfo' | 'module';
   is_active: boolean;
   uses_invest_projects: boolean;
   annual_budget: number;
@@ -42,12 +43,19 @@ export interface CatalogItem {
 
 export interface BudgetRequest {
   id: string;
-  economist_id: string | null;
   unit_id: string;
+  created_by_id: string;
+  budget_year: number;
+  /** Display alias for legacy request lists; equals sum_plan. */
   sum: number;
+  sum_plan: number;
+  sum_fact: number;
   status: RequestStatus;
-  frozen: boolean;
-  fixed: boolean;
+  /** Workflow flags live on CfoPosition; kept optional for old read-only widgets. */
+  frozen?: boolean;
+  fixed?: boolean;
+  cfo_unit_id?: string;
+  available_actions?: string[];
   total_approved_sum?: number;
   summary?: RequestSummary;
   package_id?: string;
@@ -76,6 +84,7 @@ export interface RequestSummary {
 export interface BudgetItem {
   id: string;
   request_id: string;
+  cfo_position_id?: string | null;
   dds_id?: string;
   invest_id?: string;
   is_income: boolean;
@@ -101,19 +110,57 @@ export interface FileAttachment {
 
 export interface ApprovalStep {
   id: string;
-  user_id: string;
+  user_id: string | null;
   unit_id: string | null;
   status: StepStatus;
   user: User | null;
   unit: Unit | null;
   cfo: Unit | null;
   department: Unit | null;
+  is_economist_step?: boolean;
+  cfo_unit_id?: string | null;
+  cfo_unit_ids?: string[];
+  cfo_names?: string[];
   unit_path: string[];
   responsible: User | null;
+  modules?: Array<{
+    id: string;
+    name: string;
+    responsible: User | null;
+    request_statuses: Array<{
+      status: RequestStatus;
+      count: number;
+    }>;
+  }>;
   parent_step_ids: string[];
   child_step_ids: string[];
   request_status?: StepStatus;
+  active_positions_count?: number;
   active_requests_count?: number;
+}
+
+export interface CfoPosition {
+  id: string;
+  budget_year: number;
+  cfo_unit_id: string;
+  dds_id?: string | null;
+  invest_id?: string | null;
+  is_income: boolean;
+  status: CfoPositionStatus;
+  current_step_id: string | null;
+  frozen: boolean;
+  fixed: boolean;
+  sum_plan: number;
+  sum_fact: number;
+  items_count: number;
+  cfo?: Unit | null;
+  article?: CatalogItem | null;
+  current_step?: ApprovalStep | null;
+  contributions: Array<BudgetItem & {
+    request: BudgetRequest;
+    module?: Unit | null;
+    author?: User | null;
+  }>;
 }
 
 export interface StepRequest extends BudgetRequest {
@@ -147,5 +194,5 @@ export interface StepLog {
   };
 }
 
-export const CLOSED_REQUEST_STATUSES: RequestStatus[] = ['approved', 'approved_with_changes', 'partially_approved', 'rejected', 'cancelled'];
-export const EXPORTABLE_REQUEST_STATUSES: RequestStatus[] = ['approved', 'approved_with_changes', 'partially_approved'];
+export const CLOSED_REQUEST_STATUSES: RequestStatus[] = ['approved', 'rejected', 'cancelled'];
+export const EXPORTABLE_REQUEST_STATUSES: RequestStatus[] = ['approved'];

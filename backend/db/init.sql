@@ -38,20 +38,38 @@ CREATE TABLE invests_catalog (
 
 CREATE TABLE requests (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    economist_id uuid REFERENCES users(id) ON DELETE SET NULL,
     unit_id uuid NOT NULL REFERENCES units(id) ON DELETE RESTRICT,
+    created_by_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    budget_year bigint NOT NULL CHECK (budget_year BETWEEN 2000 AND 2200),
     status text NOT NULL DEFAULT 'draft',
     sum_plan numeric(14,2) NOT NULL DEFAULT 0,
     sum_fact numeric(14,2) NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-    frozen boolean NOT NULL DEFAULT false,
-    fixed boolean NOT NULL DEFAULT false,
     CONSTRAINT requests_sum_plan_chk CHECK (sum_plan >= 0),
     CONSTRAINT requests_sum_fact_chk CHECK (sum_fact >= 0),
-    CONSTRAINT requests_status_chk CHECK (status IN ('draft', 'on_review', 'approved', 'approved_with_changes', 'partially_approved', 'rejected', 'cancelled'))
+    CONSTRAINT requests_status_chk CHECK (status IN ('draft', 'on_review', 'approved', 'rejected', 'cancelled')),
+    CONSTRAINT ux_requests_unit_budget_year UNIQUE (unit_id, budget_year)
+);
+CREATE TABLE cfo_positions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    budget_year bigint NOT NULL CHECK (budget_year BETWEEN 2000 AND 2200),
+    cfo_unit_id uuid NOT NULL REFERENCES units(id) ON DELETE RESTRICT,
+    dds_id uuid REFERENCES dds_catalog(id) ON DELETE RESTRICT,
+    invest_id uuid REFERENCES invests_catalog(id) ON DELETE RESTRICT,
+    is_income boolean NOT NULL DEFAULT false,
+    status text NOT NULL DEFAULT 'waiting',
+    current_step_id uuid,
+    frozen boolean NOT NULL DEFAULT false,
+    fixed boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT cfo_positions_article_chk CHECK ((dds_id IS NULL) <> (invest_id IS NULL)),
+    CONSTRAINT cfo_positions_status_chk CHECK (status IN ('waiting', 'on_review', 'on_approval', 'approved', 'on_revision')),
+    CONSTRAINT cfo_positions_fixed_requires_frozen_chk CHECK (NOT fixed OR frozen)
 );
 CREATE TABLE req_items (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    cfo_position_id uuid REFERENCES cfo_positions(id) ON DELETE RESTRICT,
     dds_id uuid REFERENCES dds_catalog(id) ON DELETE RESTRICT,
     invest_id uuid REFERENCES invests_catalog(id) ON DELETE RESTRICT,
     is_income boolean NOT NULL DEFAULT false,
@@ -112,33 +130,43 @@ CREATE TABLE req_logs (
 
 CREATE TABLE steps (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    user_id uuid REFERENCES users(id) ON DELETE RESTRICT,
     unit_id uuid REFERENCES units(id) ON DELETE RESTRICT,
     status text NOT NULL DEFAULT 'waiting',
     CONSTRAINT steps_status_chk CHECK (
         status IN ('waiting', 'on_approval', 'on_revision', 'approved', 'closed')
     )
 );
+ALTER TABLE cfo_positions
+    ADD CONSTRAINT cfo_positions_current_step_id_fkey
+    FOREIGN KEY (current_step_id) REFERENCES steps(id) ON DELETE SET NULL;
 CREATE TABLE step_edges (
     parent_step_id uuid NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
     child_step_id uuid NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
     PRIMARY KEY (parent_step_id, child_step_id),
     CONSTRAINT step_edges_no_self_chk CHECK (parent_step_id <> child_step_id)
 );
-CREATE TABLE request_step_states (
-    request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
-    step_id uuid NOT NULL REFERENCES steps(id) ON DELETE CASCADE,
-    status text NOT NULL DEFAULT 'waiting',
-    PRIMARY KEY (request_id, step_id),
-    CONSTRAINT request_step_states_status_chk CHECK (
-        status IN ('waiting', 'on_approval', 'on_revision', 'approved', 'closed')
-    )
-);
 CREATE TABLE step_logs (
     id bigserial PRIMARY KEY,
     step_id uuid REFERENCES steps(id) ON DELETE SET NULL,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     log jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE cfo_position_logs (
+    id bigserial PRIMARY KEY,
+    cfo_position_id uuid NOT NULL REFERENCES cfo_positions(id) ON DELETE CASCADE,
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    step_id uuid REFERENCES steps(id) ON DELETE SET NULL,
+    log jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE notifications (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type text NOT NULL,
+    payload jsonb NOT NULL,
+    read_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -154,9 +182,10 @@ CREATE INDEX idx_invests_catalog_parent_id ON invests_catalog(parent_id);
 CREATE INDEX idx_invests_catalog_unit_id ON invests_catalog(unit_id);
 CREATE INDEX idx_invests_catalog_active ON invests_catalog(is_active);
 CREATE INDEX idx_requests_unit_id ON requests(unit_id);
-CREATE INDEX idx_requests_economist_id ON requests(economist_id);
+CREATE INDEX idx_requests_created_by_id ON requests(created_by_id);
 CREATE INDEX idx_requests_status ON requests(status);
 CREATE INDEX idx_req_items_request_id ON req_items(request_id);
+CREATE INDEX idx_req_items_cfo_position_id ON req_items(cfo_position_id);
 CREATE INDEX idx_req_items_dds_id ON req_items(dds_id);
 CREATE INDEX idx_req_items_invest_id ON req_items(invest_id);
 CREATE INDEX idx_req_items_status ON req_items(status);
@@ -174,10 +203,23 @@ CREATE INDEX idx_req_logs_user_id ON req_logs(user_id);
 CREATE INDEX idx_steps_user_status ON steps(user_id, status);
 CREATE UNIQUE INDEX ux_steps_unit_not_null ON steps(unit_id) WHERE unit_id IS NOT NULL;
 CREATE INDEX idx_step_edges_child ON step_edges(child_step_id);
-CREATE INDEX idx_request_step_states_step_status ON request_step_states(step_id, status);
 CREATE INDEX idx_step_logs_step_created_at ON step_logs(step_id, created_at DESC);
 CREATE INDEX idx_step_logs_user_id ON step_logs(user_id);
 CREATE INDEX idx_step_logs_action ON step_logs((log->>'action'));
+CREATE INDEX idx_cfo_positions_cfo_year ON cfo_positions(cfo_unit_id, budget_year);
+CREATE INDEX idx_cfo_positions_status ON cfo_positions(status);
+CREATE INDEX idx_cfo_positions_current_step ON cfo_positions(current_step_id);
+CREATE UNIQUE INDEX ux_cfo_positions_dds
+    ON cfo_positions(budget_year, cfo_unit_id, is_income, dds_id)
+    WHERE dds_id IS NOT NULL;
+CREATE UNIQUE INDEX ux_cfo_positions_invest
+    ON cfo_positions(budget_year, cfo_unit_id, is_income, invest_id)
+    WHERE invest_id IS NOT NULL;
+CREATE INDEX idx_cfo_position_logs_position_created ON cfo_position_logs(cfo_position_id, created_at);
+CREATE INDEX idx_cfo_position_logs_step_id ON cfo_position_logs(step_id);
+CREATE INDEX idx_cfo_position_logs_user_id ON cfo_position_logs(user_id);
+CREATE INDEX idx_notifications_user_created ON notifications(user_id, created_at);
+CREATE INDEX idx_notifications_user_read ON notifications(user_id, read_at);
 CREATE UNIQUE INDEX ux_dds_catalog_scope_name ON dds_catalog (unit_id, parent_id, lower(name)) NULLS NOT DISTINCT;
 CREATE UNIQUE INDEX ux_invests_catalog_scope_name ON invests_catalog (unit_id, parent_id, lower(name)) NULLS NOT DISTINCT;
 

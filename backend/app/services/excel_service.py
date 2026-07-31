@@ -30,8 +30,6 @@ REQUEST_STATUS_LABELS = {
     "draft": "Черновик",
     "on_review": "На проверке",
     "approved": "Утверждена",
-    "approved_with_changes": "Утверждена с изменениями",
-    "partially_approved": "Частично утверждена",
     "rejected": "Отклонена",
     "cancelled": "Отменена",
 }
@@ -514,6 +512,16 @@ class ExcelService:
         is_income = {"income": True, "expense": False}.get(export_kind)
 
         selected_unit_ids = self._export_unit_ids(unit_id, department_id, department_ids, module_ids)
+        eligible_position_ids = {
+            position["id"]
+            for position in self.repo.load_all("cfo_positions")
+            if not fixed_only or position.get("fixed")
+        }
+        position_request_ids = {
+            item["request_id"]
+            for item in self.repo.load_all("req_items")
+            if item.get("cfo_position_id") in eligible_position_ids
+        }
         requests = []
         for status in selected_statuses:
             for item in self.requests.list_requests(user, status=status):
@@ -521,7 +529,7 @@ class ExcelService:
                     continue
                 if selected_unit_ids is not None and item.get("unit_id") not in selected_unit_ids:
                     continue
-                if fixed_only and not item.get("frozen"):
+                if item.get("id") not in position_request_ids:
                     continue
                 requests.append(item)
         if is_income is not None:
