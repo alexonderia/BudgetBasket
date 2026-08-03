@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -9,7 +8,7 @@ from fastapi.encoders import jsonable_encoder
 
 from app.models import APPROVED_ITEM_STATUSES, ItemStatus, RequestStatus
 from app.repositories.base import Repository
-from app.services.common import get_required
+from app.services.common import cfo_position_current_step_id, get_required, request_author_id
 from app.services.permission_service import PermissionService
 
 
@@ -116,29 +115,12 @@ class RequestService:
         *,
         repo: Repository | None = None,
     ) -> dict:
-        storage = repo or self.repo
-        items = self._items(request_id, repo=storage)
-        expenses = [item for item in items if not item.get("is_income", False)]
-        return storage.update(
-            "requests",
-            request_id,
-            {
-                "sum_plan": sum(
-                    (Decimal(str(item.get("sum_plan") or 0)) for item in expenses),
-                    Decimal("0"),
-                ),
-                "sum_fact": sum(
-                    (
-                        Decimal(str(item.get("sum_fact") or 0))
-                        for item in expenses
-                        if item.get("status") in APPROVED_ITEM_STATUSES
-                    ),
-                    Decimal("0"),
-                ),
-            },
-        )
+        # Request totals are derived from request lines and are not duplicated
+        # in the requests table.
+        return get_required(repo or self.repo, "requests", request_id)
 
     def public_request(self, request: dict, summary: dict | None = None) -> dict:
+        summary = summary or self.summary(request["id"])
         cfo_id = self.permissions.cfo_for_module(request["unit_id"])
         actions: list[str] = []
         if request.get("status") == RequestStatus.draft:
@@ -149,13 +131,15 @@ class RequestService:
             actions.append("complete_cfo_review")
         return {
             **request,
-            "sum": request.get("sum_plan", 0),
+            "sum": summary["planned_sum"],
+            "sum_plan": summary["planned_sum"],
             "cfo_unit_id": cfo_id,
             "cfo_responsible_id": (
                 self.permissions.cfo_responsible_id(cfo_id) if cfo_id else None
             ),
-            "total_approved_sum": request.get("sum_fact", 0),
-            "summary": summary or self.summary(request["id"]),
+            "sum_fact": summary["approved_sum"],
+            "total_approved_sum": summary["approved_sum"],
+            "summary": summary,
             "available_actions": actions,
             "unit_budget": {
                 "annual_budget": float(
@@ -234,10 +218,7 @@ class RequestService:
             "requests",
             {
                 "unit_id": unit_id,
-                "created_by_id": user["id"],
                 "budget_year": budget_year,
-                "sum_plan": 0,
-                "sum_fact": 0,
                 "status": RequestStatus.draft,
             },
         )
@@ -317,7 +298,6 @@ class RequestService:
         return (
             int(request["budget_year"]),
             cfo_id,
-            bool(item.get("is_income", False)),
             item.get("dds_id"),
             item.get("invest_id"),
         )
@@ -349,7 +329,6 @@ class RequestService:
                 (
                     int(item["budget_year"]),
                     item["cfo_unit_id"],
-                    bool(item.get("is_income", False)),
                     item.get("dds_id"),
                     item.get("invest_id"),
                 ): item
@@ -373,7 +352,6 @@ class RequestService:
                             "cfo_unit_id": cfo_id,
                             "dds_id": item.get("dds_id"),
                             "invest_id": item.get("invest_id"),
-                            "is_income": bool(item.get("is_income", False)),
                             "status": "waiting",
                             "current_step_id": None,
                             "frozen": False,
@@ -381,7 +359,7 @@ class RequestService:
                         },
                     )
                     by_key[key] = position
-                elif position.get("current_step_id") and not position.get("frozen"):
+                elif cfo_position_current_step_id(repo, position) and not position.get("frozen"):
                     late_position_ids.append(position["id"])
                     if position.get("status") == "approved":
                         position = repo.update(
@@ -400,7 +378,7 @@ class RequestService:
                     {
                         "cfo_position_id": position["id"],
                         "user_id": user["id"],
-                        "step_id": position.get("current_step_id"),
+                        "step_id": cfo_position_current_step_id(repo, position),
                         "log": jsonable_encoder(
                             {
                                 "event_id": event_id,
@@ -411,7 +389,7 @@ class RequestService:
                                 "request_id": request_id,
                                 "req_item_id": item["id"],
                                 "cfo_position_id": position["id"],
-                                "step_id": position.get("current_step_id"),
+                                "step_id": cfo_position_current_step_id(repo, position),
                                 "changes": {
                                     "cfo_position_id": {
                                         "from": item.get("cfo_position_id"),
@@ -425,18 +403,11 @@ class RequestService:
                 )
                 affected.append(position["id"])
             next_status = RequestStatus.approved if accepted else RequestStatus.rejected
-            expenses = [item for item in items if not item.get("is_income", False)]
             updated = repo.update(
                 "requests",
                 request_id,
                 {
                     "status": next_status,
-                    "sum_plan": sum(Decimal(str(item.get("sum_plan") or 0)) for item in expenses),
-                    "sum_fact": sum(
-                        Decimal(str(item.get("sum_fact") or 0))
-                        for item in accepted
-                        if not item.get("is_income", False)
-                    ),
                 },
             )
             self.log(
@@ -455,9 +426,10 @@ class RequestService:
                 ],
                 repo=repo,
             )
-            if self.notifications:
+            author_id = request_author_id(repo, request_id)
+            if self.notifications and author_id:
                 self.notifications.create(
-                    request["created_by_id"],
+                    author_id,
                     "request.cfo_review_completed",
                     {"request_id": request_id, "status": str(next_status)},
                     repo=repo,
@@ -478,16 +450,18 @@ class RequestService:
         return {
             **self.public_request(updated),
             "affected_cfo_position_ids": sorted(set(affected)),
-            "notification_user_ids": list(
-                {
-                    request["created_by_id"],
+            "notification_user_ids": [
+                user_id
+                for user_id in {
+                    author_id,
                     *(
                         [self.permissions.cfo_economist_id(cfo_id)]
                         if late_position_ids and self.permissions.cfo_economist_id(cfo_id)
                         else []
                     ),
                 }
-            ),
+                if user_id
+            ],
         }
 
     def counterparty_contact(self, user: dict, request_id: str) -> dict | None:
@@ -499,7 +473,7 @@ class RequestService:
             if request["unit_id"] in self.permissions.employee_module_ids(user["id"]):
                 target_id = self.permissions.cfo_responsible_id(cfo_id) if cfo_id else None
             else:
-                target_id = request.get("created_by_id")
+                target_id = request_author_id(self.repo, request_id)
         elif user.get("role") == "economist":
             target_id = self.permissions.cfo_responsible_id(cfo_id) if cfo_id else None
         target = self.repo.get_by_id("users", target_id) if target_id else None
@@ -524,19 +498,27 @@ class RequestService:
 
     def _visible_positions(self, user: dict, *, is_income: bool | None = None) -> list[dict]:
         visible = self.permissions.visible_position_ids(user)
+        position_income: dict[str, set[bool]] = {}
+        for item in self.repo.load_all("req_items"):
+            position_id = item.get("cfo_position_id")
+            if position_id:
+                position_income.setdefault(position_id, set()).add(
+                    bool(item.get("is_income", False))
+                )
         return [
             item
             for item in self.repo.load_all("cfo_positions")
             if (visible is None or item["id"] in visible)
-            and (is_income is None or bool(item.get("is_income")) == is_income)
+            and (is_income is None or is_income in position_income.get(item["id"], set()))
         ]
 
-    def _position_sum(self, position_id: str) -> tuple[float, float, int]:
+    def _position_sum(self, position_id: str, *, is_income: bool | None = None) -> tuple[float, float, int]:
         items = [
             item
             for item in self.repo.load_all("req_items")
             if item.get("cfo_position_id") == position_id
             and item.get("status") in APPROVED_ITEM_STATUSES
+            and (is_income is None or bool(item.get("is_income", False)) == is_income)
         ]
         return (
             sum(float(item.get("sum_plan") or 0) for item in items),
@@ -553,7 +535,7 @@ class RequestService:
         units = {item["id"]: item for item in self.repo.load_all("units")}
         rows: list[dict] = []
         for position in positions:
-            planned, approved, count = self._position_sum(position["id"])
+            planned, approved, count = self._position_sum(position["id"], is_income=is_income)
             rows.append(
                 {
                     "id": position["id"],
@@ -621,7 +603,7 @@ class RequestService:
                 continue
             if position.get(f"{kind}_id") != article_id:
                 continue
-            planned, approved, count = self._position_sum(position["id"])
+            planned, approved, count = self._position_sum(position["id"], is_income=is_income)
             result.append(
                 {
                     "id": position["cfo_unit_id"],
@@ -691,6 +673,8 @@ class RequestService:
             if not unit_id or item.get("cfo_unit_id") == unit_id
         }
         for item in self.repo.load_all("req_items"):
+            if bool(item.get("is_income", False)) != is_income:
+                continue
             position = positions.get(item.get("cfo_position_id"))
             request = requests.get(item.get("request_id"))
             if not position or not request:

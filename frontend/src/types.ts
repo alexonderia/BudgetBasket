@@ -44,7 +44,6 @@ export interface CatalogItem {
 export interface BudgetRequest {
   id: string;
   unit_id: string;
-  created_by_id: string;
   budget_year: number;
   /** Display alias for legacy request lists; equals sum_plan. */
   sum: number;
@@ -145,7 +144,6 @@ export interface CfoPosition {
   cfo_unit_id: string;
   dds_id?: string | null;
   invest_id?: string | null;
-  is_income: boolean;
   status: CfoPositionStatus;
   current_step_id: string | null;
   frozen: boolean;

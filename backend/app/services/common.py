@@ -37,3 +37,24 @@ def get_required(repo: Repository, collection: str, item_id: str) -> dict[str, A
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in user.items() if key not in {"password", "id_role"}}
+
+
+def request_author_id(repo: Repository, request_id: str) -> str | None:
+    """Return the creator recorded in the immutable request audit log."""
+    created = [
+        row
+        for row in repo.load_all("req_logs")
+        if row.get("req_id") == request_id
+        and (row.get("log") or {}).get("action") == "request_created"
+    ]
+    if not created:
+        return None
+    return min(
+        created,
+        key=lambda row: (str(row.get("created_at") or ""), str(row.get("id") or "")),
+    ).get("user_id")
+
+
+def cfo_position_current_step_id(repo: Repository, position: dict[str, Any]) -> str | None:
+    """Return the active approval step stored on a CFO position."""
+    return position.get("current_step_id")

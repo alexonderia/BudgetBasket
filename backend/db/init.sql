@@ -39,14 +39,9 @@ CREATE TABLE invests_catalog (
 CREATE TABLE requests (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     unit_id uuid NOT NULL REFERENCES units(id) ON DELETE RESTRICT,
-    created_by_id uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     budget_year bigint NOT NULL CHECK (budget_year BETWEEN 2000 AND 2200),
     status text NOT NULL DEFAULT 'draft',
-    sum_plan numeric(14,2) NOT NULL DEFAULT 0,
-    sum_fact numeric(14,2) NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT requests_sum_plan_chk CHECK (sum_plan >= 0),
-    CONSTRAINT requests_sum_fact_chk CHECK (sum_fact >= 0),
     CONSTRAINT requests_status_chk CHECK (status IN ('draft', 'on_review', 'approved', 'rejected', 'cancelled')),
     CONSTRAINT ux_requests_unit_budget_year UNIQUE (unit_id, budget_year)
 );
@@ -56,7 +51,6 @@ CREATE TABLE cfo_positions (
     cfo_unit_id uuid NOT NULL REFERENCES units(id) ON DELETE RESTRICT,
     dds_id uuid REFERENCES dds_catalog(id) ON DELETE RESTRICT,
     invest_id uuid REFERENCES invests_catalog(id) ON DELETE RESTRICT,
-    is_income boolean NOT NULL DEFAULT false,
     status text NOT NULL DEFAULT 'waiting',
     current_step_id uuid,
     frozen boolean NOT NULL DEFAULT false,
@@ -182,7 +176,6 @@ CREATE INDEX idx_invests_catalog_parent_id ON invests_catalog(parent_id);
 CREATE INDEX idx_invests_catalog_unit_id ON invests_catalog(unit_id);
 CREATE INDEX idx_invests_catalog_active ON invests_catalog(is_active);
 CREATE INDEX idx_requests_unit_id ON requests(unit_id);
-CREATE INDEX idx_requests_created_by_id ON requests(created_by_id);
 CREATE INDEX idx_requests_status ON requests(status);
 CREATE INDEX idx_req_items_request_id ON req_items(request_id);
 CREATE INDEX idx_req_items_cfo_position_id ON req_items(cfo_position_id);
@@ -210,10 +203,10 @@ CREATE INDEX idx_cfo_positions_cfo_year ON cfo_positions(cfo_unit_id, budget_yea
 CREATE INDEX idx_cfo_positions_status ON cfo_positions(status);
 CREATE INDEX idx_cfo_positions_current_step ON cfo_positions(current_step_id);
 CREATE UNIQUE INDEX ux_cfo_positions_dds
-    ON cfo_positions(budget_year, cfo_unit_id, is_income, dds_id)
+    ON cfo_positions(budget_year, cfo_unit_id, dds_id)
     WHERE dds_id IS NOT NULL;
 CREATE UNIQUE INDEX ux_cfo_positions_invest
-    ON cfo_positions(budget_year, cfo_unit_id, is_income, invest_id)
+    ON cfo_positions(budget_year, cfo_unit_id, invest_id)
     WHERE invest_id IS NOT NULL;
 CREATE INDEX idx_cfo_position_logs_position_created ON cfo_position_logs(cfo_position_id, created_at);
 CREATE INDEX idx_cfo_position_logs_step_id ON cfo_position_logs(step_id);

@@ -4,6 +4,7 @@ from fastapi import HTTPException
 
 from app.models import RequestStatus
 from app.repositories.base import Repository
+from app.services.common import cfo_position_current_step_id
 
 
 class PermissionService:
@@ -176,7 +177,7 @@ class PermissionService:
             return {
                 item["id"]
                 for item in positions
-                if item.get("current_step_id") in step_ids
+                if cfo_position_current_step_id(self.repo, item) in step_ids
                 or any(
                     log.get("cfo_position_id") == item["id"] and log.get("step_id") in step_ids
                     for log in self.repo.load_all("cfo_position_logs")
