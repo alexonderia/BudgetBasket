@@ -709,6 +709,271 @@ class RequestService:
             )
         return rows
 
+    # The register intentionally works from request lines, rather than CFO
+    # positions.  Positions only exist after the CFO review, while authors
+    # must also be able to see their draft and in-review lines.
+    def _register_entries(
+        self,
+        user: dict,
+        *,
+        budget_year: int | None = None,
+        cfo_id: str | None = None,
+        category_id: str | None = None,
+        article_id: str | None = None,
+        module_id: str | None = None,
+        status: str | None = None,
+        request_status: str | None = None,
+        search: str | None = None,
+    ) -> list[dict]:
+        visible = self.permissions.visible_request_ids(user)
+        requests = {item["id"]: item for item in self.repo.load_all("requests")}
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+        users = {item["id"]: item for item in self.repo.load_all("users")}
+        positions = {item["id"]: item for item in self.repo.load_all("cfo_positions")}
+        steps = {item["id"]: item for item in self.repo.load_all("steps")}
+        economist_cfo_ids = (
+            self.permissions.economist_cfo_ids(user["id"])
+            if user.get("role") == "economist"
+            else set()
+        )
+        employee_cfo_ids = (
+            self.permissions.employee_cfo_ids(user["id"])
+            if user.get("role") == "employee"
+            else set()
+        )
+        catalogs = {
+            "dds": {item["id"]: item for item in self.repo.load_all("dds_catalog")},
+            "invest": {item["id"]: item for item in self.repo.load_all("invests_catalog")},
+        }
+        file_counts: dict[str, int] = {}
+        for link in self.repo.load_all("req_item_files"):
+            file_counts[link.get("req_item_id")] = file_counts.get(link.get("req_item_id"), 0) + 1
+
+        def can_act_on_position(position: dict | None) -> bool:
+            if not position or position.get("fixed"):
+                return False
+            step = steps.get(cfo_position_current_step_id(self.repo, position))
+            if not step:
+                return False
+            if step.get("unit_id"):
+                return (
+                    user.get("role") == "economist"
+                    and step["unit_id"] in economist_cfo_ids
+                )
+            return step.get("user_id") == user.get("id")
+
+        def approval_stage(position: dict | None) -> str | None:
+            if not position:
+                return None
+            step = steps.get(cfo_position_current_step_id(self.repo, position))
+            if not step or position.get("fixed"):
+                return None
+            if step.get("unit_id"):
+                return "Проверка экономистом ЦФО"
+            actor = users.get(step.get("user_id"), {})
+            if actor.get("role") == "zgd":
+                return "Финальное согласование ЗГД"
+            return "Согласование проверяющим"
+
+        needle = (search or "").strip().casefold()
+        entries: list[dict] = []
+        for item in self.repo.load_all("req_items"):
+            if item.get("status") == ItemStatus.deleted:
+                continue
+            request = requests.get(item.get("request_id"))
+            if not request or (visible is not None and request["id"] not in visible):
+                continue
+            module = units.get(request.get("unit_id"), {})
+            current_cfo_id = self.permissions.cfo_for_module(request["unit_id"])
+            cfo = units.get(current_cfo_id, {})
+            kind = "dds" if item.get("dds_id") else "invest"
+            category = catalogs[kind].get(item.get(f"{kind}_id"), {})
+            article = catalogs[kind].get(category.get("parent_id"), {})
+            position = positions.get(item.get("cfo_position_id"))
+            position_step_id = (
+                cfo_position_current_step_id(self.repo, position) if position else None
+            )
+            is_cfo_review = request.get("status") == RequestStatus.on_review
+            entry = {
+                "id": item["id"],
+                "request_id": request["id"],
+                "request_status": str(request.get("status") or "draft"),
+                "budget_year": int(request.get("budget_year") or 0),
+                "module_id": request["unit_id"],
+                "module_name": module.get("name", "Модуль"),
+                "cfo_id": current_cfo_id or "unassigned",
+                "cfo_name": cfo.get("name", "ЦФО не указан"),
+                "category_id": category.get("id") or item.get(f"{kind}_id") or "uncategorized",
+                "category_name": category.get("name", "Без категории"),
+                "article_id": article.get("id") or item.get(f"{kind}_id") or "uncategorized",
+                "article_name": article.get("name", category.get("name", "Статья не указана")),
+                "kind": kind,
+                "name": item.get("name") or "Без наименования",
+                "justification": item.get("justification") or "",
+                "comment": item.get("comment") or "",
+                "files_count": file_counts.get(item["id"], 0),
+                "requested_sum": float(item.get("sum_plan") or 0),
+                "approved_sum": float(item.get("sum_fact") or 0) if item.get("status") in APPROVED_ITEM_STATUSES else 0,
+                "status": str(item.get("status") or ItemStatus.on_review),
+                "updated_at": str(item.get("updated_at") or request.get("updated_at") or request.get("created_at") or ""),
+                "is_collecting": request.get("status") == RequestStatus.draft,
+                "is_cfo_review": is_cfo_review,
+                "is_cfo_review_actionable": (
+                    is_cfo_review
+                    and user.get("role") == "employee"
+                    and current_cfo_id in employee_cfo_ids
+                ),
+                "position_id": position.get("id") if position else None,
+                "is_in_approval": bool(position and position_step_id and not position.get("fixed")),
+                "is_approval_actionable": can_act_on_position(position),
+                "approval_stage": approval_stage(position),
+            }
+            if budget_year and entry["budget_year"] != budget_year:
+                continue
+            if cfo_id and entry["cfo_id"] != cfo_id:
+                continue
+            if category_id and entry["category_id"] != category_id:
+                continue
+            if article_id and entry["article_id"] != article_id:
+                continue
+            if module_id and entry["module_id"] != module_id:
+                continue
+            if status and entry["status"] != status:
+                continue
+            if request_status and entry["request_status"] != request_status:
+                continue
+            if needle and needle not in " ".join(str(entry[key]) for key in (
+                "name", "article_name", "category_name", "module_name", "request_id",
+            )).casefold():
+                continue
+            entries.append(entry)
+        return entries
+
+    @staticmethod
+    def _register_aggregates(entries: list[dict]) -> dict:
+        approved = sum(entry["status"] in {ItemStatus.approved, ItemStatus.approved_with_changes} for entry in entries)
+        rejected = sum(entry["status"] == ItemStatus.rejected for entry in entries)
+        pending = len(entries) - approved - rejected
+        if not entries:
+            aggregate_status = "no_data"
+        elif approved == len(entries):
+            aggregate_status = "approved"
+        elif rejected == len(entries):
+            aggregate_status = "rejected"
+        elif not pending:
+            aggregate_status = "partially_approved"
+        elif not approved and not rejected:
+            aggregate_status = "on_review"
+        else:
+            aggregate_status = "in_progress"
+        requested = sum(entry["requested_sum"] for entry in entries)
+        approved_sum = sum(entry["approved_sum"] for entry in entries)
+        collecting_requests = {
+            entry["request_id"] for entry in entries if entry.get("is_collecting")
+        }
+        cfo_review_requests = {
+            entry["request_id"] for entry in entries if entry.get("is_cfo_review")
+        }
+        cfo_review_actionable_requests = {
+            entry["request_id"]
+            for entry in entries
+            if entry.get("is_cfo_review_actionable")
+        }
+        positions_in_approval = {
+            entry["position_id"]
+            for entry in entries
+            if entry.get("is_in_approval") and entry.get("position_id")
+        }
+        actionable_positions = {
+            entry["position_id"]
+            for entry in entries
+            if entry.get("is_approval_actionable") and entry.get("position_id")
+        }
+        return {
+            "requested_sum": requested,
+            "approved_sum": approved_sum,
+            "difference": approved_sum - requested,
+            "total_rows": len(entries),
+            "approved_rows": approved,
+            "rejected_rows": rejected,
+            "pending_rows": pending,
+            "requests_count": len({entry["request_id"] for entry in entries}),
+            "modules_count": len({entry["module_id"] for entry in entries}),
+            "aggregate_status": aggregate_status,
+            "collecting_requests": len(collecting_requests),
+            "cfo_review_requests": len(cfo_review_requests),
+            "cfo_review_actionable_requests": len(cfo_review_actionable_requests),
+            "in_approval_positions": len(positions_in_approval),
+            "actionable_positions": len(actionable_positions),
+        }
+
+    def approval_register(self, user: dict, view: str = "cfo", **filters) -> dict:
+        levels_by_view = {
+            "cfo": ("cfo", "article", "category", "module"),
+            "category": ("category", "module"),
+            "article": ("article", "category", "module"),
+            "module": ("module", "article", "category"),
+        }
+        if view not in levels_by_view:
+            raise HTTPException(status_code=422, detail="Неизвестное представление реестра")
+        entries = self._register_entries(user, **filters)
+        labels = {"cfo": "ЦФО", "category": "Категория", "article": "Статья / инвестпроект", "module": "Модуль"}
+        roots: dict[str, dict] = {}
+        for entry in entries:
+            branch = roots
+            parent_key = ""
+            for level in levels_by_view[view]:
+                value_id = entry[f"{level}_id"]
+                key = f"{parent_key}/{level}:{value_id}"
+                node = branch.setdefault(key, {
+                    "id": key,
+                    "type": level,
+                    "name": entry[f"{level}_name"],
+                    "module_id": entry["module_id"],
+                    "request_ids": set(),
+                    "entries": [],
+                    "children": {},
+                })
+                node["entries"].append(entry)
+                node["request_ids"].add(entry["request_id"])
+                branch = node["children"]
+                parent_key = key
+
+        def serialize(nodes: dict[str, dict]) -> list[dict]:
+            result = []
+            for node in sorted(nodes.values(), key=lambda item: (item["name"].casefold(), item["id"])):
+                children = serialize(node["children"])
+                result.append({
+                    "id": node["id"], "type": node["type"], "name": node["name"],
+                    "module_id": node["module_id"], "request_ids": sorted(node["request_ids"]),
+                    "aggregates": self._register_aggregates(node["entries"]),
+                    "children": children,
+                    "can_load_rows": not children,
+                    "label": labels[node["type"]],
+                })
+            return result
+
+        return {"view": view, "groups": serialize(roots), "aggregates": self._register_aggregates(entries)}
+
+    def approval_register_rows(self, user: dict, module_id: str, page: int = 1, page_size: int = 50, **filters) -> dict:
+        if page_size not in {25, 50, 100, 200}:
+            raise HTTPException(status_code=422, detail="Допустимый размер страницы: 25, 50, 100 или 200")
+        entries = self._register_entries(user, module_id=module_id, **filters)
+        entries.sort(key=lambda item: (item["updated_at"], item["id"]), reverse=True)
+        total_items = len(entries)
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        start = (page - 1) * page_size
+        items = entries[start:start + page_size]
+        return {
+            "items": items,
+            "group": {"module_id": module_id, "aggregates": self._register_aggregates(entries)},
+            "pagination": {
+                "page": page, "page_size": page_size, "total_items": total_items,
+                "total_pages": total_pages, "has_next": page < total_pages,
+                "has_previous": page > 1,
+            },
+        }
+
     # Removed request-level workflow endpoints.
     def _gone(self, *_args, **_kwargs):
         raise HTTPException(

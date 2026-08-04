@@ -180,6 +180,51 @@ def test_dashboard_table_returns_hierarchical_request_rows(tmp_path):
     assert row["planned"] == 100
 
 
+def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    for index in range(26):
+        created = client.post(
+            f"/requests/{request['id']}/items",
+            json={"dds_id": DDS_LICENSE_ID, "name": f"Line {index:02}", "sum_plan": index + 1},
+            headers=employee,
+        )
+        assert created.status_code == 200
+
+    register = client.get("/approval-register", params={"view": "article"}, headers=employee)
+    assert register.status_code == 200
+    body = register.json()
+    assert body["aggregates"]["total_rows"] >= 26
+    assert body["aggregates"]["collecting_requests"] >= 1
+    assert body["aggregates"]["actionable_positions"] == 0
+    article = next(group for group in body["groups"] if group["aggregates"]["total_rows"] >= 26)
+    category = next(group for group in article["children"] if group["aggregates"]["total_rows"] >= 26)
+    module = next(group for group in category["children"] if group["module_id"] == MODULE_ALPHA_ID)
+    assert module["aggregates"]["requested_sum"] == sum(range(1, 27))
+    assert module["aggregates"]["aggregate_status"] == "on_review"
+
+    first = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page": 1, "page_size": 25},
+        headers=employee,
+    )
+    second = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page": 2, "page_size": 25},
+        headers=employee,
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["pagination"]["total_items"] >= 26
+    assert first.json()["pagination"]["total_pages"] >= 2
+    assert not {item["id"] for item in first.json()["items"]} & {item["id"] for item in second.json()["items"]}
+    assert client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 30},
+        headers=employee,
+    ).status_code == 422
+
+
 def test_dashboard_article_cfo_returns_selected_article_breakdown(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")

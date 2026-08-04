@@ -24,7 +24,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { DashboardTableView, type DashboardTableRow } from '../components/DashboardTableView';
+import { ApprovalRegister } from '../components/ApprovalRegister';
 import type { User } from '../types';
 import { money } from '../utils/labels';
 
@@ -299,10 +299,6 @@ export default function DashboardPage({ user }: { user: User }) {
     queryKey: ['dashboard', mode, unitId],
     queryFn: async () => (await api.get<DashboardData>(isIncomeDashboard ? '/dashboard/income' : '/dashboard', { params: { unit_id: unitId || undefined } })).data,
   });
-  const { data: tableRows = [], isLoading: tableLoading } = useQuery({
-    queryKey: ['dashboard-table', mode],
-    queryFn: async () => (await api.get<DashboardTableRow[]>('/dashboard/table', { params: { is_income: isIncomeDashboard } })).data,
-  });
   const { data: articlesCfo = [], isLoading: articlesCfoLoading } = useQuery({
     queryKey: ['dashboard-articles-cfo', mode, unitId],
     queryFn: async () => (await api.get<ArticleCfoBreakdown[]>('/dashboard/articles-cfo', {
@@ -342,7 +338,7 @@ export default function DashboardPage({ user }: { user: User }) {
         </TextField>}
       </Card>
 
-      {view === 'table' ? (tableLoading ? <Skeleton variant="rounded" height={420} sx={{ borderRadius: 4 }} /> : <DashboardTableView rows={tableRows} />) : <>
+      {view === 'table' ? <ApprovalRegister user={user} /> : <>
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={compactMoney(data.totals.planned)} exactValue={money(data.totals.planned)} hint="Запланированная объединениями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>

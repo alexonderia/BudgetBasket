@@ -7,7 +7,7 @@ export function canAccessApproval(role: Role): boolean {
 }
 
 export function defaultRouteForRole(role: Role): string {
-  if (role === 'employee') return '/requests';
+  if (role === 'employee') return '/register';
   if (role === 'economist' || role === 'approver' || role === 'zgd') return '/approval';
   return '/';
 }

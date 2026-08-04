@@ -12,6 +12,53 @@ from app.seed import (
 from tests.test_api import auth, make_client
 
 
+def test_cfo_responsible_can_view_its_read_only_route(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+
+    response = client.get("/approval-route", headers=employee)
+
+    assert response.status_code == 200
+    assert {step["id"] for step in response.json()} >= {
+        LEAF_STEP_ID,
+        ECONOMIST_STEP_ID,
+        APPROVER_STEP_ID,
+        ROOT_STEP_ID,
+    }
+    for login, expected_step_id in (
+        ("economist", ECONOMIST_STEP_ID),
+        ("approver", APPROVER_STEP_ID),
+        ("zgd", ROOT_STEP_ID),
+    ):
+        branch = client.get("/approval-route", headers=auth(client, login, login))
+        assert branch.status_code == 200
+        assert expected_step_id in {step["id"] for step in branch.json()}
+
+
+def test_module_responsible_sees_only_its_route_branch(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    module_user = client.post(
+        "/users",
+        json={"login": "module-branch-user", "password": "password", "role": "employee"},
+        headers=admin,
+    ).json()
+    assert client.post(
+        f"/units/{MODULE_ALPHA_ID}/responsible",
+        json={"user_id": module_user["id"]},
+        headers=admin,
+    ).status_code == 200
+
+    branch = client.get(
+        "/approval-route",
+        headers=auth(client, "module-branch-user", "password"),
+    )
+
+    assert branch.status_code == 200
+    modules = [module["id"] for step in branch.json() for module in step.get("modules", [])]
+    assert modules == [MODULE_ALPHA_ID]
+
+
 def create_submitted_request(client, employee, *, item_count=1):
     request = client.post(
         "/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee
@@ -230,6 +277,29 @@ def test_full_position_route_freezes_and_zgd_fixes(tmp_path):
     assert frozen.status_code == 200
     assert frozen.json()["frozen"] is True
     assert frozen.json()["current_step_id"] == APPROVER_STEP_ID
+    approval_register = client.get("/approval-register", headers=approver)
+    assert approval_register.status_code == 200
+    assert approval_register.json()["aggregates"]["actionable_positions"] >= 1
+    cfo_register_rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID},
+        headers=employee,
+    )
+    assert cfo_register_rows.status_code == 200
+    assert any(
+        item["approval_stage"] == "Согласование проверяющим"
+        for item in cfo_register_rows.json()["items"]
+    )
+    assert client.post(
+        f"/cfo-positions/{position_id}/comments",
+        json={"comment": "Комментарий согласующего к статье"},
+        headers=approver,
+    ).status_code == 200
+    assert client.post(
+        f"/cfo-positions/{position_id}/comments",
+        json={"comment": "Не должен быть добавлен"},
+        headers=employee,
+    ).status_code == 403
 
     approved = client.post(
         f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
@@ -238,6 +308,16 @@ def test_full_position_route_freezes_and_zgd_fixes(tmp_path):
     )
     assert approved.status_code == 200
     assert approved.json()["current_step_id"] == ROOT_STEP_ID
+    assert client.post(
+        f"/cfo-positions/{position_id}/comments",
+        json={"comment": "Комментарий ЗГД к статье"},
+        headers=zgd,
+    ).status_code == 200
+    comments = client.get(f"/cfo-positions/{position_id}/comments", headers=zgd).json()
+    assert {item["comment"] for item in comments} == {
+        "Комментарий согласующего к статье", "Комментарий ЗГД к статье",
+    }
+    assert {item["user"]["role"] for item in comments} == {"approver", "zgd"}
 
     fixed = client.post(
         f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
@@ -448,6 +528,11 @@ def test_cfo_responsible_cannot_review_another_cfo(tmp_path):
         json={"login": "other-employee", "password": "password", "role": "employee"},
         headers=admin,
     ).json()
+    other_cfo_user = client.post(
+        "/users",
+        json={"login": "other-cfo-employee", "password": "password", "role": "employee"},
+        headers=admin,
+    ).json()
     other_economist = client.post(
         "/users",
         json={"login": "other-economist", "password": "password", "role": "economist"},
@@ -476,7 +561,7 @@ def test_cfo_responsible_cannot_review_another_cfo(tmp_path):
     )
     client.post(
         f"/units/{cfo['id']}/responsible",
-        json={"user_id": other_user["id"]},
+        json={"user_id": other_cfo_user["id"]},
         headers=admin,
     )
     client.post(
@@ -521,5 +606,5 @@ def test_cfo_responsible_cannot_review_another_cfo(tmp_path):
     assert client.post(
         f"/items/{item['id']}/cfo-decision",
         json={"decision": "approved", "comment": ""},
-        headers=other_employee,
+        headers=auth(client, "other-cfo-employee", "password"),
     ).status_code == 200

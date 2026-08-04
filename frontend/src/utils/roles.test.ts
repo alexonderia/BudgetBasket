@@ -11,7 +11,7 @@ describe('role guards', () => {
   });
 
   it('opens business roles on their primary workspace', () => {
-    expect(defaultRouteForRole('employee')).toBe('/requests');
+    expect(defaultRouteForRole('employee')).toBe('/register');
     expect(defaultRouteForRole('approver')).toBe('/approval');
     expect(defaultRouteForRole('zgd')).toBe('/approval');
     expect(defaultRouteForRole('economist')).toBe('/approval');

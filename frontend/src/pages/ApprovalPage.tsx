@@ -403,6 +403,7 @@ function ApprovalGraph({
   onCfoResponsibleChange,
   onCfoEconomistChange,
   canEdit = true,
+  viewerUserId,
 }: {
   steps: ApprovalStep[];
   selectedStepId: string;
@@ -418,6 +419,7 @@ function ApprovalGraph({
   onCfoResponsibleChange: (cfoId: string, employeeId: string) => void;
   onCfoEconomistChange: (cfoIds: string[], economistId: string) => void;
   canEdit?: boolean;
+  viewerUserId?: string;
 }) {
   const [draggedChildId, setDraggedChildId] = useState<string | null>(null);
   const [draggedCfoKey, setDraggedCfoKey] = useState<string | null>(null);
@@ -949,21 +951,27 @@ function ApprovalGraph({
             </Box>
           </Box>
         ))}
-        {layout.moduleCards.map((card) => (
+        {layout.moduleCards.map((card) => {
+          const isViewerModuleResponsible = card.module.responsible?.id === viewerUserId;
+          return (
           <Card
             key={`module-card:${card.module.id}:${card.stepId}`}
-            className="approval-graph-card is-leaf"
+            className={`approval-graph-card is-leaf ${isViewerModuleResponsible ? 'is-viewer' : ''}`}
             sx={{
               left: card.x,
               top: card.y,
               width: layout.moduleCardWidth,
               height: layout.moduleCardHeight,
-              bgcolor: '#DBEAFE',
-              borderColor: '#60A5FA',
+              bgcolor: isViewerModuleResponsible ? '#BFDBFE' : '#DBEAFE',
+              borderColor: isViewerModuleResponsible ? '#2563EB' : '#60A5FA',
+              boxShadow: isViewerModuleResponsible ? '0 0 0 3px rgba(37, 99, 235, 0.2), 0 8px 20px rgba(37, 99, 235, 0.16)' : undefined,
             }}
           >
             <Stack spacing={0.35} sx={{ p: 1.1, height: '100%' }}>
-              <Typography variant="subtitle2" fontWeight={800} noWrap>{card.module.name}</Typography>
+              <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="space-between">
+                <Typography variant="subtitle2" fontWeight={800} noWrap>{card.module.name}</Typography>
+                {isViewerModuleResponsible && <Chip label="Вы" size="small" color="primary" sx={{ height: 20, fontWeight: 700 }} />}
+              </Stack>
               <Typography variant="caption" color="text.secondary" noWrap>{personName(card.module.responsible)}</Typography>
               <Stack direction="row" spacing={0.35} flexWrap="wrap" useFlexGap sx={{ mt: 'auto' }}>
                 {card.module.request_statuses.map(({ status, count }) => (
@@ -978,20 +986,22 @@ function ApprovalGraph({
               </Stack>
             </Stack>
           </Card>
-        ))}
+          );
+        })}
         {steps.map((step) => {
           const position = layout.positions.get(step.id)!;
           const isLeaf = Boolean(step.unit_id);
           const isEconomistStep = Boolean(step.is_economist_step);
           const isFinal = !isLeaf && step.user?.role === 'zgd';
           const isSelected = step.id === selectedStepId;
+          const isViewerStep = step.responsible?.id === viewerUserId || step.user?.id === viewerUserId;
           const contact = step.user?.profile;
           const isContactOpen = openContactStepId === step.id;
           const statusTone = graphStepStatusTones[step.status];
           return (
             <Card
               key={step.id}
-              className={`approval-graph-card ${isLeaf ? 'is-leaf' : 'is-review'} is-status-${step.status} ${isFinal ? 'is-final' : ''} ${isSelected ? 'is-selected' : ''} ${canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id ? 'is-connect-target' : ''}`}
+              className={`approval-graph-card ${isLeaf ? 'is-leaf' : 'is-review'} is-status-${step.status} ${isFinal ? 'is-final' : ''} ${isSelected ? 'is-selected' : ''} ${isViewerStep ? 'is-viewer' : ''} ${canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id ? 'is-connect-target' : ''}`}
               onClick={() => {
                 if (canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id) {
                   onConnect(pendingConnectionChildId, step.id);
@@ -1009,7 +1019,15 @@ function ApprovalGraph({
                 if (canEdit && draggedChildId && draggedChildId !== step.id && !isLeaf) onConnect(draggedChildId, step.id);
                 setDraggedChildId(null);
               }}
-              sx={{ left: position.x, top: position.y, width: layout.nodeWidth, height: layout.nodeHeights.get(step.id), overflow: 'visible' }}
+              sx={{
+                left: position.x,
+                top: position.y,
+                width: layout.nodeWidth,
+                height: layout.nodeHeights.get(step.id),
+                overflow: 'visible',
+                borderColor: isViewerStep ? '#2563EB' : undefined,
+                boxShadow: isViewerStep ? '0 0 0 3px rgba(37, 99, 235, 0.2), 0 8px 20px rgba(37, 99, 235, 0.16)' : undefined,
+              }}
             >
               <Stack spacing={0.75} sx={{ p: 1.5, height: '100%' }}>
                 <Stack spacing={0.5} alignItems="flex-start">
@@ -1017,6 +1035,7 @@ function ApprovalGraph({
                     <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.3 }}>
                       {isLeaf ? moduleName(step) : isEconomistStep ? 'Экономист' : step.user?.role === 'zgd' ? 'ЗГД' : 'Проверяющий'}
                     </Typography>
+                    {isViewerStep && <Chip label="Вы" size="small" color="primary" sx={{ height: 20, fontWeight: 700, flexShrink: 0 }} />}
                     {canEdit && onDeleteStep && canDeleteApprovalStep(step) && (
                       <Tooltip title="Удалить шаг">
                         <IconButton
@@ -2160,6 +2179,33 @@ function RouteGraphPage() {
   );
 }
 
+function ReadOnlyApprovalGraph({ steps, viewerUserId }: { steps: ApprovalStep[]; viewerUserId: string }) {
+  const [selectedStepId, setSelectedStepId] = useState('');
+  useEffect(() => {
+    if (!steps.some((step) => step.id === selectedStepId)) {
+      setSelectedStepId(steps[0]?.id || '');
+    }
+  }, [selectedStepId, steps]);
+  if (!steps.length) return null;
+  return <Paper className="org-chart-card" sx={{ p: 2, minHeight: 360 }}><ApprovalGraph
+    steps={steps}
+    selectedStepId={selectedStepId}
+    onSelect={setSelectedStepId}
+    onCreateStep={() => undefined}
+    onAssign={() => undefined}
+    onConnect={() => undefined}
+    onDisconnect={() => undefined}
+    onDeleteStep={() => undefined}
+    reviewers={[]}
+    employees={[]}
+    economists={[]}
+    onCfoResponsibleChange={() => undefined}
+    onCfoEconomistChange={() => undefined}
+    canEdit={false}
+    viewerUserId={viewerUserId}
+  /></Paper>;
+}
+
 function SimpleUserApprovalPage({ user }: { user: User }) {
   const { data: steps = [], isLoading } = useQuery({
     queryKey: ['my-approval-steps'],
@@ -2185,5 +2231,5 @@ function SimpleUserApprovalPage({ user }: { user: User }) {
 }
 
 export default function ApprovalPage({ user }: { user: User }) {
-  return user.role === 'admin' ? <AdminApprovalPage /> : <CfoPositionsPage user={user} />;
+  return user.role === 'admin' ? <AdminApprovalPage /> : <CfoPositionsPage user={user} renderRouteGraph={(steps) => <ReadOnlyApprovalGraph steps={steps} viewerUserId={user.id} />} />;
 }

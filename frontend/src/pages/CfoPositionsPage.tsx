@@ -4,7 +4,6 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -28,13 +27,15 @@ import {
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import axios from 'axios';
-import { useMemo, useState } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { CfoRequestReviewDialog } from '../components/CfoRequestReviewDialog';
 import type {
   ApprovalStep,
   BudgetItem,
   BudgetRequest,
+  CfoPositionComment,
   CfoPosition,
   ItemStatus,
   User,
@@ -139,145 +140,6 @@ function DecisionDialog({
   );
 }
 
-function IncomingRequestDialog({
-  request,
-  open,
-  onClose,
-}: {
-  request: BudgetRequest | null;
-  open: boolean;
-  onClose: () => void;
-}) {
-  const queryClient = useQueryClient();
-  const [targetIds, setTargetIds] = useState<string[]>([]);
-  const [decisionOpen, setDecisionOpen] = useState(false);
-  const { data: items = [], isLoading } = useQuery({
-    queryKey: ['cfo-request-items', request?.id],
-    queryFn: async () => (
-      await api.get<BudgetItem[]>(`/requests/${request!.id}/items`, {
-        params: { include_deleted: false },
-      })
-    ).data,
-    enabled: open && !!request,
-  });
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['cfo-request-items', request?.id] });
-    queryClient.invalidateQueries({ queryKey: ['cfo-incoming-requests'] });
-    queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
-  };
-  const decide = useMutation({
-    mutationFn: async ({ decision, comment, sumFact }: {
-      decision: ItemStatus;
-      comment: string;
-      sumFact?: number;
-    }) => {
-      if (targetIds.length === 1) {
-        return api.post(`/items/${targetIds[0]}/cfo-decision`, {
-          decision,
-          comment,
-          ...(sumFact !== undefined ? { sum_fact: sumFact } : {}),
-        });
-      }
-      return api.post('/items/cfo-decision/bulk', {
-        item_ids: targetIds,
-        decision,
-        comment,
-      });
-    },
-    onSuccess: () => {
-      setDecisionOpen(false);
-      setTargetIds([]);
-      invalidate();
-    },
-  });
-  const complete = useMutation({
-    mutationFn: () => api.post(`/requests/${request!.id}/complete-cfo-review`),
-    onSuccess: () => {
-      invalidate();
-      onClose();
-    },
-  });
-  const active = items.filter((item) => item.status !== 'deleted');
-  const pending = active.filter((item) => item.status === 'on_review').length;
-  return (
-    <>
-      <Dialog open={open} onClose={onClose} fullWidth maxWidth="lg">
-        <DialogTitle>
-          Проверка заявки {request?.id.slice(0, 8)} · {request?.budget_year}
-        </DialogTitle>
-        <DialogContent>
-          {(decide.error || complete.error) && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              {errorText(decide.error || complete.error)}
-            </Alert>
-          )}
-          {isLoading ? <CircularProgress /> : (
-            <TableContainer component={Paper} variant="outlined">
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell padding="checkbox" />
-                    <TableCell>Строка</TableCell>
-                    <TableCell align="right">План</TableCell>
-                    <TableCell align="right">Решение</TableCell>
-                    <TableCell>Статус</TableCell>
-                    <TableCell>Комментарий</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {active.map((item) => (
-                    <TableRow key={item.id}>
-                      <TableCell padding="checkbox">
-                        <Checkbox
-                          checked={targetIds.includes(item.id)}
-                          onChange={(_, checked) => setTargetIds((current) =>
-                            checked ? [...current, item.id] : current.filter((id) => id !== item.id)
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>{item.name}</TableCell>
-                      <TableCell align="right">{money(item.sum_plan)}</TableCell>
-                      <TableCell align="right">{money(item.sum_fact)}</TableCell>
-                      <TableCell><Chip size="small" label={itemStatus[item.status]} /></TableCell>
-                      <TableCell>{item.comment || '—'}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Typography variant="body2" color="text.secondary" sx={{ mr: 'auto' }}>
-            Без решения: {pending}
-          </Typography>
-          <Button onClick={onClose}>Закрыть</Button>
-          <Button
-            disabled={!targetIds.length}
-            onClick={() => setDecisionOpen(true)}
-          >
-            Решение по выбранным
-          </Button>
-          <Button
-            variant="contained"
-            disabled={!active.length || pending > 0 || complete.isPending}
-            onClick={() => complete.mutate()}
-          >
-            Завершить проверку
-          </Button>
-        </DialogActions>
-      </Dialog>
-      <DecisionDialog
-        open={decisionOpen}
-        title={`Решение по строкам: ${targetIds.length}`}
-        allowChanges={targetIds.length === 1}
-        onClose={() => setDecisionOpen(false)}
-        onSubmit={(decision, comment, sumFact) => decide.mutate({ decision, comment, sumFact })}
-      />
-    </>
-  );
-}
-
 function PositionDetails({
   position,
   user,
@@ -291,12 +153,25 @@ function PositionDetails({
 }) {
   const queryClient = useQueryClient();
   const [comment, setComment] = useState('');
+  const [positionComment, setPositionComment] = useState('');
   const [targetItem, setTargetItem] = useState<BudgetItem | null>(null);
   const currentStep = steps.find((step) => step.id === position?.current_step_id);
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
     queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
   };
+  const { data: positionComments = [] } = useQuery({
+    queryKey: ['cfo-position-comments', position?.id],
+    queryFn: async () => (await api.get<CfoPositionComment[]>(`/cfo-positions/${position!.id}/comments`)).data,
+    enabled: !!position,
+  });
+  const addPositionComment = useMutation({
+    mutationFn: () => api.post(`/cfo-positions/${position!.id}/comments`, { comment: positionComment.trim() }),
+    onSuccess: () => {
+      setPositionComment('');
+      queryClient.invalidateQueries({ queryKey: ['cfo-position-comments', position?.id] });
+    },
+  });
   const action = useMutation({
     mutationFn: async (kind: string) => {
       if (!position) return;
@@ -343,8 +218,8 @@ function PositionDetails({
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2}>
-            {(action.error || decide.error) && (
-              <Alert severity="error">{errorText(action.error || decide.error)}</Alert>
+            {(action.error || decide.error || addPositionComment.error) && (
+              <Alert severity="error">{errorText(action.error || decide.error || addPositionComment.error)}</Alert>
             )}
             <Stack direction="row" spacing={1} flexWrap="wrap">
               <Chip label={positionStatus[position.status]} />
@@ -392,6 +267,35 @@ function PositionDetails({
                 </TableBody>
               </Table>
             </TableContainer>
+            <Paper variant="outlined" sx={{ p: 1.5 }}>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>Комментарии к статье ЦФО</Typography>
+              {positionComments.length ? (
+                <Stack spacing={1} sx={{ mb: isReviewer ? 1.5 : 0 }}>
+                  {positionComments.map((entry) => {
+                    const profile = entry.user?.profile;
+                    const author = [profile?.last_name, profile?.name, profile?.second_name].filter(Boolean).join(' ') || entry.user?.login || 'Пользователь';
+                    return <Box key={entry.id} sx={{ borderLeft: 2, borderColor: 'divider', pl: 1.25 }}>
+                      <Typography variant="body2">{entry.comment}</Typography>
+                      <Typography variant="caption" color="text.secondary">{author} · {entry.created_at ? new Date(entry.created_at).toLocaleString('ru-RU') : '—'}</Typography>
+                    </Box>;
+                  })}
+                </Stack>
+              ) : <Typography variant="body2" color="text.secondary" sx={{ mb: isReviewer ? 1.5 : 0 }}>Комментариев пока нет.</Typography>}
+              {isReviewer && <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-end' }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Комментарий к статье ЦФО"
+                  value={positionComment}
+                  multiline
+                  minRows={2}
+                  onChange={(event) => setPositionComment(event.target.value)}
+                />
+                <Button variant="outlined" disabled={!positionComment.trim() || addPositionComment.isPending} onClick={() => addPositionComment.mutate()}>
+                  Добавить комментарий
+                </Button>
+              </Stack>}
+            </Paper>
             <TextField
               label="Комментарий к действию"
               value={comment}
@@ -457,7 +361,7 @@ function PositionDetails({
   );
 }
 
-export default function CfoPositionsPage({ user }: { user: User }) {
+export default function CfoPositionsPage({ user, renderRouteGraph }: { user: User; renderRouteGraph: (steps: ApprovalStep[]) => ReactNode }) {
   const queryClient = useQueryClient();
   const [request, setRequest] = useState<BudgetRequest | null>(null);
   const [position, setPosition] = useState<CfoPosition | null>(null);
@@ -471,6 +375,11 @@ export default function CfoPositionsPage({ user }: { user: User }) {
   const { data: positions = [], isLoading: positionsLoading } = useQuery({
     queryKey: ['cfo-positions'],
     queryFn: async () => (await api.get<CfoPosition[]>('/cfo-positions')).data,
+  });
+  const { data: routeSteps = [] } = useQuery({
+    queryKey: ['cfo-approval-route'],
+    queryFn: async () => (await api.get<ApprovalStep[]>('/approval-route')).data,
+    enabled: true,
   });
   const { data: steps = [] } = useQuery({
     queryKey: ['my-approval-steps'],
@@ -499,11 +408,13 @@ export default function CfoPositionsPage({ user }: { user: User }) {
           onClick={() => {
             queryClient.invalidateQueries({ queryKey: ['cfo-incoming-requests'] });
             queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
+            queryClient.invalidateQueries({ queryKey: ['cfo-approval-route'] });
           }}
         >
           Обновить
         </Button>
       </Stack>
+      {renderRouteGraph(routeSteps)}
       {user.role === 'employee' && (
         <Paper sx={{ p: 2 }}>
           <Typography variant="h6" gutterBottom>Входящие заявки ЦФО</Typography>
@@ -576,7 +487,7 @@ export default function CfoPositionsPage({ user }: { user: User }) {
           </TableContainer>
         )}
       </Paper>
-      <IncomingRequestDialog
+      <CfoRequestReviewDialog
         request={request}
         open={!!request}
         onClose={() => setRequest(null)}

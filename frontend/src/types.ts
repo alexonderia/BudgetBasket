@@ -96,6 +96,81 @@ export interface BudgetItem {
   month_plans: ItemMonthPlan[];
 }
 
+export type RegisterAggregateStatus = 'approved' | 'rejected' | 'partially_approved' | 'on_review' | 'in_progress' | 'no_data';
+
+export interface RegisterAggregates {
+  requested_sum: number;
+  approved_sum: number;
+  difference: number;
+  total_rows: number;
+  approved_rows: number;
+  rejected_rows: number;
+  pending_rows: number;
+  requests_count: number;
+  modules_count: number;
+  aggregate_status: RegisterAggregateStatus;
+  collecting_requests: number;
+  cfo_review_requests: number;
+  cfo_review_actionable_requests: number;
+  in_approval_positions: number;
+  actionable_positions: number;
+}
+
+export interface ApprovalRegisterGroup {
+  id: string;
+  type: 'cfo' | 'category' | 'article' | 'module';
+  name: string;
+  label: string;
+  module_id: string;
+  request_ids: string[];
+  aggregates: RegisterAggregates;
+  children: ApprovalRegisterGroup[];
+  can_load_rows: boolean;
+}
+
+export interface ApprovalRegisterResponse {
+  view: 'cfo' | 'category' | 'article' | 'module';
+  groups: ApprovalRegisterGroup[];
+  aggregates: RegisterAggregates;
+}
+
+export interface ApprovalRegisterRow {
+  id: string;
+  request_id: string;
+  request_status: RequestStatus;
+  budget_year: number;
+  module_id: string;
+  module_name: string;
+  cfo_id: string;
+  cfo_name: string;
+  category_id: string;
+  category_name: string;
+  article_id: string;
+  article_name: string;
+  kind: 'dds' | 'invest';
+  name: string;
+  justification: string;
+  comment: string;
+  files_count: number;
+  requested_sum: number;
+  approved_sum: number;
+  status: ItemStatus;
+  updated_at: string;
+  is_collecting: boolean;
+  is_cfo_review: boolean;
+  is_cfo_review_actionable: boolean;
+  position_id: string | null;
+  is_in_approval: boolean;
+  is_approval_actionable: boolean;
+  approval_stage: string | null;
+}
+
+export interface ApprovalRegisterRowsResponse {
+  items: ApprovalRegisterRow[];
+  group: { module_id: string; aggregates: RegisterAggregates };
+  pagination: { page: number; page_size: number; total_items: number; total_pages: number; has_next: boolean; has_previous: boolean };
+}
+
 export interface ItemMonthPlan {
   month: number;
   sum_plan: number | string;
@@ -159,6 +234,14 @@ export interface CfoPosition {
     module?: Unit | null;
     author?: User | null;
   }>;
+}
+
+export interface CfoPositionComment {
+  id: number;
+  created_at: string;
+  comment: string;
+  step_id: string | null;
+  user: User | null;
 }
 
 export interface StepRequest extends BudgetRequest {

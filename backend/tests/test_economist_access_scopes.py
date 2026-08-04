@@ -59,13 +59,19 @@ def test_economist_is_assigned_once_at_cfo_and_can_serve_its_positions(tmp_path)
         }
     ]
 
-    client.post(
-        f"/units/{MODULE_BETA_ID}/responsible",
-        json={"user_id": EMPLOYEE_ID},
+    module_user = client.post(
+        "/users",
+        json={"login": "beta-module-employee", "password": "password", "role": "employee"},
         headers=admin,
-    )
+    ).json()
+    module_employee = auth(client, "beta-module-employee", "password")
+    assert client.post(
+        f"/units/{MODULE_BETA_ID}/responsible",
+        json={"user_id": module_user["id"]},
+        headers=admin,
+    ).status_code == 200
     request = client.post(
-        "/requests", json={"unit_id": MODULE_BETA_ID}, headers=employee
+        "/requests", json={"unit_id": MODULE_BETA_ID}, headers=module_employee
     ).json()
     item = client.post(
         f"/requests/{request['id']}/items",
@@ -75,9 +81,9 @@ def test_economist_is_assigned_once_at_cfo_and_can_serve_its_positions(tmp_path)
             "sum_plan": 100,
             "justification": "",
         },
-        headers=employee,
+        headers=module_employee,
     ).json()
-    client.post(f"/requests/{request['id']}/submit", headers=employee)
+    client.post(f"/requests/{request['id']}/submit", headers=module_employee)
     client.post(
         f"/items/{item['id']}/cfo-decision",
         json={"decision": "approved", "comment": ""},
@@ -104,6 +110,11 @@ def test_economist_is_assigned_once_at_cfo_and_can_serve_its_positions(tmp_path)
 def test_employee_responsibles_are_allowed_on_cfo_and_module_only(tmp_path):
     client = make_client(tmp_path)
     admin = auth(client, "admin", "admin")
+    cfo_user = client.post(
+        "/users",
+        json={"login": "cfo-responsible", "password": "password", "role": "employee"},
+        headers=admin,
+    ).json()
     assert client.post(
         f"/units/{DEPARTMENT_ID}/responsible",
         json={"user_id": EMPLOYEE_ID},
@@ -111,11 +122,21 @@ def test_employee_responsibles_are_allowed_on_cfo_and_module_only(tmp_path):
     ).status_code == 400
     assert client.post(
         f"/units/{CFO_ID}/responsible",
-        json={"user_id": EMPLOYEE_ID},
+        json={"user_id": cfo_user["id"]},
         headers=admin,
     ).status_code == 200
     assert client.post(
         f"/units/{MODULE_BETA_ID}/responsible",
-        json={"user_id": EMPLOYEE_ID},
+        json={"user_id": cfo_user["id"]},
+        headers=admin,
+    ).status_code == 409
+    module_user = client.post(
+        "/users",
+        json={"login": "module-responsible", "password": "password", "role": "employee"},
+        headers=admin,
+    ).json()
+    assert client.post(
+        f"/units/{MODULE_BETA_ID}/responsible",
+        json={"user_id": module_user["id"]},
         headers=admin,
     ).status_code == 200

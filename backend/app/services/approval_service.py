@@ -518,6 +518,64 @@ class ApprovalService:
                 allowed.add(step["id"])
         return self._public_steps(self.repo, [row for row in steps if row["id"] in allowed])
 
+    def approval_route(self, user: dict) -> list[dict]:
+        """Return the connected, read-only approval branch relevant to the viewer."""
+        self.sync_automatic_steps(user)
+        all_steps = self._public_steps(self.repo, self.repo.load_all("steps"))
+        if user.get("role") == "admin":
+            return all_steps
+        if user.get("role") == "employee":
+            directly_responsible_cfo_ids = self.permissions.employee_cfo_ids(user["id"])
+            module_ids = self.permissions.employee_module_ids(user["id"])
+            cfo_ids = directly_responsible_cfo_ids | {
+                cfo_id
+                for module_id in module_ids
+                if (cfo_id := self.permissions.cfo_for_module(module_id))
+            }
+            relevant = {
+                step["id"]
+                for step in all_steps
+                if step.get("unit_id") in cfo_ids
+                or set(step.get("cfo_unit_ids") or []) & cfo_ids
+            }
+        elif user.get("role") == "economist":
+            cfo_ids = self.permissions.economist_cfo_ids(user["id"])
+            relevant = {
+                step["id"]
+                for step in all_steps
+                if step.get("unit_id") in cfo_ids
+                or set(step.get("cfo_unit_ids") or []) & cfo_ids
+            }
+        elif user.get("role") in {"approver", "zgd"}:
+            relevant = {step["id"] for step in all_steps if step.get("user_id") == user["id"]}
+        else:
+            raise HTTPException(status_code=403, detail="Нет доступа к маршруту согласования")
+        if not relevant:
+            return []
+        by_id = {step["id"]: step for step in all_steps}
+        pending = list(relevant)
+        while pending:
+            step = by_id.get(pending.pop())
+            if not step:
+                continue
+            for related_id in [*step.get("parent_step_ids", []), *step.get("child_step_ids", [])]:
+                if related_id not in relevant:
+                    relevant.add(related_id)
+                    pending.append(related_id)
+        result = [step for step in all_steps if step["id"] in relevant]
+        if user.get("role") == "employee" and not directly_responsible_cfo_ids:
+            result = [
+                {
+                    **step,
+                    "modules": [
+                        module for module in step.get("modules", [])
+                        if module["id"] in module_ids
+                    ],
+                }
+                for step in result
+            ]
+        return result
+
     def my_steps(self, user: dict) -> list[dict]:
         result = self.list_steps(user)
         if not result and user.get("role") not in {"admin", "economist", "approver", "zgd"}:
@@ -1263,6 +1321,47 @@ class ApprovalService:
             key=lambda row: str(row.get("created_at") or ""),
             reverse=True,
         )
+
+    def position_comments(self, user: dict, position_id: str) -> list[dict]:
+        position = get_required(self.repo, "cfo_positions", position_id)
+        self.permissions.require_view_position(user, position)
+        users = {row["id"]: row for row in self.repo.load_all("users")}
+        profiles = {row["user_id"]: row for row in self.repo.load_all("profiles")}
+        comments = []
+        for row in self.repo.load_all("cfo_position_logs"):
+            log = row.get("log") or {}
+            if row.get("cfo_position_id") != position_id or log.get("action") != "position_comment_added":
+                continue
+            author = users.get(row.get("user_id"))
+            comments.append({
+                "id": row["id"],
+                "created_at": row.get("created_at"),
+                "comment": log.get("comment") or "",
+                "step_id": row.get("step_id"),
+                "user": {
+                    **public_user(author),
+                    "profile": profiles.get(author["id"]),
+                } if author else None,
+            })
+        return sorted(comments, key=lambda row: str(row.get("created_at") or ""), reverse=True)
+
+    def add_position_comment(self, user: dict, position_id: str, comment: str) -> dict:
+        if user.get("role") not in {"approver", "zgd"}:
+            raise HTTPException(status_code=403, detail="Комментарий к статье ЦФО доступен согласующему и ЗГД")
+        with self.repo.transaction() as repo:
+            position = repo.lock_by_id("cfo_positions", position_id)
+            if not position:
+                raise HTTPException(status_code=404, detail="Позиция ЦФО не найдена")
+            self.permissions.require_view_position(user, position)
+            current_step_id = self._current_step_id(repo, position)
+            if not current_step_id:
+                raise HTTPException(status_code=409, detail="Позиция уже завершена")
+            self.permissions.require_step_assignee(user, get_required(repo, "steps", current_step_id))
+            logged = self._position_log(
+                repo, user, position, "position_comment_added", comment=comment.strip(),
+                current_step_id=current_step_id,
+            )
+        return {"id": logged["id"], "ok": True}
 
     def request_history(self, user: dict, request_id: str) -> list[dict]:
         request = get_required(self.repo, "requests", request_id)

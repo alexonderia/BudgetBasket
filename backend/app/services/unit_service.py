@@ -144,6 +144,18 @@ class UnitService:
             {"unit_id": unit_id, "user_id": user_id, "is_active": True},
         )
 
+    def _related_cfo_and_module_ids(self, unit_id: str) -> set[str]:
+        """Return the CFO and direct modules that must have different owners."""
+        units = {item["id"]: item for item in self.repo.load_all("units")}
+        level = self.unit_level(unit_id)
+        cfo_id = unit_id if level == 2 else units.get(unit_id, {}).get("parent_id")
+        if not cfo_id or self.unit_level(cfo_id) != 2:
+            return set()
+        return {
+            cfo_id,
+            *(item["id"] for item in units.values() if item.get("parent_id") == cfo_id),
+        }
+
     def set_responsible(self, user: dict, unit_id: str, employee_id: str) -> dict:
         require_role(user, "admin")
         level = self.unit_level(unit_id)
@@ -152,6 +164,17 @@ class UnitService:
         target = self.repo.get_by_id("users", employee_id)
         if not target or target.get("role") != "employee":
             raise HTTPException(status_code=400, detail="Ответственным может быть только сотрудник")
+        related_units = self._related_cfo_and_module_ids(unit_id) - {unit_id}
+        if any(
+            assignment.get("user_id") == employee_id
+            and assignment.get("unit_id") in related_units
+            and assignment.get("is_active")
+            for assignment in self.repo.load_all("units_responsibles")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Ответственный за ЦФО и его модули должен быть разным сотрудником",
+            )
         return self._set_assignment(unit_id, employee_id, "employee")
 
     def get_responsible(self, unit_id: str) -> dict | None:

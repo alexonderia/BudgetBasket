@@ -16,6 +16,7 @@ from app.models import (
     ChatReadPatch,
     BulkItemDecisionIn,
     CfoPositionActionIn,
+    CfoPositionCommentIn,
     CfoPositionReturnIn,
     ItemCreate,
     ItemDecisionIn,
@@ -63,6 +64,11 @@ def me(user: User):
 @router.get("/steps")
 def list_steps(request: Request, user: User):
     return request.app.state.approval_service.list_steps(user)
+
+
+@router.get("/approval-route")
+def cfo_route(request: Request, user: User):
+    return request.app.state.approval_service.approval_route(user)
 
 
 @router.post("/steps")
@@ -403,6 +409,51 @@ def dashboard_table(request: Request, user: User, unit_id: str | None = None, is
     return request.app.state.request_service.dashboard_table(user, unit_id, is_income=is_income)
 
 
+@router.get("/approval-register")
+def approval_register(
+    request: Request,
+    user: User,
+    view: str = "cfo",
+    budget_year: int | None = None,
+    cfo_id: str | None = None,
+    category_id: str | None = None,
+    article_id: str | None = None,
+    module_id: str | None = None,
+    status: str | None = None,
+    request_status: str | None = None,
+    search: str | None = None,
+):
+    return request.app.state.request_service.approval_register(
+        user, view, budget_year=budget_year, cfo_id=cfo_id,
+        category_id=category_id, article_id=article_id, module_id=module_id,
+        status=status, request_status=request_status, search=search,
+    )
+
+
+@router.get("/approval-register/rows")
+def approval_register_rows(
+    request: Request,
+    user: User,
+    module_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    budget_year: int | None = None,
+    cfo_id: str | None = None,
+    category_id: str | None = None,
+    article_id: str | None = None,
+    status: str | None = None,
+    request_status: str | None = None,
+    search: str | None = None,
+):
+    if page < 1:
+        raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
+    return request.app.state.request_service.approval_register_rows(
+        user, module_id, page, page_size, budget_year=budget_year, cfo_id=cfo_id,
+        category_id=category_id, article_id=article_id, status=status,
+        request_status=request_status, search=search,
+    )
+
+
 @router.get("/requests/export/closed")
 @router.get("/requests/export/fixed")
 def export_closed_requests(
@@ -638,6 +689,20 @@ def get_cfo_position(request: Request, position_id: str, user: User):
 @router.get("/cfo-positions/{position_id}/logs")
 def cfo_position_logs(request: Request, position_id: str, user: User):
     return request.app.state.approval_service.position_logs(user, position_id)
+
+
+@router.get("/cfo-positions/{position_id}/comments")
+def cfo_position_comments(request: Request, position_id: str, user: User):
+    return request.app.state.approval_service.position_comments(user, position_id)
+
+
+@router.post("/cfo-positions/{position_id}/comments")
+def add_cfo_position_comment(
+    request: Request, position_id: str, payload: CfoPositionCommentIn, user: User
+):
+    return request.app.state.approval_service.add_position_comment(
+        user, position_id, payload.comment
+    )
 
 
 @router.post("/cfo-positions/{position_id}/submit-to-economist")

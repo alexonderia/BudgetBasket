@@ -246,6 +246,10 @@ class CfoPositionActionIn(StrictModel):
     comment: str = ""
 
 
+class CfoPositionCommentIn(StrictModel):
+    comment: str = Field(min_length=1, max_length=4000)
+
+
 class CfoPositionReturnIn(StrictModel):
     target_step_id: str
     comment: str = Field(min_length=1)

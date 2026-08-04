@@ -5,6 +5,7 @@ import { FilePreviewDialog } from './components/FilePreviewDialog';
 import { Layout } from './components/Layout';
 import CatalogsPage from './pages/CatalogsPage';
 import ApprovalPage from './pages/ApprovalPage';
+import { ApprovalRegister } from './components/ApprovalRegister';
 import DashboardPage from './pages/DashboardPage';
 import LoginPage from './pages/LoginPage';
 import RequestDetailsPage from './pages/RequestDetailsPage';
@@ -88,9 +89,10 @@ export default function App() {
     <Routes>
       <Route path="/file-preview/:fileId" element={<FilePreviewRoute />} />
       <Route element={<Layout user={user} onLogout={logout} onUserChange={persistUser} />}>
-        <Route path="/" element={user.role === 'employee' ? <Navigate to="/requests" replace /> : <DashboardPage user={user} />} />
+        <Route path="/" element={user.role === 'employee' ? <Navigate to="/register" replace /> : <DashboardPage user={user} />} />
         <Route path="/income-dashboard" element={<Navigate to="/" replace />} />
         <Route path="/requests" element={<RequestsPage user={user} />} />
+        <Route path="/register" element={<ApprovalRegister user={user} />} />
         <Route path="/requests/:id" element={<RequestDetailsRoute user={user} />} />
         <Route path="/users" element={user.role === 'admin' ? <UsersPage /> : <Navigate to="/" replace />} />
         <Route path="/units" element={user.role === 'admin' ? <UnitsPage /> : <Navigate to="/" replace />} />
