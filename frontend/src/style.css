@@ -76,6 +76,46 @@
     justify-content: flex-end;
   }
 
+  .approval-register-filters .MuiInputBase-root,
+  .approval-register-footer .MuiFormControlLabel-root {
+    background: #fff;
+  }
+
+  .approval-register-page {
+    gap: 10px;
+  }
+
+  .app-main:has(.approval-register-page) {
+    padding: 16px 20px 24px;
+    gap: 10px;
+  }
+
+  .app-main:has(.approval-register-page) .page-chrome {
+    min-height: 30px;
+    margin-bottom: -2px;
+  }
+
+  .approval-register-chrome-actions .MuiButton-root {
+    height: 30px;
+    min-height: 30px;
+    min-width: 0;
+  }
+
+  .approval-register-page .approval-register-filters .MuiButton-root,
+  .approval-register-page .approval-register-filters .MuiIconButton-root {
+    height: 34px;
+    min-height: 34px;
+    min-width: 0;
+  }
+
+  .approval-register-table .MuiTableCell-root {
+    font-feature-settings: 'tnum' 1;
+  }
+
+  .approval-register-row--item .MuiCheckbox-root {
+    padding: 2px;
+  }
+
   .page-actions .MuiButton-root {
     height: 42px;
     min-height: 42px;

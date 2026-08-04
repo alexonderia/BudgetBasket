@@ -721,9 +721,11 @@ class RequestService:
         category_id: str | None = None,
         article_id: str | None = None,
         module_id: str | None = None,
+        request_id: str | None = None,
         status: str | None = None,
         request_status: str | None = None,
         search: str | None = None,
+        mine_only: bool = False,
     ) -> list[dict]:
         visible = self.permissions.visible_request_ids(user)
         requests = {item["id"]: item for item in self.repo.load_all("requests")}
@@ -783,6 +785,8 @@ class RequestService:
             request = requests.get(item.get("request_id"))
             if not request or (visible is not None and request["id"] not in visible):
                 continue
+            if mine_only and request_author_id(self.repo, request["id"]) != user.get("id"):
+                continue
             module = units.get(request.get("unit_id"), {})
             current_cfo_id = self.permissions.cfo_for_module(request["unit_id"])
             cfo = units.get(current_cfo_id, {})
@@ -838,6 +842,8 @@ class RequestService:
                 continue
             if module_id and entry["module_id"] != module_id:
                 continue
+            if request_id and entry["request_id"] != request_id:
+                continue
             if status and entry["status"] != status:
                 continue
             if request_status and entry["request_status"] != request_status:
@@ -848,6 +854,28 @@ class RequestService:
                 continue
             entries.append(entry)
         return entries
+
+    @staticmethod
+    def _sort_register_entries(entries: list[dict]) -> list[dict]:
+        return sorted(entries, key=lambda item: (item["updated_at"], item["id"]), reverse=True)
+
+    @staticmethod
+    def _register_pagination(total_items: int, page: int, page_size: int) -> dict:
+        total_pages = max(1, (total_items + page_size - 1) // page_size)
+        normalized_page = min(max(page, 1), total_pages)
+        return {
+            "page": normalized_page,
+            "page_size": page_size,
+            "total_items": total_items,
+            "total_pages": total_pages,
+            "has_next": normalized_page < total_pages,
+            "has_previous": normalized_page > 1,
+        }
+
+    @staticmethod
+    def _slice_register_page(entries: list[dict], page: int, page_size: int) -> list[dict]:
+        start = (page - 1) * page_size
+        return entries[start:start + page_size]
 
     @staticmethod
     def _register_aggregates(entries: list[dict]) -> dict:
@@ -868,6 +896,14 @@ class RequestService:
             aggregate_status = "in_progress"
         requested = sum(entry["requested_sum"] for entry in entries)
         approved_sum = sum(entry["approved_sum"] for entry in entries)
+        rejected_sum = sum(
+            entry["requested_sum"] for entry in entries
+            if entry["status"] == ItemStatus.rejected
+        )
+        pending_sum = sum(
+            entry["requested_sum"] for entry in entries
+            if entry["status"] not in {ItemStatus.approved, ItemStatus.approved_with_changes, ItemStatus.rejected}
+        )
         collecting_requests = {
             entry["request_id"] for entry in entries if entry.get("is_collecting")
         }
@@ -892,6 +928,8 @@ class RequestService:
         return {
             "requested_sum": requested,
             "approved_sum": approved_sum,
+            "rejected_sum": rejected_sum,
+            "pending_sum": pending_sum,
             "difference": approved_sum - requested,
             "total_rows": len(entries),
             "approved_rows": approved,
@@ -916,20 +954,22 @@ class RequestService:
         }
         if view not in levels_by_view:
             raise HTTPException(status_code=422, detail="Неизвестное представление реестра")
-        entries = self._register_entries(user, **filters)
+        entries = self._sort_register_entries(self._register_entries(user, **filters))
         labels = {"cfo": "ЦФО", "category": "Категория", "article": "Статья / инвестпроект", "module": "Модуль"}
         roots: dict[str, dict] = {}
         for entry in entries:
             branch = roots
             parent_key = ""
             for level in levels_by_view[view]:
-                value_id = entry[f"{level}_id"]
+                value_id = entry["request_id"] if level == "request" else entry[f"{level}_id"]
                 key = f"{parent_key}/{level}:{value_id}"
                 node = branch.setdefault(key, {
                     "id": key,
                     "type": level,
-                    "name": entry[f"{level}_name"],
+                    "name": f"Заявка №{entry['request_id'][:8]}" if level == "request" else entry[f"{level}_name"],
                     "module_id": entry["module_id"],
+                    "article_id": entry["article_id"],
+                    "category_id": entry["category_id"],
                     "request_ids": set(),
                     "entries": [],
                     "children": {},
@@ -945,7 +985,8 @@ class RequestService:
                 children = serialize(node["children"])
                 result.append({
                     "id": node["id"], "type": node["type"], "name": node["name"],
-                    "module_id": node["module_id"], "request_ids": sorted(node["request_ids"]),
+                    "module_id": node["module_id"], "article_id": node["article_id"],
+                    "category_id": node["category_id"], "request_ids": sorted(node["request_ids"]),
                     "aggregates": self._register_aggregates(node["entries"]),
                     "children": children,
                     "can_load_rows": not children,
@@ -955,23 +996,56 @@ class RequestService:
 
         return {"view": view, "groups": serialize(roots), "aggregates": self._register_aggregates(entries)}
 
-    def approval_register_rows(self, user: dict, module_id: str, page: int = 1, page_size: int = 50, **filters) -> dict:
+    def approval_register_group_item_ids(
+        self,
+        user: dict,
+        group_type: str,
+        group_id: str,
+        **filters,
+    ) -> list[str]:
+        field_by_group_type = {
+            "cfo": "cfo_id",
+            "article": "article_id",
+            "category": "category_id",
+            "module": "module_id",
+            "request": "request_id",
+        }
+        field = field_by_group_type.get(group_type)
+        if not field:
+            raise HTTPException(status_code=422, detail="Неизвестный уровень реестра")
+        item_ids = [
+            entry["id"]
+            for entry in self._register_entries(user, **filters)
+            if entry[field] == group_id and entry["is_cfo_review_actionable"]
+        ]
+        if not item_ids:
+            raise HTTPException(status_code=409, detail="В выбранной группе нет строк, доступных для решения")
+        return item_ids
+
+    def approval_register_rows(
+        self,
+        user: dict,
+        module_id: str,
+        page: int = 1,
+        page_size: int = 50,
+        request_id: str | None = None,
+        **filters,
+    ) -> dict:
+        if page < 1:
+            raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
         if page_size not in {25, 50, 100, 200}:
             raise HTTPException(status_code=422, detail="Допустимый размер страницы: 25, 50, 100 или 200")
-        entries = self._register_entries(user, module_id=module_id, **filters)
-        entries.sort(key=lambda item: (item["updated_at"], item["id"]), reverse=True)
+        entries = [
+            entry for entry in self._sort_register_entries(self._register_entries(user, **filters))
+            if entry["module_id"] == module_id and (request_id is None or entry["request_id"] == request_id)
+        ]
         total_items = len(entries)
-        total_pages = max(1, (total_items + page_size - 1) // page_size)
-        start = (page - 1) * page_size
-        items = entries[start:start + page_size]
+        pagination = self._register_pagination(total_items, page, page_size)
+        items = self._slice_register_page(entries, pagination["page"], page_size)
         return {
             "items": items,
             "group": {"module_id": module_id, "aggregates": self._register_aggregates(entries)},
-            "pagination": {
-                "page": page, "page_size": page_size, "total_items": total_items,
-                "total_pages": total_pages, "has_next": page < total_pages,
-                "has_previous": page > 1,
-            },
+            "pagination": pagination,
         }
 
     # Removed request-level workflow endpoints.

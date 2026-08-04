@@ -203,6 +203,8 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
     module = next(group for group in category["children"] if group["module_id"] == MODULE_ALPHA_ID)
     assert module["aggregates"]["requested_sum"] == sum(range(1, 27))
     assert module["aggregates"]["aggregate_status"] == "on_review"
+    assert module["children"] == []
+    assert module["can_load_rows"] is True
 
     first = client.get(
         "/approval-register/rows",
@@ -218,11 +220,49 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
     assert first.json()["pagination"]["total_items"] >= 26
     assert first.json()["pagination"]["total_pages"] >= 2
     assert not {item["id"] for item in first.json()["items"]} & {item["id"] for item in second.json()["items"]}
+    category_rows = client.get(
+        "/approval-register/rows",
+        params={
+            "module_id": MODULE_ALPHA_ID,
+            "article_id": module["article_id"],
+            "category_id": module["category_id"],
+            "page_size": 25,
+        },
+        headers=employee,
+    )
+    assert category_rows.status_code == 200
+    assert category_rows.json()["pagination"]["total_items"] == 26
     assert client.get(
         "/approval-register/rows",
         params={"module_id": MODULE_ALPHA_ID, "page_size": 30},
         headers=employee,
     ).status_code == 422
+
+
+def test_approval_register_can_approve_all_available_article_lines(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    for index in range(2):
+        assert client.post(
+            f"/requests/{request['id']}/items",
+            json={"dds_id": DDS_LICENSE_ID, "name": f"Article line {index}", "sum_plan": 100},
+            headers=employee,
+        ).status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    register = client.get("/approval-register", params={"view": "article"}, headers=employee).json()
+    article = next(group for group in register["groups"] if group["type"] == "article" and group["aggregates"]["total_rows"] >= 2)
+    article_id = article["id"].rsplit("article:", 1)[1]
+    result = client.post(
+        f"/approval-register/groups/article/{article_id}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=employee,
+    )
+    assert result.status_code == 200
+    assert len(result.json()) >= 2
+    assert all(item["status"] == "approved" for item in result.json())
+    assert article["aggregates"]["cfo_review_actionable_requests"] >= 1
 
 
 def test_dashboard_article_cfo_returns_selected_article_breakdown(tmp_path):

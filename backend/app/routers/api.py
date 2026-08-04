@@ -23,6 +23,7 @@ from app.models import (
     ItemPatch,
     LoginIn,
     ProfilePatch,
+    RegisterGroupDecisionIn,
     RequestCreate,
     RequestPatch,
     ResponsibleIn,
@@ -422,11 +423,13 @@ def approval_register(
     status: str | None = None,
     request_status: str | None = None,
     search: str | None = None,
+    mine_only: bool = False,
 ):
     return request.app.state.request_service.approval_register(
         user, view, budget_year=budget_year, cfo_id=cfo_id,
         category_id=category_id, article_id=article_id, module_id=module_id,
         status=status, request_status=request_status, search=search,
+        mine_only=mine_only,
     )
 
 
@@ -435,6 +438,7 @@ def approval_register_rows(
     request: Request,
     user: User,
     module_id: str,
+    request_id: str | None = None,
     page: int = 1,
     page_size: int = 50,
     budget_year: int | None = None,
@@ -444,13 +448,31 @@ def approval_register_rows(
     status: str | None = None,
     request_status: str | None = None,
     search: str | None = None,
+    mine_only: bool = False,
 ):
     if page < 1:
         raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
     return request.app.state.request_service.approval_register_rows(
-        user, module_id, page, page_size, budget_year=budget_year, cfo_id=cfo_id,
+        user, module_id, page, page_size, request_id=request_id, budget_year=budget_year, cfo_id=cfo_id,
         category_id=category_id, article_id=article_id, status=status,
-        request_status=request_status, search=search,
+        request_status=request_status, search=search, mine_only=mine_only,
+    )
+
+
+@router.post("/approval-register/groups/{group_type}/{group_id}/cfo-decision")
+def decide_approval_register_group_cfo(
+    request: Request,
+    group_type: str,
+    group_id: str,
+    payload: RegisterGroupDecisionIn,
+    user: User,
+):
+    item_ids = request.app.state.request_service.approval_register_group_item_ids(
+        user, group_type, group_id,
+    )
+    return request.app.state.budget_item_service.bulk_decide_cfo(
+        user,
+        {"item_ids": item_ids, "decision": payload.decision, "comment": payload.comment},
     )
 
 

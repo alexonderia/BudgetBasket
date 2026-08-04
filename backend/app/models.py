@@ -242,6 +242,11 @@ class BulkItemDecisionIn(StrictModel):
     comment: str = ""
 
 
+class RegisterGroupDecisionIn(StrictModel):
+    decision: ItemStatus
+    comment: str = ""
+
+
 class CfoPositionActionIn(StrictModel):
     comment: str = ""
 

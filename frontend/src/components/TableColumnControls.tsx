@@ -53,6 +53,7 @@ export function TableColumnTools<K extends string>({
   onResetFilters,
   onResetWidths,
   hasActiveFilters = false,
+  buttonLabel,
 }: {
   columns: ColumnMeta<K>[];
   visibility: Record<K, boolean>;
@@ -61,6 +62,7 @@ export function TableColumnTools<K extends string>({
   onResetFilters?: () => void;
   onResetWidths?: () => void;
   hasActiveFilters?: boolean;
+  buttonLabel?: string;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const visibleHideableCount = columns.filter((column) => column.hideable !== false && visibility[column.id]).length;
@@ -68,7 +70,18 @@ export function TableColumnTools<K extends string>({
 
   return (
     <>
-      <Tooltip title="Настройки таблицы">
+      {buttonLabel ? (
+        <Button
+          size="small"
+          variant="outlined"
+          color={hasActiveFilters || hasHiddenColumns ? 'primary' : 'inherit'}
+          startIcon={<ViewColumnOutlinedIcon fontSize="small" />}
+          endIcon={<ArrowDropDownIcon fontSize="small" />}
+          onClick={(event) => setAnchorEl(event.currentTarget)}
+        >
+          {buttonLabel}
+        </Button>
+      ) : <Tooltip title="Настройки таблицы">
         <IconButton
           size="small"
           color={hasActiveFilters || hasHiddenColumns ? 'primary' : 'default'}
@@ -85,7 +98,7 @@ export function TableColumnTools<K extends string>({
         >
           <SettingsOutlinedIcon fontSize="small" />
         </IconButton>
-      </Tooltip>
+      </Tooltip>}
       <Menu anchorEl={anchorEl} open={!!anchorEl} onClose={() => setAnchorEl(null)}>
         <MenuItem disabled>
           <ViewColumnOutlinedIcon fontSize="small" />

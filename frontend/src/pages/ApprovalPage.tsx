@@ -952,7 +952,7 @@ function ApprovalGraph({
           </Box>
         ))}
         {layout.moduleCards.map((card) => {
-          const isViewerModuleResponsible = card.module.responsible?.id === viewerUserId;
+          const isViewerModuleResponsible = Boolean(viewerUserId) && card.module.responsible?.id === viewerUserId;
           return (
           <Card
             key={`module-card:${card.module.id}:${card.stepId}`}
@@ -994,7 +994,7 @@ function ApprovalGraph({
           const isEconomistStep = Boolean(step.is_economist_step);
           const isFinal = !isLeaf && step.user?.role === 'zgd';
           const isSelected = step.id === selectedStepId;
-          const isViewerStep = step.responsible?.id === viewerUserId || step.user?.id === viewerUserId;
+          const isViewerStep = Boolean(viewerUserId) && (step.responsible?.id === viewerUserId || step.user?.id === viewerUserId);
           const contact = step.user?.profile;
           const isContactOpen = openContactStepId === step.id;
           const statusTone = graphStepStatusTones[step.status];

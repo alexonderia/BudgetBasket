@@ -101,6 +101,8 @@ export type RegisterAggregateStatus = 'approved' | 'rejected' | 'partially_appro
 export interface RegisterAggregates {
   requested_sum: number;
   approved_sum: number;
+  rejected_sum: number;
+  pending_sum: number;
   difference: number;
   total_rows: number;
   approved_rows: number;
@@ -122,6 +124,8 @@ export interface ApprovalRegisterGroup {
   name: string;
   label: string;
   module_id: string;
+  article_id: string;
+  category_id: string;
   request_ids: string[];
   aggregates: RegisterAggregates;
   children: ApprovalRegisterGroup[];
