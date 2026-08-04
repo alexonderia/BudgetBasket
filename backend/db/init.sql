@@ -270,6 +270,7 @@ CREATE FUNCTION validate_req_item_catalog_department() RETURNS trigger AS $$
 DECLARE
     request_department_id uuid;
     catalog_department_id uuid;
+    catalog_parent_id uuid;
 BEGIN
     WITH RECURSIVE ancestry AS (
         SELECT u.id, u.parent_id
@@ -283,9 +284,12 @@ BEGIN
     FROM ancestry
     WHERE parent_id IS NULL
     LIMIT 1;
-    SELECT unit_id INTO catalog_department_id FROM dds_catalog WHERE id = NEW.dds_id;
+    SELECT unit_id, parent_id INTO catalog_department_id, catalog_parent_id FROM dds_catalog WHERE id = NEW.dds_id;
     IF catalog_department_id IS NULL THEN
-        SELECT unit_id INTO catalog_department_id FROM invests_catalog WHERE id = NEW.invest_id;
+        SELECT unit_id, parent_id INTO catalog_department_id, catalog_parent_id FROM invests_catalog WHERE id = NEW.invest_id;
+    END IF;
+    IF NEW.status <> 'deleted' AND catalog_parent_id IS NULL THEN
+        RAISE EXCEPTION 'Request line must reference a catalog category';
     END IF;
     IF NEW.status <> 'deleted' AND catalog_department_id IS DISTINCT FROM request_department_id THEN
         RAISE EXCEPTION 'Request line catalog entry belongs to another department';

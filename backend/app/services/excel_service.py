@@ -147,6 +147,17 @@ class ExcelService:
         note["A4"] = "Одинаковая Категория в нескольких строках создаёт одну категорию и несколько подкатегорий."
         note["A5"] = "Подразделение должно совпадать с названием подразделения (корневого unit)."
         note["A6"] = "Активен: да/нет, true/false, 1/0."
+        ws.delete_rows(1, ws.max_row)
+        article_label = "Статья ДДС" if kind == "dds" else "Инвест-проект"
+        self._style_header(ws, [article_label, "Категория", "Объединение", "Активен"])
+        ws.append(["Операционные расходы", "Операционные расходы", "", "да"])
+        ws.append(["Операционные расходы", "Подписки", "", "да"])
+        note["A1"] = "Структура НСИ: статья / инвест-проект → категория."
+        note["A2"] = "Если категория не указана, будет создана одноимённая категория."
+        note["A3"] = "Повторяющаяся статья создаёт дополнительные категории под той же статьёй."
+        note["A4"] = None
+        note["A5"] = None
+        note["A6"] = None
         self._autosize(ws)
         buffer = BytesIO()
         wb.save(buffer)
@@ -187,6 +198,8 @@ class ExcelService:
     @staticmethod
     def _normalize_header(value: Any) -> str:
         text = str(value or "").strip().lower().replace(" ", "_")
+        if text in {"статья_ддс", "инвест-проект", "статья_/_инвест-проект"}:
+            return "name"
         mapping = {
             "название": "name",
             "наименование": "name",
@@ -210,15 +223,15 @@ class ExcelService:
         }
         return mapping.get(text, text)
 
-    def _ensure_category(
+    def _ensure_article(
         self,
         collection: str,
         *,
-        category_name: str,
+        article_name: str,
         unit_id: str | None,
         is_active: bool,
     ) -> dict:
-        name_key = category_name.strip()
+        name_key = article_name.strip()
         match = next(
             (
                 item
@@ -328,16 +341,15 @@ class ExcelService:
                     (
                         entry
                         for entry in catalog
-                        if item["category"]
-                        and not entry.get("parent_id")
+                if not entry.get("parent_id")
                         and entry.get("unit_id") == item["unit_id"]
-                        and entry.get("name", "").strip().casefold() == item["category"].casefold()
+                        and entry.get("name", "").strip().casefold() == item["name"].casefold()
                     ),
                     None,
                 )
                 existing = self._find_leaf(
                     collection,
-                    name=item["name"],
+                    name=item["category"] or item["name"],
                     parent_id=parent["id"] if parent else None,
                     unit_id=item["unit_id"],
                 )
@@ -357,17 +369,15 @@ class ExcelService:
         created = 0
         updated = 0
         for item in prepared:
-            parent = None
-            if item["category"]:
-                parent = self._ensure_category(
-                    collection,
-                    category_name=item["category"],
-                    unit_id=item["unit_id"],
-                    is_active=True,
-                )
+            parent = self._ensure_article(
+                collection,
+                article_name=item["name"],
+                unit_id=item["unit_id"],
+                is_active=True,
+            )
             payload = {
-                "name": item["name"],
-                "parent_id": parent["id"] if parent else None,
+                "name": item["category"] or item["name"],
+                "parent_id": parent["id"],
                 "unit_id": item["unit_id"],
                 "is_active": item["is_active"],
             }
@@ -467,8 +477,8 @@ class ExcelService:
                     "kind": kind,
                     "purpose": "Доход" if item.get("is_income", False) else "Расход",
                     "item_id": item["id"],
-                    "article": self._catalog_name(catalog, item.get(field)),
-                    "category": self._category_name(catalog, item.get(field)),
+                    "article": self._category_name(catalog, item.get(field)),
+                    "category": self._catalog_name(catalog, item.get(field)),
                     "sum_plan": float(item.get("sum_plan") or 0),
                     "sum_fact": item.get("sum_fact"),
                     "status_code": item.get("status"),

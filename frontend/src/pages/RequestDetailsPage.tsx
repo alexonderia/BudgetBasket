@@ -202,15 +202,9 @@ function leafItems(catalog: CatalogItem[]) {
 }
 
 function selectableItems(catalog: CatalogItem[]) {
-  const activeParentIds = new Set(
-    catalog
-      .filter((item) => item.is_active && item.parent_id)
-      .map((item) => item.parent_id),
-  );
   return catalog
     .filter((item) => {
-      if (!item.is_active) return false;
-      if (!item.parent_id) return !activeParentIds.has(item.id);
+      if (!item.parent_id || !item.is_active) return false;
       return catalog.find((parent) => parent.id === item.parent_id)?.is_active === true;
     })
     .sort((left, right) => {
@@ -329,7 +323,7 @@ const ItemArticleEditor = memo(function ItemArticleEditor({
       renderInput={(params) => (
         <TextField
           {...params}
-          label={articleField === 'dds_id' ? 'Статья ДДС' : 'Инвест-проект'}
+          label={articleField === 'dds_id' ? 'Статья ДДС и категория' : 'Инвест-проект и категория'}
           placeholder="Поиск по НСИ"
         />
       )}
@@ -811,7 +805,7 @@ function AddItemForm({
         renderInput={(params) => (
           <TextField
             {...params}
-            label={kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект'}
+            label={kind === 'dds' ? 'Статья ДДС и категория' : 'Инвест-проект и категория'}
             placeholder="Поиск по статьям НСИ"
           />
         )}
@@ -1135,7 +1129,7 @@ function ItemsTable({
             ) : (
               <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
                 <Stack spacing={0.25}>
-                  <span>{catalogEntry?.name || 'Статья НСИ недоступна'}</span>
+                  <span>{catalogEntry ? catalogLabel(catalogEntry, catalog) : 'Категория НСИ недоступна'}</span>
                 </Stack>
                 {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" />}
               </Stack>

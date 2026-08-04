@@ -578,8 +578,8 @@ def request_logs(request: Request, request_id: str, user: User):
         if not item:
             return None
         article_field = "dds_id" if item.get("dds_id") else "invest_id"
-        article = catalogs[article_field].get(item.get(article_field), {})
-        category = catalogs[article_field].get(article.get("parent_id"), {})
+        category = catalogs[article_field].get(item.get(article_field), {})
+        article = catalogs[article_field].get(category.get("parent_id"), {})
         return {
             "type": "request_line",
             "name": clean_request_item_name(item.get("name")) or changes.get("name", {}).get("to") or changes.get("name", {}).get("from"),

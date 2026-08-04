@@ -105,10 +105,13 @@ class BudgetItemService:
         article_id = payload.get(field)
         if not article_id or payload.get(forbidden):
             raise HTTPException(status_code=400, detail="Строка должна ссылаться на допустимую статью")
-        article = get_required(self.repo, self.catalog_collection(kind), article_id)
-        if not article.get("is_active", True):
+        category = get_required(self.repo, self.catalog_collection(kind), article_id)
+        article = get_required(self.repo, self.catalog_collection(kind), category["parent_id"]) if category.get("parent_id") else None
+        if not category.get("parent_id") or not article:
+            raise HTTPException(status_code=400, detail="Для строки заявки выберите категорию статьи или инвест-проекта")
+        if not category.get("is_active", True) or not article.get("is_active", True):
             raise HTTPException(status_code=400, detail="Нельзя использовать неактивную запись НСИ")
-        if article.get("unit_id") != self._department_id_for_request(request):
+        if category.get("unit_id") != self._department_id_for_request(request):
             raise HTTPException(status_code=400, detail="Запись НСИ относится к другому подразделению")
         return kind, article_id
 

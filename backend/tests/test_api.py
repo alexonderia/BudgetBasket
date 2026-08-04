@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.factory import create_app
-from app.seed import DDS_LICENSE_ID, MODULE_ALPHA_ID
+from app.seed import DDS_LICENSE_ID, MODULE_ALPHA_ID, DEPARTMENT_ID
 from tests.in_memory_repository import InMemoryRepository
 
 
@@ -43,6 +43,50 @@ def test_login_all_roles(tmp_path):
     assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).json()["user"]["role"] == "admin"
     assert client.post("/auth/login", json={"login": "economist", "password": "economist"}).json()["user"]["role"] == "economist"
     assert client.post("/auth/login", json={"login": "employee", "password": "employee"}).json()["user"]["role"] == "employee"
+
+
+def test_nsi_article_creates_default_category_and_request_uses_category(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    economist = auth(client, "economist", "economist")
+    employee = auth(client, "employee", "employee")
+
+    article = client.post(
+        "/catalog/dds",
+        json={"name": "Новая статья", "unit_id": DEPARTMENT_ID},
+        headers=admin,
+    )
+    assert article.status_code == 200
+    catalog = client.get("/catalog/dds", params={"unit_id": DEPARTMENT_ID}, headers=employee).json()
+    default_category = next(item for item in catalog if item["parent_id"] == article.json()["id"])
+    assert default_category["name"] == "Новая статья"
+
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    root_line = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": article.json()["id"], "name": "Недопустимо", "sum_plan": 1},
+        headers=employee,
+    )
+    assert root_line.status_code == 400
+    category_line = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": default_category["id"], "name": "Допустимо", "sum_plan": 1},
+        headers=employee,
+    )
+    assert category_line.status_code == 200
+
+    renamed = client.patch(
+        f"/catalog/dds/{default_category['id']}",
+        json={"name": "Переименованная категория"},
+        headers=economist,
+    )
+    assert renamed.status_code == 200
+    extra = client.post(
+        "/catalog/dds",
+        json={"parent_id": article.json()["id"], "name": "Ещё одна категория", "unit_id": DEPARTMENT_ID},
+        headers=economist,
+    )
+    assert extra.status_code == 200
 
 
 def test_employee_can_attach_and_download_zip_archive(tmp_path):

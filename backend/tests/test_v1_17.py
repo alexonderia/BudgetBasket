@@ -62,8 +62,8 @@ def test_request_lines_chat_logs_and_budget_mode(tmp_path):
     assert line_log["subject"] == {
         "type": "request_line",
         "name": line.json()["name"],
-        "article": "Лицензии и подписки",
-        "category": "Операционные расходы",
+        "article": "Операционные расходы",
+        "category": "Лицензии и подписки",
     }
 
 def test_unit_mode_cannot_change_while_active_lines_exist(tmp_path):

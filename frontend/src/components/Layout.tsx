@@ -279,6 +279,9 @@ export function Layout({
           { label: 'НСИ', to: '/catalogs', icon: <MenuBookIcon /> },
         ]
       : []),
+    ...(user.role === 'economist'
+      ? [{ label: 'НСИ', to: '/catalogs', icon: <MenuBookIcon /> }]
+      : []),
   ];
   const summaryItems = [
     { label: 'Дашборд', view: 'dashboard', icon: <SpaceDashboardIcon fontSize="small" /> },
