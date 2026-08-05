@@ -88,7 +88,10 @@ CREATE TABLE storage_objects (
 );
 CREATE TABLE files (
     id bigserial PRIMARY KEY, id_storage_object bigint NOT NULL REFERENCES storage_objects(id) ON DELETE RESTRICT,
-    original_name text NOT NULL
+    original_name text NOT NULL,
+    stored_name text,
+    is_sanitized boolean NOT NULL DEFAULT false,
+    sanitization_report jsonb
 );
 CREATE TABLE req_item_files (
     file_id bigint NOT NULL REFERENCES files(id) ON DELETE CASCADE,

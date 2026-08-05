@@ -7,6 +7,8 @@ import zipfile
 import zlib
 from dataclasses import replace
 
+from openpyxl import Workbook, load_workbook
+
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("FILE_GUARD_ANTIVIRUS_ENABLED", "false")
@@ -20,6 +22,7 @@ from file_guard.app.scanner import FileScanner
 
 client = TestClient(main_module.app)
 VALIDATE_URL = "/internal/files/validate"
+PROCESS_URL = "/internal/files/process"
 
 
 class ReadyAntivirus:
@@ -196,7 +199,9 @@ def test_office_zip_slip_and_macro_payloads_are_rejected(monkeypatch) -> None:
         files={"file": ("macro.xlsx", office_bytes(("xl/workbook.xml", "<xml />"), ("xl/vbaProject.bin", b"x")), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
     assert slip.json()["reasonCode"] == "INVALID_OFFICE_DOCUMENT"
-    assert macro.json()["reasonCode"] == "INVALID_OFFICE_DOCUMENT"
+    # Active spreadsheet parts are accepted by the preliminary bounded ZIP
+    # check and removed only by the /process sanitizer.
+    assert macro.json()["valid"] is True
 
 
 def test_office_zip_bomb_limit_is_enforced(monkeypatch) -> None:
@@ -239,3 +244,27 @@ def test_health_and_readiness(monkeypatch) -> None:
     patch_scanner(monkeypatch, antivirus=UnavailableAntivirus(), antivirus_enabled=True)
     assert client.get("/health").status_code == 200
     assert client.get("/ready").status_code == 503
+
+
+def test_process_rebuilds_excel_without_executable_formulas(monkeypatch) -> None:
+    patch_scanner(monkeypatch)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Данные"
+    sheet["A1"] = "значение"
+    sheet["B1"] = '=HYPERLINK("https://example.test", "Внешняя ссылка")'
+    sheet["A2"].hyperlink = "https://example.test"
+    source = io.BytesIO()
+    workbook.save(source)
+
+    response = client.post(PROCESS_URL, files={"file": ("budget.xlsx", source.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+
+    assert response.status_code == 200
+    assert response.headers["x-file-guard-action"] == "sanitized"
+    assert response.headers["x-file-guard-output-name"] == "budget.cleaned.xlsx"
+    assert response.content != source.getvalue()
+    sanitized = load_workbook(io.BytesIO(response.content), data_only=False)
+    assert sanitized["Данные"]["A1"].value == "значение"
+    assert sanitized["Данные"]["B1"].data_type != "f"
+    assert sanitized["Данные"]["B1"].value == "Внешняя ссылка"
+    assert sanitized["Данные"]["A2"].hyperlink is None

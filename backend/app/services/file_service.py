@@ -12,7 +12,7 @@ from fastapi import HTTPException, UploadFile
 from app.config import Settings
 from app.repositories.base import Repository
 from app.services.common import get_required
-from app.services.file_guard_client import FileGuardClient, require_valid_file
+from app.services.file_guard_client import FileGuardClient, require_processed_file
 from app.services.permission_service import PermissionService
 from app.storage import LocalObjectStorage, S3ObjectStorage
 
@@ -62,20 +62,28 @@ class FileService:
             raise HTTPException(status_code=400, detail="Файл превышает допустимый размер")
 
     async def _upload(self, upload: UploadFile, *, prefix: str = "request-items", images_only: bool = False) -> dict:
-        validation = await require_valid_file(self.file_guard, upload)
+        processed = await require_processed_file(self.file_guard, upload)
         original_name = upload.filename or "file"
-        content = await upload.read()
+        content = processed.content
         self._validate_content(content)
-        mime_type = self._allowed_mime(original_name, validation.detected_mime_type)
+        mime_type = self._allowed_mime(processed.output_name, processed.output_mime_type)
         if images_only and mime_type not in CHAT_IMAGE_MIME_TYPES:
             raise HTTPException(status_code=400, detail="В чат можно прикреплять только изображения PNG, JPEG, GIF или WebP")
         digest = hashlib.sha256(content).hexdigest()
+        if digest != processed.output_sha256:
+            # The caller may be a test double, but production must not trust a
+            # guard response without independently verifying its safe bytes.
+            raise HTTPException(status_code=503, detail="Проверка файлов вернула некорректный результат. Повторите попытку позже.")
         storage = next((entry for entry in self.repo.load_all("storage_objects") if entry["content_sha256"] == digest), None)
         if not storage:
-            key = self.storage_key(original_name, prefix=prefix)
+            key = self.storage_key(processed.output_name, prefix=prefix)
             self.object_storage.put_object(key, content, mime_type)
             storage = self.repo.create("storage_objects", {"storage_bucket": self.settings.s3_bucket if self.settings.use_s3 else "local", "storage_key": key, "content_sha256": digest, "mime_type": mime_type, "size_bytes": len(content)})
-        return self.repo.create("files", {"id_storage_object": storage["id"], "original_name": original_name})
+        return self.repo.create("files", {
+            "id_storage_object": storage["id"], "original_name": original_name,
+            "stored_name": processed.output_name, "is_sanitized": processed.sanitized,
+            "sanitization_report": {"removed": processed.removed_components, "warnings": processed.warnings} if processed.sanitized else None,
+        })
 
     def _item_and_request(self, item_id: str) -> tuple[dict, dict]:
         item = get_required(self.repo, "req_items", item_id)
@@ -95,19 +103,24 @@ class FileService:
                 entity_id=str(file["id"]),
                 after={"name": file["original_name"], "item_id": item["id"]},
             )
+            if file.get("is_sanitized"):
+                report = file.get("sanitization_report") or {}
+                self.request_service.log(
+                    user, request["id"], "file_sanitized", entity="file", entity_id=str(file["id"]),
+                    before={"name": file["original_name"]},
+                    after={"name": file.get("stored_name"), "removed": report.get("removed", [])},
+                )
         return file
 
     async def validate_chat_images(self, uploads: list[UploadFile]) -> None:
         """Reject invalid attachments before creating a chat message."""
         for upload in uploads:
-            validation = await require_valid_file(self.file_guard, upload)
-            original_name = upload.filename or "file"
-            content = await upload.read()
+            processed = await require_processed_file(self.file_guard, upload)
+            content = processed.content
             self._validate_content(content)
-            mime_type = self._allowed_mime(original_name, validation.detected_mime_type)
+            mime_type = self._allowed_mime(processed.output_name, processed.output_mime_type)
             if mime_type not in CHAT_IMAGE_MIME_TYPES:
                 raise HTTPException(status_code=400, detail="В чат можно прикреплять только изображения PNG, JPEG, GIF или WebP")
-            await upload.seek(0)
 
     async def upload_for_chat_message(self, user: dict, chat_id: str, message_id: str, upload: UploadFile) -> dict:
         message = get_required(self.repo, "chat_messages", message_id)

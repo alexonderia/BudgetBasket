@@ -184,6 +184,12 @@ export interface FileAttachment {
   id: number;
   id_storage_object: number;
   original_name: string;
+  stored_name?: string;
+  is_sanitized?: boolean;
+  sanitization_report?: {
+    removed?: string[];
+    warnings?: string[];
+  } | null;
 }
 
 export interface ApprovalStep {

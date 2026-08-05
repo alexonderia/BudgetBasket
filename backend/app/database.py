@@ -182,7 +182,9 @@ storage_objects = Table(
 files = Table(
     "files", metadata, Column("id", BigInteger, primary_key=True, autoincrement=True),
     Column("id_storage_object", BigInteger, ForeignKey("storage_objects.id", ondelete="RESTRICT"), nullable=False),
-    Column("original_name", Text, nullable=False), Index("idx_files_storage_object", "id_storage_object"),
+    Column("original_name", Text, nullable=False), Column("stored_name", Text, nullable=True),
+    Column("is_sanitized", Boolean, nullable=False, server_default=text("false")),
+    Column("sanitization_report", JSONB, nullable=True), Index("idx_files_storage_object", "id_storage_object"),
 )
 
 req_item_files = Table(

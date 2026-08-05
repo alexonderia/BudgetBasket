@@ -916,10 +916,10 @@ async def chat_notifications_websocket(websocket: WebSocket):
 @router.get("/files/{file_id}/download")
 def download_file(request: Request, file_id: str, user: User):
     body, file, _storage, size, content_type = request.app.state.file_service.download(user, file_id)
-    original_name = file["original_name"]
-    ascii_name = "".join(char if ord(char) < 128 else "_" for char in original_name).strip() or "download"
+    stored_name = file.get("stored_name") or file["original_name"]
+    ascii_name = "".join(char if ord(char) < 128 else "_" for char in stored_name).strip() or "download"
     headers = {
-        "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(original_name)}"
+        "Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(stored_name)}"
     }
     if size is not None:
         headers["Content-Length"] = str(size)
