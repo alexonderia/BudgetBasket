@@ -420,6 +420,7 @@ def approval_register(
     category_id: str | None = None,
     article_id: str | None = None,
     module_id: str | None = None,
+    request_id: str | None = None,
     status: str | None = None,
     request_status: str | None = None,
     search: str | None = None,
@@ -427,7 +428,7 @@ def approval_register(
 ):
     return request.app.state.request_service.approval_register(
         user, view, budget_year=budget_year, cfo_id=cfo_id,
-        category_id=category_id, article_id=article_id, module_id=module_id,
+        category_id=category_id, article_id=article_id, module_id=module_id, request_id=request_id,
         status=status, request_status=request_status, search=search,
         mine_only=mine_only,
     )
@@ -466,9 +467,10 @@ def decide_approval_register_group_cfo(
     group_id: str,
     payload: RegisterGroupDecisionIn,
     user: User,
+    request_id: str | None = None,
 ):
     item_ids = request.app.state.request_service.approval_register_group_item_ids(
-        user, group_type, group_id,
+        user, group_type, group_id, request_id=request_id,
     )
     return request.app.state.budget_item_service.bulk_decide_cfo(
         user,

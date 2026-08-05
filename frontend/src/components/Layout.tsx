@@ -264,7 +264,6 @@ export function Layout({
     (!!profileForm.phone && !PHONE_RE.test(profileForm.phone));
 
   const items = [
-    { label: 'Реестр', to: '/register', icon: <TableChartIcon /> },
     { label: 'Заявки', to: '/requests', icon: <FolderIcon /> },
     ...(canAccessApproval(user.role)
       ? [{

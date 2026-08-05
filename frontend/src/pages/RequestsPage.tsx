@@ -38,6 +38,7 @@ import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ApprovalRegister } from '../components/ApprovalRegister';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
@@ -129,7 +130,7 @@ const REQUEST_TABLE_COLUMN_MIN_WIDTHS: Record<RequestTableColumn, number> = {
   actions: 100,
 };
 
-export default function RequestsPage({ user }: { user: User }) {
+function RequestsListPage({ user }: { user: User }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useAppToast();
@@ -1168,4 +1169,24 @@ export default function RequestsPage({ user }: { user: User }) {
       />
     </Stack>
   );
+}
+
+export default function RequestsPage({ user }: { user: User }) {
+  const { data: units = [], isPending: unitsPending } = useQuery({
+    queryKey: ['units'],
+    queryFn: async () => (await api.get<Unit[]>('/units')).data,
+  });
+  const isCfoResponsible = user.role === 'employee'
+    && (user.unit_ids || []).some((unitId) => units.some((unit) => unit.id === unitId && unit.type === 'cfo'));
+  const isReviewer = isCfoResponsible || ['economist', 'approver', 'zgd'].includes(user.role);
+
+  if (user.role === 'employee' && unitsPending) {
+    return <Typography color="text.secondary">Загрузка заявок…</Typography>;
+  }
+
+  if (isReviewer) {
+    return <ApprovalRegister user={user} inRequestsPage />;
+  }
+
+  return <RequestsListPage user={user} />;
 }

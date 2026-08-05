@@ -14,10 +14,15 @@ import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import SendIcon from '@mui/icons-material/Send';
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import UndoIcon from '@mui/icons-material/Undo';
 import CheckIcon from '@mui/icons-material/Check';
+import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import CloseIcon from '@mui/icons-material/Close';
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import Alert from '@mui/material/Alert';
+import Checkbox from '@mui/material/Checkbox';
 import Accordion from '@mui/material/Accordion';
 import AccordionDetails from '@mui/material/AccordionDetails';
 import AccordionSummary from '@mui/material/AccordionSummary';
@@ -45,7 +50,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
@@ -56,9 +61,10 @@ import { ChatMessageImages } from '../components/ChatMessageImages';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
 import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
-import type { ApprovalStep, BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, Profile, StepLog, StepStatus, Unit, User } from '../types';
+import type { ApprovalRegisterRowsResponse, ApprovalStep, BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, Profile, StepLog, StepStatus, Unit, User } from '../types';
 import { CLOSED_REQUEST_STATUSES } from '../types';
 import { downloadBlob } from '../utils/download';
+import { AGGREGATE_DISPLAY_LABELS } from '../components/approval-register/registryConfig';
 import { itemStatusLabels, money, requestStatusLabels, stepStatusLabels } from '../utils/labels';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { normalizePositiveAmount } from '../utils/validation';
@@ -68,7 +74,8 @@ const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx,.zip';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const UPLOAD_EXTENSIONS = new Set(UPLOAD_ACCEPT.split(','));
 
-type ItemTableColumn = 'article' | 'name' | 'justification' | 'plan' | 'status' | 'approved' | 'difference' | 'comment' | 'files' | 'actions';
+type ItemTableColumn = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'status' | 'justification' | 'comment' | 'files' | 'actions';
+type BulkItemDecision = 'approved' | 'rejected';
 type RequestDeletePreviewColumn = 'kind' | 'name' | 'sum';
 type RequestDeletePreviewRow = {
   kind: string;
@@ -92,31 +99,106 @@ type RequestApprovalRouteStep = {
   logs: StepLog[];
 };
 
+type RequestItemCategoryGroup = {
+  id: string;
+  name: string;
+  items: BudgetItem[];
+};
+
+type RequestItemArticleGroup = {
+  id: string;
+  name: string;
+  items: BudgetItem[];
+  categories: RequestItemCategoryGroup[];
+};
+
+type ArticleApprovalTarget = {
+  articleId: string;
+  name: string;
+  items: BudgetItem[];
+};
+
+type RequestItemTableRow =
+  | { type: 'group'; groupId: string; label: string; items: BudgetItem[]; level: 'article' | 'category'; canApprove: boolean }
+  | { type: 'item'; item: BudgetItem };
+
 const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
-  article: 260,
-  name: 220,
-  justification: 240,
-  plan: 120,
-  status: 150,
-  approved: 120,
-  difference: 180,
+  select: 40,
+  structure: 320,
+  requested: 118,
+  approved: 126,
+  rejected: 118,
+  status: 148,
+  justification: 200,
   comment: 180,
-  files: 230,
+  files: 88,
   actions: 92,
 };
 
 const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
-  article: 180,
-  name: 160,
-  justification: 180,
-  plan: 100,
-  status: 120,
+  select: 40,
+  structure: 220,
+  requested: 100,
   approved: 100,
-  difference: 150,
+  rejected: 100,
+  status: 120,
+  justification: 160,
   comment: 130,
-  files: 160,
+  files: 72,
   actions: 72,
 };
+
+function itemRequestedAmount(item: BudgetItem) {
+  return Number(item.sum_plan || 0);
+}
+
+function itemApprovedAmount(item: BudgetItem) {
+  if (item.status === 'approved' || item.status === 'approved_with_changes') return Number(item.sum_fact || 0);
+  return 0;
+}
+
+function itemRejectedAmount(item: BudgetItem) {
+  if (item.status === 'rejected') return Number(item.sum_plan || 0);
+  if (item.status === 'approved_with_changes') return Math.max(Number(item.sum_plan || 0) - Number(item.sum_fact || 0), 0);
+  return 0;
+}
+
+function itemPendingAmount(item: BudgetItem) {
+  if (item.status === 'on_review') return Number(item.sum_plan || 0);
+  return 0;
+}
+
+function tableMoney(value: number | null | undefined) {
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Math.abs(Number(value) || 0));
+}
+
+function rejectedMoney(value: number) {
+  return tableMoney(value);
+}
+
+function groupFinancialTotals(groupItems: BudgetItem[]) {
+  const activeItems = groupItems.filter((item) => item.status !== 'deleted');
+  const approvedItems = activeItems.filter((item) => item.status === 'approved' || item.status === 'approved_with_changes');
+  const rejectedItems = activeItems.filter((item) => item.status === 'rejected');
+  return {
+    requested: activeItems.reduce((sum, item) => sum + itemRequestedAmount(item), 0),
+    approved: activeItems.reduce((sum, item) => sum + itemApprovedAmount(item), 0),
+    rejected: activeItems.reduce((sum, item) => sum + itemRejectedAmount(item), 0),
+    pending: activeItems.reduce((sum, item) => sum + itemPendingAmount(item), 0),
+    total: activeItems.length,
+    pendingCount: activeItems.length - approvedItems.length - rejectedItems.length,
+    rejectedCount: rejectedItems.length,
+  };
+}
+
+function groupAggregateStatus(groupItems: BudgetItem[]) {
+  const totals = groupFinancialTotals(groupItems);
+  if (!totals.total) return 'no_data' as const;
+  if (totals.pendingCount === 0 && totals.rejectedCount === 0) return 'approved' as const;
+  if (totals.pendingCount === 0 && totals.rejectedCount === totals.total) return 'rejected' as const;
+  if (totals.pendingCount === totals.total) return 'on_review' as const;
+  return 'in_progress' as const;
+}
 
 const ITEM_TABLE_COLUMNS = Object.keys(DEFAULT_ITEM_TABLE_COLUMN_WIDTHS) as ItemTableColumn[];
 const MONTH_NAMES = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
@@ -283,54 +365,7 @@ type RequestLog = {
   };
 };
 
-type CatalogOption = CatalogItem & { label: string };
 type DraftChangeHandler = (itemId: string, patch: Partial<BudgetItem>) => void;
-
-const ItemArticleEditor = memo(function ItemArticleEditor({
-  articleField,
-  catalogById,
-  itemId,
-  options,
-  selectableIds,
-  value,
-  onDraftChange,
-}: {
-  articleField: 'dds_id' | 'invest_id';
-  catalogById: Map<string, CatalogOption>;
-  itemId: string;
-  options: CatalogOption[];
-  selectableIds: Set<string>;
-  value: string | null | undefined;
-  onDraftChange: DraftChangeHandler;
-}) {
-  const selected = value ? catalogById.get(value) || null : null;
-  const optionsWithSelected = useMemo(
-    () => selected && !selectableIds.has(selected.id) ? [selected, ...options] : options,
-    [options, selectableIds, selected],
-  );
-
-  return (
-    <Autocomplete
-      size="small"
-      options={optionsWithSelected}
-      value={selected}
-      onChange={(_, next) => {
-        if (next && selectableIds.has(next.id)) onDraftChange(itemId, { [articleField]: next.id });
-      }}
-      isOptionEqualToValue={(option, selectedOption) => option.id === selectedOption.id}
-      getOptionLabel={(option) => option.label}
-      getOptionDisabled={(option) => !selectableIds.has(option.id)}
-      renderInput={(params) => (
-        <TextField
-          {...params}
-          label={articleField === 'dds_id' ? 'Статья ДДС и категория' : 'Инвест-проект и категория'}
-          placeholder="Поиск по НСИ"
-        />
-      )}
-      sx={{ width: '100%', minWidth: 0 }}
-    />
-  );
-});
 
 const ItemTextEditor = memo(function ItemTextEditor({
   field,
@@ -355,10 +390,97 @@ const ItemTextEditor = memo(function ItemTextEditor({
       minRows={multiline ? 2 : undefined}
       value={value}
       onChange={(event) => onDraftChange(itemId, { [field]: event.target.value })}
-      sx={{ width: '100%', minWidth: 0 }}
+      sx={{
+        width: '100%',
+        minWidth: 0,
+        '& .MuiOutlinedInput-root': {
+          borderRadius: 1,
+          bgcolor: 'common.white',
+          fontSize: 13,
+          '& fieldset': { borderColor: 'divider' },
+          '&:hover fieldset': { borderColor: 'text.secondary' },
+          '&.Mui-focused fieldset': { borderColor: 'primary.main', borderWidth: 1 },
+        },
+        '& .MuiInputBase-input': { py: multiline ? 0.6 : 0.75, px: 1 },
+      }}
     />
   );
 });
+
+function RedistributionDialog({
+  item,
+  kind,
+  catalog,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  item: BudgetItem | null;
+  kind: 'dds' | 'invest';
+  catalog: CatalogItem[];
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: (item: BudgetItem, catalogId: string) => void;
+}) {
+  const selectableOptions = useMemo(() => selectableItems(catalog), [catalog]);
+  const sourceId = item ? (kind === 'dds' ? item.dds_id : item.invest_id) || null : null;
+  const [destinationId, setDestinationId] = useState<string | null>(sourceId);
+  const source = catalog.find((entry) => entry.id === sourceId) || null;
+  const destination = catalog.find((entry) => entry.id === destinationId) || null;
+  const options = useMemo(
+    () => source && !selectableOptions.some((entry) => entry.id === source.id) ? [source, ...selectableOptions] : selectableOptions,
+    [selectableOptions, source],
+  );
+
+  useEffect(() => {
+    setDestinationId(sourceId);
+  }, [item?.id, sourceId]);
+
+  return (
+    <Dialog open={!!item} onClose={pending ? undefined : onClose} fullWidth maxWidth="sm">
+      <DialogTitle>Перераспределить строку</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ pt: 0.75 }}>
+          <Typography variant="body2" color="text.secondary">
+            Выберите новую статью и категорию для строки «{item?.name || 'Без наименования'}». Сумма, обоснование и файлы сохранятся.
+          </Typography>
+          <TextField
+            size="small"
+            label="Текущая статья и категория"
+            value={source ? catalogLabel(source, catalog) : 'Не указана'}
+            disabled
+            fullWidth
+          />
+          <Autocomplete
+            autoHighlight
+            options={options}
+            value={destination}
+            onChange={(_, value) => setDestinationId(value?.id || null)}
+            isOptionEqualToValue={(option, value) => option.id === value.id}
+            getOptionLabel={(option) => catalogLabel(option, catalog)}
+            groupBy={(option) => catalog.find((entry) => entry.id === option.parent_id)?.name || 'Без статьи'}
+            renderInput={(params) => (
+              <TextField {...params} size="small" label="Новая статья и категория" placeholder="Поиск по НСИ" />
+            )}
+            disabled={pending}
+            fullWidth
+          />
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={pending}>Отмена</Button>
+        <Button
+          variant="contained"
+          startIcon={<SwapHorizIcon />}
+          onClick={() => item && destinationId && onConfirm(item, destinationId)}
+          disabled={pending || !destinationId || destinationId === sourceId}
+        >
+          Перераспределить
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
 
 const historyActionLabels: Record<string, string> = {
   created: 'Заявка создана',
@@ -472,6 +594,10 @@ function approvalRouteActiveIndex(route: RequestApprovalRouteStep[]) {
   return Math.min(lastCompleted + 1, route.length - 1);
 }
 
+function approvalStepUser(step: ApprovalStep) {
+  return step.user || step.responsible;
+}
+
 function ApprovalRouteStepper({
   route,
   orientation,
@@ -495,8 +621,8 @@ function ApprovalRouteStepper({
               <Box className={`approval-route-step-line approval-route-step-line--after${index === route.length - 1 ? ' approval-route-step-line--hidden' : ''}${state === 'completed' ? ' approval-route-step-line--done' : ''}`} />
             </Box>
             <Box className="approval-route-step-copy">
-              <Typography className="approval-route-step-name">{approvalUserName(step.user)}</Typography>
-              <Typography className="approval-route-step-contacts">{approvalUserContacts(step.user)}</Typography>
+              <Typography className="approval-route-step-name">{approvalUserName(approvalStepUser(step))}</Typography>
+              <Typography className="approval-route-step-contacts">{approvalUserContacts(approvalStepUser(step))}</Typography>
             </Box>
           </Box>
         );
@@ -926,6 +1052,9 @@ function ItemsTable({
   user,
   items,
   catalog,
+  actionableItemIds,
+  focusArticleId,
+  focusCategoryId,
 }: {
   title: string;
   kind: 'dds' | 'invest';
@@ -934,15 +1063,24 @@ function ItemsTable({
   user: User;
   items: BudgetItem[];
   catalog: CatalogItem[];
+  actionableItemIds: Set<string>;
+  focusArticleId?: string | null;
+  focusCategoryId?: string | null;
 }) {
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const [drafts, setDrafts] = useState<Record<string, Partial<BudgetItem>>>({});
-  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [isEditMode, setIsEditMode] = useState(false);
   const [stagedFilesByItem, setStagedFilesByItem] = useState<Record<string, File[]>>({});
   const [pendingDeletedFileIdsByItem, setPendingDeletedFileIdsByItem] = useState<Record<string, number[]>>({});
   const [autoFitSnapshots, setAutoFitSnapshots] = useState<Record<string, { month_plans: BudgetItem['month_plans']; sum_fact: number | null | undefined }>>({});
   const [deleteTarget, setDeleteTarget] = useState<BudgetItem | null>(null);
+  const [redistributionTarget, setRedistributionTarget] = useState<BudgetItem | null>(null);
+  const [expandedItemGroups, setExpandedItemGroups] = useState<Set<string>>(new Set());
+  const [articleApprovalTarget, setArticleApprovalTarget] = useState<ArticleApprovalTarget | null>(null);
+  const [selectedItems, setSelectedItems] = useState<Map<string, BudgetItem>>(new Map());
+  const [bulkDecision, setBulkDecision] = useState<{ items: BudgetItem[]; decision: BulkItemDecision } | null>(null);
+  const [bulkDecisionComment, setBulkDecisionComment] = useState('');
   const canEmployeeChange = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const disabledForEmployee = !canEmployeeChange;
   const employeeCanEdit = canEmployeeChange;
@@ -950,18 +1088,6 @@ function ItemsTable({
   const canEconomist = false;
   const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
-  const catalogById = useMemo(
-    () => new Map(catalog.map((entry) => [entry.id, { ...entry, label: catalogLabel(entry, catalog) }])),
-    [catalog],
-  );
-  const selectableCatalogOptions = useMemo(
-    () => selectableItems(catalog).map((entry) => catalogById.get(entry.id)!),
-    [catalog, catalogById],
-  );
-  const selectableCatalogIds = useMemo(
-    () => new Set(selectableCatalogOptions.map((entry) => entry.id)),
-    [selectableCatalogOptions],
-  );
   const updateEmployeeDraft = useCallback<DraftChangeHandler>((itemId, patch) => {
     setDrafts((current) => ({
       ...current,
@@ -997,30 +1123,17 @@ function ItemsTable({
   }, [autoFitSnapshots]);
 
   const itemTableDefinitions = useMemo<TableColumnDefinition<BudgetItem, ItemTableColumn>[]>(() => [
-    { id: 'actions', label: '\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F', sortable: false, filterable: false, hideable: false, getValue: () => '' },
-    {
-      id: 'article',
-      label: kind === 'dds' ? '\u0421\u0442\u0430\u0442\u044C\u044F \u0414\u0414\u0421' : '\u0418\u043D\u0432\u0435\u0441\u0442-\u043F\u0440\u043E\u0435\u043A\u0442',
-      getValue: (item) => catalog.find((entry) => entry.id === (kind === 'dds' ? item.dds_id : item.invest_id))?.name || '\u0421\u0442\u0430\u0442\u044C\u044F \u041D\u0421\u0418 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430',
-    },
-    { id: 'name', label: '\u041D\u0430\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u0435', getValue: (item) => item.name || '?' },
-    { id: 'justification', label: '\u041E\u0431\u043E\u0441\u043D\u043E\u0432\u0430\u043D\u0438\u0435', getValue: (item) => item.justification || '?' },
-    { id: 'plan', label: '\u041F\u043B\u0430\u043D', getValue: (item) => money(item.sum_plan), getSortValue: (item) => item.sum_plan },
-    { id: 'status', label: '\u0421\u0442\u0430\u0442\u0443\u0441', getValue: (item) => itemStatusLabels[item.status] || item.status },
-    { id: 'approved', label: '\u0423\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u043E', getValue: (item) => money(item.sum_fact), getSortValue: (item) => item.sum_fact ?? -1 },
-    {
-      id: 'difference',
-      label: '\u041A\u043E\u0440\u0440\u0435\u043A\u0442\u0438\u0440\u043E\u0432\u043A\u0430',
-      getValue: (item) => item.sum_fact === null || item.sum_fact === undefined ? '?' : money(Number(item.sum_fact) - Number(item.sum_plan)),
-      getSortValue: (item) => item.sum_fact === null || item.sum_fact === undefined ? null : Number(item.sum_fact) - Number(item.sum_plan),
-    },
-    {
-      id: 'comment',
-      label: '\u041A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439',
-      getValue: (item) => item.comment || (item.status === 'rejected' ? '\u041A\u043E\u043C\u043C\u0435\u043D\u0442\u0430\u0440\u0438\u0439 \u0440\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u0442\u0441\u044F' : '?'),
-    },
-    { id: 'files', label: '\u0424\u0430\u0439\u043B', sortable: false, filterable: false, getValue: () => '' },
-  ], [catalog, kind]);
+    { id: 'select', label: '', sortable: false, filterable: false, hideable: false, getValue: () => '' },
+    { id: 'structure', label: 'Структура', getValue: (item) => item.name || '—' },
+    { id: 'requested', label: 'Запрошено, ₽', getValue: (item) => tableMoney(item.sum_plan), getSortValue: (item) => item.sum_plan },
+    { id: 'approved', label: 'Согласовано, ₽', getValue: (item) => tableMoney(item.sum_fact), getSortValue: (item) => item.sum_fact ?? -1 },
+    { id: 'rejected', label: 'Отклонено, ₽', getValue: (item) => rejectedMoney(itemRejectedAmount(item)), getSortValue: (item) => itemRejectedAmount(item) },
+    { id: 'status', label: 'Статус', getValue: (item) => itemStatusLabels[item.status] || item.status },
+    { id: 'justification', label: 'Обоснование', getValue: (item) => item.justification || '—' },
+    { id: 'comment', label: 'Комментарий', getValue: (item) => item.comment || (item.status === 'rejected' ? 'Комментарий рекомендуется' : '—') },
+    { id: 'files', label: 'Файлы', sortable: false, filterable: false, getValue: () => '' },
+    { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
+  ], []);
   const {
     clearColumnFilter: clearItemColumnFilter,
     clearSort: clearItemSort,
@@ -1042,9 +1155,74 @@ function ItemsTable({
     visibility: itemVisibility,
     visibleColumns: visibleItemColumns,
   } = useTableColumnControls({ rows: items, columns: itemTableDefinitions });
+  const groupedVisibleItems = useMemo<RequestItemArticleGroup[]>(() => {
+    const articles = new Map<string, { name: string; items: BudgetItem[]; categories: Map<string, RequestItemCategoryGroup> }>();
+    visibleItems.forEach((item) => {
+      const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
+      const category = catalog.find((entry) => entry.id === catalogId);
+      const article = category?.parent_id ? catalog.find((entry) => entry.id === category.parent_id) : undefined;
+      const articleId = article?.id || category?.id || `unclassified:${catalogId || item.id}`;
+      const categoryId = category?.id || `unclassified:${catalogId || item.id}`;
+      const articleName = article?.name || category?.name || 'Статья НСИ недоступна';
+      const categoryName = category?.name || 'Категория НСИ недоступна';
+      const group = articles.get(articleId) || {
+        name: articleName,
+        items: [],
+        categories: new Map<string, RequestItemCategoryGroup>(),
+      };
+      const categoryGroup = group.categories.get(categoryId) || { id: categoryId, name: categoryName, items: [] };
+      categoryGroup.items.push(item);
+      group.categories.set(categoryId, categoryGroup);
+      group.items.push(item);
+      articles.set(articleId, group);
+    });
+    return [...articles.entries()]
+      .map(([id, group]) => ({
+        id,
+        name: group.name,
+        items: group.items,
+        categories: [...group.categories.values()].sort((left, right) => left.name.localeCompare(right.name, 'ru')),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, 'ru'));
+  }, [catalog, kind, visibleItems]);
+  const itemGroupIds = useMemo(
+    () => groupedVisibleItems.flatMap((article) => [
+      `article:${article.id}`,
+      ...article.categories.map((category) => `category:${article.id}:${category.id}`),
+    ]),
+    [groupedVisibleItems],
+  );
+  useEffect(() => {
+    if (!focusArticleId || !itemGroupIds.includes(`article:${focusArticleId}`)) return;
+    const nextIds = [`article:${focusArticleId}`];
+    if (focusCategoryId && itemGroupIds.includes(`category:${focusArticleId}:${focusCategoryId}`)) {
+      nextIds.push(`category:${focusArticleId}:${focusCategoryId}`);
+    }
+    setExpandedItemGroups((current) => {
+      const next = new Set([...current, ...nextIds]);
+      return next.size === current.size ? current : next;
+    });
+  }, [focusArticleId, focusCategoryId, itemGroupIds]);
+  useEffect(() => {
+    if (!focusArticleId) return;
+    const focusGroupId = focusCategoryId && expandedItemGroups.has(`category:${focusArticleId}:${focusCategoryId}`)
+      ? `category:${focusArticleId}:${focusCategoryId}`
+      : expandedItemGroups.has(`article:${focusArticleId}`)
+        ? `article:${focusArticleId}`
+        : null;
+    if (!focusGroupId) return;
+    const timeout = window.setTimeout(() => {
+      document.getElementById(`request-item-group-${focusGroupId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  }, [expandedItemGroups, focusArticleId, focusCategoryId]);
   const itemAutoFitValues = useMemo(() => {
     const values = {} as Record<ItemTableColumn, Array<string | number>>;
     itemTableDefinitions.forEach((column) => {
+      if (column.id === 'select') {
+        values[column.id] = [''];
+        return;
+      }
       if (column.id === 'actions') {
         values[column.id] = [column.label, 'Сохранить', 'Удалить'];
         return;
@@ -1105,7 +1283,6 @@ function ItemsTable({
     draftStatus: ItemStatus,
     inactiveCatalogSelection: boolean,
     catalogId: string | null,
-    catalogEntry: CatalogItem | undefined,
     validationError: string | null,
     hasDraftChanges: boolean,
     planFactDifference: number | null,
@@ -1113,41 +1290,45 @@ function ItemsTable({
     pendingDeletedFileIds: number[],
   ) => {
     switch (columnId) {
-      case 'article':
+      case 'select':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
-            {isEditingItem && !isDeleted ? (
-              <ItemArticleEditor
-                articleField={kind === 'dds' ? 'dds_id' : 'invest_id'}
-                catalogById={catalogById}
-                itemId={item.id}
-                options={selectableCatalogOptions}
-                selectableIds={selectableCatalogIds}
-                value={(kind === 'dds' ? local.dds_id : local.invest_id) || catalogId}
-                onDraftChange={updateEmployeeDraft}
-              />
-            ) : (
-              <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                <Stack spacing={0.25}>
-                  <span>{catalogEntry ? catalogLabel(catalogEntry, catalog) : 'Категория НСИ недоступна'}</span>
-                </Stack>
-                {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" />}
-              </Stack>
-            )}
+          <TableCell key={columnId} align="center" sx={bodyCellSx(columnId, { py: 0.2 })}>
+            <Checkbox
+              size="small"
+              checked={selectedItems.has(item.id)}
+              disabled={!isItemActionable(item)}
+              onChange={(_, checked) => setSelectedItems((current) => {
+                const next = new Map(current);
+                if (checked) next.set(item.id, item);
+                else next.delete(item.id);
+                return next;
+              })}
+              sx={{ p: 0.35 }}
+              inputProps={{ 'aria-label': `Выбрать ${item.name}` }}
+            />
           </TableCell>
         );
-      case 'name':
+      case 'structure':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+          <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2, pl: 2.5 })}>
             {isEditingItem && !isDeleted ? (
-              <ItemTextEditor
-                field="name"
-                itemId={item.id}
-                required
-                value={local.name ?? item.name}
-                onDraftChange={updateEmployeeDraft}
-              />
-            ) : item.name || '—'}
+              <Box>
+                <ItemTextEditor
+                  field="name"
+                  itemId={item.id}
+                  required
+                  value={local.name ?? item.name}
+                  onDraftChange={updateEmployeeDraft}
+                />
+              </Box>
+            ) : (
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="body2" title={item.name || '—'} sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {item.name || '—'}
+                </Typography>
+                {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" sx={{ mt: 0.25, height: 20, fontSize: 10 }} />}
+              </Box>
+            )}
           </TableCell>
         );
       case 'justification':
@@ -1164,14 +1345,14 @@ function ItemsTable({
             ) : item.justification || '—'}
           </TableCell>
         );
-      case 'plan':
+      case 'requested':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+          <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2 })}>
             {isEditingItem && !isDeleted ? (
               item.is_income ? (
                 <IncomeMonthPlanEditor
                   plans={local.month_plans ?? item.month_plans}
-                  disabled={saveEmployeeItemChanges.isPending}
+                  disabled={saveAllEmployeeItemChanges.isPending}
                   onChange={(month_plans) => updateEmployeeDraft(item.id, { month_plans })}
                 />
               ) : <TextField
@@ -1179,17 +1360,26 @@ function ItemsTable({
                   type="number"
                   value={local.sum_plan ?? item.sum_plan}
                   onChange={(event) => updateEmployeeDraft(item.id, { sum_plan: Number(event.target.value) })}
-                  inputProps={{ min: 0 }}
-                  sx={{ width: '100%', minWidth: 0 }}
+                  inputProps={{ min: 0, step: '0.01' }}
+                  sx={{
+                    width: '100%', minWidth: 0,
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1, bgcolor: 'common.white', fontSize: 13,
+                      '& fieldset': { borderColor: 'divider' },
+                      '&:hover fieldset': { borderColor: 'text.secondary' },
+                      '&.Mui-focused fieldset': { borderColor: 'primary.main', borderWidth: 1 },
+                    },
+                    '& .MuiInputBase-input': { py: 0.75, px: 1, textAlign: 'right' },
+                  }}
                 />
             ) : (
-              money(item.sum_plan)
+              <Typography variant="body2" sx={{ fontSize: 13, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{tableMoney(item.sum_plan)}</Typography>
             )}
           </TableCell>
         );
       case 'status':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+          <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2 })}>
             {canEconomist && !isDeleted ? (
               <TextField
                 select
@@ -1211,13 +1401,15 @@ function ItemsTable({
                 ))}
               </TextField>
             ) : (
-              <ItemStatusBadge status={item.status} />
+              <Box sx={{ '& .MuiChip-root': { height: 22, fontSize: 11, fontWeight: 600, '& .MuiChip-label': { px: 0.85 } } }}>
+                <ItemStatusBadge status={item.status} />
+              </Box>
             )}
           </TableCell>
         );
       case 'approved':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+          <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2 })}>
             {canEconomist && !isDeleted ? (
               <TextField
                 size="small"
@@ -1235,15 +1427,15 @@ function ItemsTable({
                 sx={{ width: '100%', minWidth: 0 }}
               />
             ) : (
-              money(item.sum_fact)
+              <Typography variant="body2" sx={{ fontSize: 13, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{tableMoney(item.sum_fact)}</Typography>
             )}
           </TableCell>
         );
-      case 'difference':
+      case 'rejected':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
-            <Typography color={planFactDifference === null ? 'text.secondary' : planFactDifference >= 0 ? 'success.main' : 'error.main'}>
-              {planFactDifference === null ? '—' : money(planFactDifference)}
+          <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2 })}>
+            <Typography variant="body2" sx={{ fontSize: 13, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', color: itemRejectedAmount(item) ? 'error.main' : 'inherit' }}>
+              {rejectedMoney(itemRejectedAmount(item))}
             </Typography>
           </TableCell>
         );
@@ -1289,7 +1481,7 @@ function ItemsTable({
                   [item.id]: (current[item.id] || []).filter((id) => id !== fileId),
                 }))
               }
-              disabled={saveEmployeeItemChanges.isPending || isDeleted}
+              disabled={saveAllEmployeeItemChanges.isPending || isDeleted}
             />
           </TableCell>
         );
@@ -1309,48 +1501,21 @@ function ItemsTable({
                     <SaveOutlinedIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>
-              ) : employeeCanEdit && !isDeleted && (isEditingItem ? (
+              ) : employeeCanEdit && !isDeleted && isEditingItem ? (
                 <>
                   <FileAttachAction
-                    disabled={saveEmployeeItemChanges.isPending}
+                    disabled={saveAllEmployeeItemChanges.isPending}
                     onUpload={(file) => stageFile(item.id, file)}
                   />
-                  <Tooltip title="Сохранить изменения строки">
-                    <span>
-                      <IconButton
-                        size="small"
-                        color="primary"
-                        onClick={() => saveEmployeeItemChanges.mutate(item.id)}
-                        disabled={saveEmployeeItemChanges.isPending}
-                        aria-label="Сохранить изменения строки"
-                      >
-                        <SaveOutlinedIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                  <Tooltip title="Отменить изменения">
-                    <span>
-                      <IconButton
-                        size="small"
-                        onClick={() => cancelEmployeeEdit(item.id)}
-                        disabled={saveEmployeeItemChanges.isPending}
-                        aria-label="Отменить изменения"
-                      >
-                        <CloseIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                </>
-              ) : !editingItemId ? (
-                <>
-                  <Tooltip title="Изменить строку">
+                  <Tooltip title="Перераспределить в другую статью или категорию">
                     <IconButton
                       size="small"
                       color="primary"
-                      onClick={() => setEditingItemId(item.id)}
-                      aria-label="Изменить строку"
+                      onClick={() => setRedistributionTarget(item)}
+                      disabled={saveAllEmployeeItemChanges.isPending}
+                      aria-label="Перераспределить строку"
                     >
-                      <EditOutlinedIcon fontSize="small" />
+                      <SwapHorizIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                   {canDeleteItem && (
@@ -1359,6 +1524,7 @@ function ItemsTable({
                         size="small"
                         color="error"
                         onClick={() => setDeleteTarget(item)}
+                        disabled={saveAllEmployeeItemChanges.isPending}
                         aria-label="Удалить строку"
                       >
                         <DeleteOutlineIcon fontSize="small" />
@@ -1366,7 +1532,7 @@ function ItemsTable({
                     </Tooltip>
                   )}
                 </>
-              ) : null)}
+              ) : null}
             </Stack>
           </TableCell>
         );
@@ -1426,70 +1592,76 @@ function ItemsTable({
     },
   });
 
-  const saveEmployeeItemChanges = useMutation({
-    mutationFn: async (itemId: string) => {
-      const body = drafts[itemId] || {};
-      if (Object.keys(body).length > 0) {
-        await api.patch(`/items/${itemId}`, body);
-      }
-      for (const file of stagedFilesByItem[itemId] || []) {
-        const form = new FormData();
-        form.append('file', file);
-        await api.post(`/items/${itemId}/files`, form);
-      }
-      for (const fileId of pendingDeletedFileIdsByItem[itemId] || []) {
-        await api.delete(`/items/${itemId}/files/${fileId}`);
-      }
-    },
-    onSuccess: (_data, itemId) => {
-      setEditingItemId(null);
-      setDrafts((current) => {
-        const next = { ...current };
-        delete next[itemId];
-        return next;
-      });
-      setAutoFitSnapshots((current) => {
-        const next = { ...current };
-        delete next[itemId];
-        return next;
-      });
-      setStagedFilesByItem((current) => {
-        const next = { ...current };
-        delete next[itemId];
-        return next;
-      });
-      setPendingDeletedFileIdsByItem((current) => {
-        const next = { ...current };
-        delete next[itemId];
-        return next;
-      });
+  const redistributeItem = useMutation({
+    mutationFn: ({ item, catalogId }: { item: BudgetItem; catalogId: string }) => api.patch(
+      `/items/${item.id}`,
+      { [kind === 'dds' ? 'dds_id' : 'invest_id']: catalogId },
+    ),
+    onSuccess: () => {
+      setRedistributionTarget(null);
       refresh();
-      queryClient.invalidateQueries({ queryKey: ['item-files', kind] });
-      toast('Строка сохранена', 'success');
+      toast('Строка перераспределена', 'success');
     },
-    onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось сохранить строку'), 'error');
-    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось перераспределить строку'), 'error'),
   });
 
-  const cancelEmployeeEdit = (itemId: string) => {
-    setEditingItemId(null);
-    setDrafts((current) => {
-      const next = { ...current };
-      delete next[itemId];
-      return next;
-    });
-    setStagedFilesByItem((current) => {
-      const next = { ...current };
-      delete next[itemId];
-      return next;
-    });
-    setPendingDeletedFileIdsByItem((current) => {
-      const next = { ...current };
-      delete next[itemId];
-      return next;
-    });
+  const hasPendingEmployeeChanges = Object.keys(drafts).length > 0
+    || Object.values(stagedFilesByItem).some((files) => files.length > 0)
+    || Object.values(pendingDeletedFileIdsByItem).some((fileIds) => fileIds.length > 0);
+  const saveAllEmployeeItemChanges = useMutation({
+    mutationFn: async () => {
+      const itemIds = new Set([
+        ...Object.keys(drafts),
+        ...Object.keys(stagedFilesByItem),
+        ...Object.keys(pendingDeletedFileIdsByItem),
+      ]);
+      for (const itemId of itemIds) {
+        const body = drafts[itemId] || {};
+        if (Object.keys(body).length > 0) await api.patch(`/items/${itemId}`, body);
+        for (const file of stagedFilesByItem[itemId] || []) {
+          const form = new FormData();
+          form.append('file', file);
+          await api.post(`/items/${itemId}/files`, form);
+        }
+        for (const fileId of pendingDeletedFileIdsByItem[itemId] || []) {
+          await api.delete(`/items/${itemId}/files/${fileId}`);
+        }
+      }
+    },
+    onSuccess: () => {
+      setDrafts({});
+      setStagedFilesByItem({});
+      setPendingDeletedFileIdsByItem({});
+      setAutoFitSnapshots({});
+      setIsEditMode(false);
+      refresh();
+      queryClient.invalidateQueries({ queryKey: ['item-files', kind] });
+      toast('Изменения сохранены', 'success');
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось сохранить изменения'), 'error'),
+  });
+  const cancelAllEmployeeItemChanges = () => {
+    setDrafts({});
+    setStagedFilesByItem({});
+    setPendingDeletedFileIdsByItem({});
+    setAutoFitSnapshots({});
+    setIsEditMode(false);
   };
+
+  const approveArticleItems = useMutation({
+    mutationFn: (target: ArticleApprovalTarget) => api.post(
+      `/approval-register/groups/article/${target.articleId}/cfo-decision`,
+      { decision: 'approved', comment: '' },
+    ),
+    onSuccess: () => {
+      setArticleApprovalTarget(null);
+      refresh();
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+      toast('Статья согласована', 'success');
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось согласовать статью'), 'error'),
+  });
 
   const stageFile = (itemId: string, file: File) => {
     const validationError = uploadValidationError(file);
@@ -1506,13 +1678,190 @@ function ItemsTable({
     });
   };
 
+  const toggleItemGroup = (groupId: string) => setExpandedItemGroups((current) => {
+    const next = new Set(current);
+    const article = groupedVisibleItems.find((entry) => `article:${entry.id}` === groupId);
+    const categoryGroupIds = article?.categories.map((category) => `category:${article.id}:${category.id}`) || [];
+
+    if (next.has(groupId)) {
+      next.delete(groupId);
+      categoryGroupIds.forEach((categoryGroupId) => next.delete(categoryGroupId));
+    } else {
+      next.add(groupId);
+      categoryGroupIds.forEach((categoryGroupId) => next.add(categoryGroupId));
+    }
+    return next;
+  });
+  const groupTotals = groupFinancialTotals;
+  const groupStatus = (groupItems: BudgetItem[]) => {
+    const aggregateStatus = groupAggregateStatus(groupItems);
+    const color = aggregateStatus === 'approved' ? 'success' : aggregateStatus === 'rejected' ? 'error' : aggregateStatus === 'no_data' ? 'default' : 'warning';
+    return { label: AGGREGATE_DISPLAY_LABELS[aggregateStatus], color: color as 'success' | 'error' | 'warning' | 'default' };
+  };
+  const canApproveArticle = request.status === 'on_review' && items.some((item) => actionableItemIds.has(item.id));
+  const isItemActionable = (item: BudgetItem) => canApproveArticle && item.status === 'on_review' && actionableItemIds.has(item.id);
+  const selectedRows = [...selectedItems.values()];
+
+  const bulkDecideItems = useMutation({
+    mutationFn: ({ items: targetItems, decision, comment }: { items: BudgetItem[]; decision: BulkItemDecision; comment: string }) => api.post('/items/cfo-decision/bulk', {
+      item_ids: targetItems.map((item) => item.id),
+      decision,
+      comment,
+    }),
+    onSuccess: (_data, variables) => {
+      setBulkDecision(null);
+      setBulkDecisionComment('');
+      setSelectedItems(new Map());
+      refresh();
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+      toast(decisionLabel(variables.decision), 'success');
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось сохранить решение'), 'error'),
+  });
+
+  function decisionLabel(decision: BulkItemDecision | undefined) {
+    if (decision === 'rejected') return 'Строки отклонены';
+    return 'Строки согласованы';
+  }
+  const renderGroupRow = (
+    groupId: string,
+    label: string,
+    groupItems: BudgetItem[],
+    level: 'article' | 'category',
+    onApprove?: () => void,
+  ) => {
+    const expanded = expandedItemGroups.has(groupId);
+    const totals = groupTotals(groupItems);
+    const status = groupStatus(groupItems);
+    const moneyCellSx = { fontSize: 13, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' };
+    return (
+      <TableRow
+        key={groupId}
+        id={`request-item-group-${groupId}`}
+        className="request-items-group-row"
+        sx={{
+          '& > .MuiTableCell-root': {
+            py: 0.2,
+            px: 0.75,
+            height: level === 'article' ? 34 : 32,
+            bgcolor: level === 'article' ? '#f4f9ff' : '#fff',
+            fontSize: 13,
+          },
+          '&:hover > .MuiTableCell-root': { bgcolor: '#edf6ff' },
+        }}
+      >
+        {visibleItemColumns.map((column) => {
+          let content: ReactNode = null;
+          if (column.id === 'structure') {
+            content = (
+              <Stack direction="row" spacing={0.25} alignItems="center" sx={{ pl: level === 'category' ? 1.15 : 0, minWidth: 0 }}>
+                <IconButton size="small" onClick={() => toggleItemGroup(groupId)} aria-label={expanded ? 'Свернуть группу' : 'Развернуть группу'} sx={{ p: 0.25 }}>
+                  {expanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}
+                </IconButton>
+                <Box minWidth={0}>
+                  <Typography variant="body2" fontWeight={level === 'article' ? 700 : 600} noWrap title={label} sx={{ fontSize: 13, lineHeight: 1.25 }}>
+                    {level === 'article' ? 'Статья' : 'Категория'}: {label}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, lineHeight: 1.2 }}>
+                    {totals.total} {totals.total === 1 ? 'строка' : totals.total < 5 ? 'строки' : 'строк'}
+                  </Typography>
+                </Box>
+              </Stack>
+            );
+          } else if (column.id === 'requested') {
+            content = <Typography sx={moneyCellSx}>{tableMoney(totals.requested)}</Typography>;
+          } else if (column.id === 'approved') {
+            content = <Typography sx={moneyCellSx}>{tableMoney(totals.approved)}</Typography>;
+          } else if (column.id === 'rejected') {
+            content = <Typography sx={{ ...moneyCellSx, color: totals.rejected ? 'error.main' : 'inherit' }}>{rejectedMoney(totals.rejected)}</Typography>;
+          } else if (column.id === 'status') {
+            content = <Chip size="small" label={status.label} color={status.color} variant="outlined" sx={{ height: 22, fontSize: 11, fontWeight: 600 }} />;
+          } else if (column.id === 'actions' && onApprove && totals.pendingCount > 0) {
+            content = <Button size="small" color="success" sx={{ px: 0.5, minWidth: 0, fontSize: 11 }} onClick={onApprove}>Согласовать</Button>;
+          } else if (column.id === 'comment' || column.id === 'justification' || column.id === 'files') {
+            content = '—';
+          }
+          return (
+            <TableCell
+              key={column.id}
+              align={['requested', 'approved', 'rejected'].includes(column.id) ? 'right' : column.id === 'select' ? 'center' : 'left'}
+              sx={bodyCellSx(column.id)}
+            >
+              {content}
+            </TableCell>
+          );
+        })}
+      </TableRow>
+    );
+  };
+  const requestItemTableRows = groupedVisibleItems.flatMap<RequestItemTableRow>((article) => {
+    const articleGroupId = `article:${article.id}`;
+    const rows: RequestItemTableRow[] = [{
+      type: 'group',
+      groupId: articleGroupId,
+      label: article.name,
+      items: article.items,
+      level: 'article',
+      canApprove: article.items.some(isItemActionable),
+    }];
+    if (!expandedItemGroups.has(articleGroupId)) return rows;
+    article.categories.forEach((category) => {
+      const categoryGroupId = `category:${article.id}:${category.id}`;
+      rows.push({ type: 'group', groupId: categoryGroupId, label: category.name, items: category.items, level: 'category', canApprove: false });
+      if (expandedItemGroups.has(categoryGroupId)) rows.push(...category.items.map((item) => ({ type: 'item' as const, item })));
+    });
+    return rows;
+  });
+
   return (
     <>
-      <Stack spacing={1}>
+      <Stack spacing={1.1}>
         <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
-          <Stack direction="row" spacing={0.5} alignItems="center">
-            <Typography variant="h6">{title}</Typography>
+          <Typography variant="h6" sx={{ fontSize: { xs: '1.05rem', md: '1.15rem' } }}>{title}</Typography>
+          <Stack direction="row" spacing={0.25} flexWrap="wrap" useFlexGap alignItems="center">
+            {!!itemGroupIds.length && <>
+              <Button size="small" color="inherit" startIcon={<UnfoldMoreIcon sx={{ fontSize: 16 }} />} onClick={() => setExpandedItemGroups(new Set(itemGroupIds))} sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}>
+                Развернуть все
+              </Button>
+              <Button size="small" color="inherit" startIcon={<UnfoldLessIcon sx={{ fontSize: 16 }} />} onClick={() => setExpandedItemGroups(new Set())} sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}>
+                Свернуть все
+              </Button>
+            </>}
+            {employeeCanEdit && (isEditMode ? <>
+              <Button
+                size="small"
+                color="primary"
+                startIcon={<SaveOutlinedIcon sx={{ fontSize: 16 }} />}
+                onClick={() => saveAllEmployeeItemChanges.mutate()}
+                disabled={!hasPendingEmployeeChanges || saveAllEmployeeItemChanges.isPending}
+                sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
+              >
+                Сохранить
+              </Button>
+              <Button
+                size="small"
+                color="inherit"
+                startIcon={<CloseIcon sx={{ fontSize: 16 }} />}
+                onClick={cancelAllEmployeeItemChanges}
+                disabled={saveAllEmployeeItemChanges.isPending}
+                sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
+              >
+                Отменить
+              </Button>
+            </> : (
+              <Button
+                size="small"
+                color="primary"
+                startIcon={<EditOutlinedIcon sx={{ fontSize: 16 }} />}
+                onClick={() => setIsEditMode(true)}
+                sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
+              >
+                Редактировать
+              </Button>
+            ))}
             <TableColumnTools
+              buttonLabel="Колонки"
               columns={itemTableDefinitions}
               visibility={itemVisibility}
               onToggleColumn={toggleItemVisibility}
@@ -1522,74 +1871,108 @@ function ItemsTable({
               hasActiveFilters={hasActiveItemFilters}
             />
           </Stack>
-          <Stack direction="row" spacing={0.5} alignItems="center">
-            <Tooltip title="Сбросить ширину колонок">
-              <IconButton
-                size="small"
-                onClick={resetColumnWidths}
-                aria-label="Сбросить ширину колонок"
-              >
-                <RestartAltIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          </Stack>
         </Stack>
-        <Typography color="text.secondary">
-          {canEconomist
-            ? 'Проверьте строки, укажите статус, утверждённую сумму и комментарий.'
-            : employeeCanEdit
-              ? 'Для изменения строки нажмите кнопку редактирования в столбце действий. Каждая строка сохраняется отдельно.'
-              : 'Строки заявки показаны в режиме просмотра. Редактирование и работа с файлами доступны только сотруднику в черновике.'}
-        </Typography>
-        <Typography variant="caption" color="text.secondary">
-          Перетаскивайте границы заголовков, чтобы настроить ширину колонок.
-        </Typography>
+        {canApproveArticle && (
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
+            Строки сгруппированы по статьям и категориям. Выберите строки или согласуйте всю статью целиком.
+          </Typography>
+        )}
+        {!canApproveArticle && (
+          <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
+            {employeeCanEdit
+              ? 'Нажмите «Редактировать» над таблицей, чтобы изменить строки заявки.'
+              : 'Строки заявки показаны в режиме просмотра.'}
+          </Typography>
+        )}
       </Stack>
-      {employeeCanEdit && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || !!editingItemId} />}
-      <TableContainer className="request-items-table">
-        <Table size="small" sx={{ width: tableWidth, minWidth: '100%', tableLayout: 'fixed' }}>
+      {selectedRows.length > 0 && (
+        <Paper variant="outlined" sx={{ px: 1.25, py: 0.75, borderColor: 'primary.main', bgcolor: 'primary.50' }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
+            <Typography variant="body2" fontWeight={700}>
+              Выбрано: {selectedRows.length} {selectedRows.length === 1 ? 'строка' : selectedRows.length < 5 ? 'строки' : 'строк'} · запрошено: {money(selectedRows.reduce((total, item) => total + itemRequestedAmount(item), 0))}
+            </Typography>
+            <Box sx={{ flex: 1 }} />
+            <Button size="small" color="success" onClick={() => setBulkDecision({ items: selectedRows, decision: 'approved' })}>Согласовать</Button>
+            <Button size="small" color="error" onClick={() => setBulkDecision({ items: selectedRows, decision: 'rejected' })}>Отклонить</Button>
+            <Button size="small" onClick={() => setSelectedItems(new Map())}>Снять выделение</Button>
+          </Stack>
+        </Paper>
+      )}
+      {employeeCanEdit && isEditMode && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || saveAllEmployeeItemChanges.isPending} />}
+      <TableContainer
+        className="request-items-table"
+        component={Paper}
+        variant="outlined"
+        sx={{ overflowX: 'auto', overflowY: 'visible', borderColor: 'rgba(15, 23, 42, 0.08)', borderRadius: 1.5 }}
+      >
+        <Table
+          size="small"
+          sx={{
+            width: tableWidth,
+            minWidth: tableWidth,
+            tableLayout: 'fixed',
+            '& td, & th': { borderRight: '1px solid', borderColor: 'rgba(15, 23, 42, 0.06)', fontSize: 12 },
+          }}
+        >
           <colgroup>
             {visibleItemColumns.map((column) => <col key={column.id} style={{ width: columnWidths[column.id] }} />)}
           </colgroup>
-          <TableHead>
+          <TableHead sx={{ '& .MuiTableCell-root': { bgcolor: '#F8FAFC !important', boxShadow: 'inset 0 -1px 0 rgba(15, 23, 42, 0.08)', py: 0.55, px: 0.75, fontSize: 12, fontWeight: 700, color: 'text.secondary' } }}>
             <TableRow>
               {visibleItemColumns.map((column) => {
-                switch (column.id) {
-                  case 'article':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('article', kind === 'dds' ? 'Статья ДДС' : 'Инвест-проект')}</TableCell>;
-                  case 'name':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('name', 'Наименование')}</TableCell>;
-                  case 'justification':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('justification', 'Обоснование')}</TableCell>;
-                  case 'plan':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('plan', 'План')}</TableCell>;
-                  case 'status':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('status', 'Статус')}</TableCell>;
-                  case 'approved':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('approved', 'Утверждено')}</TableCell>;
-                  case 'difference':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('difference', 'Корректировка')}</TableCell>;
-                  case 'comment':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('comment', 'Комментарий')}</TableCell>;
-                  case 'files':
-                    return <TableCell key={column.id} sx={headerCell(column.id)}>{renderItemHeader('files', 'Файл', { sortable: false, filterable: false })}</TableCell>;
-                  case 'actions':
-                    return <TableCell key={column.id} sx={headerCell(column.id)} align="center">{renderItemHeader('actions', 'Действия', { sortable: false, filterable: false })}</TableCell>;
-                  default:
-                    return null;
+                const align = ['requested', 'approved', 'rejected'].includes(column.id)
+                  ? 'right'
+                  : column.id === 'select'
+                    ? 'center'
+                    : 'left';
+                if (column.id === 'select') {
+                  return (
+                    <TableCell key={column.id} align={align} sx={headerCell(column.id)}>
+                      <Checkbox
+                        size="small"
+                        checked={selectedRows.length > 0}
+                        indeterminate={selectedRows.length > 0}
+                        onChange={() => setSelectedItems(new Map())}
+                        sx={{ p: 0.35 }}
+                        inputProps={{ 'aria-label': 'Снять выделение' }}
+                      />
+                    </TableCell>
+                  );
                 }
+                return (
+                  <TableCell key={column.id} align={align} sx={headerCell(column.id)}>
+                    {renderItemHeader(
+                      column.id,
+                      column.label,
+                      ['files', 'actions', 'select'].includes(column.id) ? { sortable: false, filterable: false } : undefined,
+                    )}
+                  </TableCell>
+                );
               })}
             </TableRow>
           </TableHead>
           <TableBody>
-            {visibleItems.map((item) => {
+            {requestItemTableRows.map((row) => {
+              if (row.type === 'group') {
+                return renderGroupRow(
+                  row.groupId,
+                  row.label,
+                  row.items,
+                  row.level,
+                  row.canApprove ? () => setArticleApprovalTarget({
+                    articleId: row.groupId.slice('article:'.length),
+                    name: row.label,
+                    items: row.items,
+                  }) : undefined,
+                );
+              }
+              const item = row.item;
               const local = drafts[item.id] || {};
               const isDeleted = item.status === 'deleted';
-              const isEditingItem = editingItemId === item.id;
+              const isEditingItem = isEditMode;
               const draftStatus = local.status || item.status;
               const hasDraftChanges = hasEffectiveItemChanges(item, local);
               const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
-              const catalogEntry = catalog.find((entry) => entry.id === catalogId);
               const inactiveCatalogSelection = isInactiveCatalogSelection(catalog, catalogId);
               const stagedFiles = stagedFilesByItem[item.id] || [];
               const pendingDeletedFileIds = pendingDeletedFileIdsByItem[item.id] || [];
@@ -1603,6 +1986,8 @@ function ItemsTable({
                   <TableRow
                     className={[inactiveCatalogSelection && 'inactive-catalog-item', isDeleted && 'deleted-request-item'].filter(Boolean).join(' ')}
                     sx={{
+                      '& td': { py: 0.2, px: 0.75, height: 36, bgcolor: '#fff', fontSize: 13 },
+                      '&:hover td': { bgcolor: '#f7fbff' },
                       ...(inactiveCatalogSelection ? { '& > .MuiTableCell-root': { bgcolor: 'rgba(237, 108, 2, 0.08)' } } : {}),
                       ...(isDeleted ? { '& > .MuiTableCell-root': { bgcolor: 'action.hover', color: 'text.secondary' } } : {}),
                     }}
@@ -1616,7 +2001,6 @@ function ItemsTable({
                       draftStatus,
                       inactiveCatalogSelection,
                       catalogId ?? null,
-                      catalogEntry,
                       validationError,
                       hasDraftChanges,
                       planFactDifference,
@@ -1677,6 +2061,65 @@ function ItemsTable({
       </TableContainer>
 
       <ConfirmDialog
+        open={!!bulkDecision}
+        title={bulkDecision?.decision === 'rejected' ? 'Отклонить строки' : 'Согласовать строки'}
+        description={bulkDecision && (
+          <Stack spacing={1.25} sx={{ pt: 0.5 }}>
+            <Typography variant="body2" color="text.secondary">
+              Будет обработано строк: {bulkDecision.items.length} · запрошено: {money(bulkDecision.items.reduce((total, item) => total + itemRequestedAmount(item), 0))}
+            </Typography>
+            <TextField
+              autoFocus
+              size="small"
+              label={bulkDecision.decision === 'rejected' ? 'Комментарий' : 'Комментарий (необязательно)'}
+              required={bulkDecision.decision === 'rejected'}
+              multiline
+              minRows={3}
+              value={bulkDecisionComment}
+              onChange={(event) => setBulkDecisionComment(event.target.value)}
+              fullWidth
+            />
+          </Stack>
+        )}
+        confirmLabel={bulkDecideItems.isPending ? 'Сохраняется…' : 'Подтвердить'}
+        confirmColor={bulkDecision?.decision === 'rejected' ? 'error' : 'success'}
+        pending={bulkDecideItems.isPending}
+        onClose={() => { setBulkDecision(null); setBulkDecisionComment(''); }}
+        onConfirm={() => bulkDecision && bulkDecideItems.mutate({
+          items: bulkDecision.items,
+          decision: bulkDecision.decision,
+          comment: bulkDecisionComment.trim(),
+        })}
+      />
+
+      <ConfirmDialog
+        open={!!articleApprovalTarget}
+        title="Согласовать статью"
+        description={articleApprovalTarget && (
+          <Stack spacing={0.5}>
+            <Typography>Будет согласована вся доступная вам статья «{articleApprovalTarget.name}».</Typography>
+            <Typography variant="body2" color="text.secondary">
+              В текущей заявке доступно строк: {articleApprovalTarget.items.filter(isItemActionable).length} · запрошено: {money(articleApprovalTarget.items.filter(isItemActionable).reduce((sum, item) => sum + Number(item.sum_plan || 0), 0))}
+            </Typography>
+          </Stack>
+        )}
+        confirmLabel={approveArticleItems.isPending ? 'Сохраняется…' : 'Согласовать'}
+        confirmColor="success"
+        pending={approveArticleItems.isPending}
+        onClose={() => setArticleApprovalTarget(null)}
+        onConfirm={() => articleApprovalTarget && approveArticleItems.mutate(articleApprovalTarget)}
+      />
+
+      <RedistributionDialog
+        item={redistributionTarget}
+        kind={kind}
+        catalog={catalog}
+        pending={redistributeItem.isPending}
+        onClose={() => setRedistributionTarget(null)}
+        onConfirm={(item, catalogId) => redistributeItem.mutate({ item, catalogId })}
+      />
+
+      <ConfirmDialog
         open={!!deleteTarget}
         title="Удалить строку?"
         description={`Строка «${deleteTarget ? catalog.find((entry) => entry.id === (kind === 'dds' ? deleteTarget.dds_id : deleteTarget.invest_id))?.name || '' : ''}» будет удалена вместе со связями файлов.`}
@@ -1704,11 +2147,21 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const [confirmAction, setConfirmAction] = useState<'approve-all-items' | null>(null);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnComment, setReturnComment] = useState('');
+  const focusArticleId = searchParams.get('article_id');
+  const focusCategoryId = searchParams.get('category_id');
 
   const { data: request, isPending: requestPending } = useQuery({
     queryKey: detailsKey,
     queryFn: async () => (await api.get<BudgetRequest>(`/requests/${id}`)).data,
     enabled: !!id,
+  });
+  const { data: approvalRegisterRows } = useQuery({
+    queryKey: [...detailsKey, 'approval-register-rows-access', request?.unit_id],
+    queryFn: async () => (await api.get<ApprovalRegisterRowsResponse>('/approval-register/rows', {
+      params: { module_id: request?.unit_id, request_id: id, page: 1, page_size: 200, status: 'on_review' },
+    })).data,
+    enabled: !!request?.unit_id && user.role === 'employee',
+    retry: false,
   });
   const canLoadApprovalAction = false;
   const { data: approvalAction, isPending: approvalActionPending } = useQuery({
@@ -1716,10 +2169,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     queryFn: async () => (await api.get<RequestApprovalAction | null>(`/requests/${id}/approval-step`)).data,
     enabled: !!id && canLoadApprovalAction,
   });
-  const { data: approvalRoute, isPending: approvalRoutePending } = useQuery({
+  const { data: approvalRouteSteps = [], isPending: approvalRoutePending } = useQuery({
     queryKey: [...detailsKey, 'approval-route'],
-    queryFn: async () => (await api.get<RequestApprovalRouteStep[]>(`/requests/${id}/approval-route`)).data,
-    enabled: false,
+    queryFn: async () => (await api.get<ApprovalStep[]>('/approval-route')).data,
+    enabled: !!id,
+    retry: false,
   });
   const { data: units = [] } = useQuery({
     queryKey: ['units'],
@@ -1741,7 +2195,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     queryFn: async () => (await api.get<RequestLog[]>(`/requests/${id}/logs`)).data,
     enabled: !!id,
   });
-  const resolvedApprovalRoute = approvalRoute ?? [];
   const contentLogs = useMemo(
     () => logs.filter((entry) => !entry.log.action.startsWith('approval_')),
     [logs],
@@ -1839,6 +2292,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const resolvedRequestItems = requestItems ?? [];
 
   const unitById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
+  const resolvedApprovalRoute = useMemo<RequestApprovalRouteStep[]>(() => {
+    const requestCfoId = unitById.get(request?.unit_id || '')?.parent_id;
+    if (!requestCfoId) return [];
+    const byId = new Map(approvalRouteSteps.map((step) => [step.id, step]));
+    const route: RequestApprovalRouteStep[] = [];
+    let step = approvalRouteSteps.find((entry) => entry.unit_id === requestCfoId);
+    const visited = new Set<string>();
+    while (step && !visited.has(step.id)) {
+      route.push({ step, logs: [] });
+      visited.add(step.id);
+      step = step.parent_step_ids.map((parentId) => byId.get(parentId)).find((entry): entry is ApprovalStep => Boolean(entry));
+    }
+    return route;
+  }, [approvalRouteSteps, request?.unit_id, unitById]);
   const requestDepartmentId = useMemo(() => {
     let currentId = request?.unit_id || '';
     while (currentId) {
@@ -1988,6 +2455,12 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     [resolvedRequestItems, usesInvestProjects],
   );
   const allItems = resolvedRequestItems.filter((item) => item.status !== 'deleted');
+  const actionableRequestItemIds = useMemo(
+    () => new Set((approvalRegisterRows?.items || [])
+      .filter((item) => item.is_cfo_review_actionable)
+      .map((item) => item.id)),
+    [approvalRegisterRows],
+  );
   const requestDeletePreviewDefinitions = useMemo<TableColumnDefinition<RequestDeletePreviewRow, RequestDeletePreviewColumn>[]>(() => [
     {
       id: 'kind',
@@ -2272,7 +2745,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                         return (
                           <Stack spacing={0.25} minWidth={0}>
                             <Typography variant="body2" fontWeight={700} noWrap>
-                              {approvalUserName(activeStep?.user || null)}
+                              {activeStep ? approvalUserName(approvalStepUser(activeStep)) : 'Не назначен'}
                             </Typography>
                             <Typography variant="caption" color="text.secondary">
                               Шаг {activeIndex + 1} из {resolvedApprovalRoute.length}
@@ -2537,14 +3010,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           {itemsPending ? (
             <Typography color="text.secondary">Загрузка строк заявки…</Typography>
           ) : (
-            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} />
+            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
           )}
         </Paper>
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
           {itemsPending ? (
             <Typography color="text.secondary">Загрузка строк заявки…</Typography>
           ) : (
-            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} />
+            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
           )}
         </Paper>
       </Stack>

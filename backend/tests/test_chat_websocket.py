@@ -1,4 +1,5 @@
 from app.seed import DDS_LICENSE_ID, MODULE_ALPHA_ID
+from app.security import hash_password
 from tests.test_api import auth, make_client
 
 
@@ -42,6 +43,27 @@ def test_chat_websocket_notifies_request_participants(tmp_path):
             "type": "chat.message.created",
             "message_id": response.json()["id"],
         }
+
+
+def test_chat_excludes_another_employee_of_the_same_module(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    repo = client.app.state.repo
+    employee_role_id = next(role["id"] for role in repo.load_all("roles") if role["name"] == "employee")
+    colleague_id = "90000000-0000-0000-0000-000000000001"
+    repo.insert(
+        "users",
+        {"id": colleague_id, "login": "colleague", "password": hash_password("colleague"), "id_role": employee_role_id},
+    )
+    repo.insert("units_responsibles", {"unit_id": MODULE_ALPHA_ID, "user_id": colleague_id, "is_active": True})
+    colleague = auth(client, "colleague", "colleague")
+    request = submitted_request(client, employee)
+
+    assert client.get(f"/requests/{request['id']}/chat", headers=employee).status_code == 200
+    assert client.get(f"/requests/{request['id']}/chat", headers=economist).status_code == 200
+    assert client.get(f"/requests/{request['id']}/chat", headers=colleague).status_code == 403
+    assert client.get("/chats", headers=colleague).json() == []
 
 
 def test_chat_image_is_visible_to_chat_participants_and_downloadable(tmp_path):

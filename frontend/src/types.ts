@@ -120,7 +120,7 @@ export interface RegisterAggregates {
 
 export interface ApprovalRegisterGroup {
   id: string;
-  type: 'cfo' | 'category' | 'article' | 'module';
+  type: 'cfo' | 'category' | 'article' | 'module' | 'request';
   name: string;
   label: string;
   module_id: string;
@@ -133,7 +133,7 @@ export interface ApprovalRegisterGroup {
 }
 
 export interface ApprovalRegisterResponse {
-  view: 'cfo' | 'category' | 'article' | 'module';
+  view: 'cfo' | 'category' | 'article' | 'module' | 'request';
   groups: ApprovalRegisterGroup[];
   aggregates: RegisterAggregates;
 }

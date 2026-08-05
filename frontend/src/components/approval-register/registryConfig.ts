@@ -1,13 +1,12 @@
 import type { ApprovalRegisterRow, ItemStatus, RegisterAggregateStatus, RegisterAggregates } from '../../types';
 
-export type RegistryView = 'cfo' | 'category' | 'article' | 'module';
-export type RegistryColumnId = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'pending' | 'status' | 'comment' | 'actions';
+export type RegistryView = 'cfo' | 'category' | 'article' | 'module' | 'request';
+export type RegistryColumnId = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'status' | 'justification' | 'comment' | 'files' | 'actions';
 
 export type RegistryFilters = {
   search: string;
   status: '' | ItemStatus;
   budgetYear: string;
-  onlyMine: boolean;
 };
 
 export const REGISTRY_VIEW_LABELS: Record<RegistryView, string> = {
@@ -15,6 +14,7 @@ export const REGISTRY_VIEW_LABELS: Record<RegistryView, string> = {
   article: 'По статье',
   category: 'По категории',
   module: 'По модулю',
+  request: 'По заявкам',
 };
 
 export const REGISTRY_COLUMNS: Array<{ id: RegistryColumnId; label: string; width: number; hideable?: boolean }> = [
@@ -23,9 +23,10 @@ export const REGISTRY_COLUMNS: Array<{ id: RegistryColumnId; label: string; widt
   { id: 'requested', label: 'Запрошено, ₽', width: 118 },
   { id: 'approved', label: 'Согласовано, ₽', width: 126 },
   { id: 'rejected', label: 'Отклонено, ₽', width: 118 },
-  { id: 'pending', label: 'К рассмотрению, ₽', width: 132 },
   { id: 'status', label: 'Статус', width: 148 },
-  { id: 'comment', label: 'Комментарий', width: 180 },
+  { id: 'justification', label: 'Обоснование', width: 300 },
+  { id: 'comment', label: 'Комментарий', width: 220 },
+  { id: 'files', label: 'Файлы', width: 86 },
   { id: 'actions', label: 'Действия', width: 108, hideable: false },
 ];
 
@@ -35,9 +36,10 @@ export const DEFAULT_COLUMN_VISIBILITY: Record<RegistryColumnId, boolean> = {
   requested: true,
   approved: true,
   rejected: true,
-  pending: true,
   status: true,
-  comment: false,
+  justification: true,
+  comment: true,
+  files: true,
   actions: true,
 };
 

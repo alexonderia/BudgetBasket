@@ -951,11 +951,12 @@ class RequestService:
             "category": ("category", "module"),
             "article": ("article", "category", "module"),
             "module": ("module", "article", "category"),
+            "request": ("request",),
         }
         if view not in levels_by_view:
             raise HTTPException(status_code=422, detail="Неизвестное представление реестра")
         entries = self._sort_register_entries(self._register_entries(user, **filters))
-        labels = {"cfo": "ЦФО", "category": "Категория", "article": "Статья / инвестпроект", "module": "Модуль"}
+        labels = {"cfo": "ЦФО", "category": "Категория", "article": "Статья / инвестпроект", "module": "Модуль", "request": "Заявка"}
         roots: dict[str, dict] = {}
         for entry in entries:
             branch = roots

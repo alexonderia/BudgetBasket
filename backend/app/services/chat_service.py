@@ -2,7 +2,7 @@ from fastapi import HTTPException
 
 from app.models import RequestStatus
 from app.repositories.base import Repository
-from app.services.common import get_required
+from app.services.common import get_required, request_author_id
 from app.services.permission_service import PermissionService
 from app.services.request_service import RequestService
 
@@ -15,25 +15,39 @@ class ChatService:
 
     def _participant_ids(self, request: dict, *, repo: Repository | None = None) -> set[str]:
         storage = repo or self.repo
-        users = {item["id"]: item for item in storage.load_all("users")}
-        module_employee_ids = {
-            item["user_id"] for item in storage.load_all("units_responsibles")
-            if item.get("unit_id") == request["unit_id"] and item.get("is_active") and users.get(item.get("user_id"), {}).get("role") == "employee"
-        }
         cfo_id = self.permissions.cfo_for_module(request["unit_id"])
-        cfo_participant_ids = {
-            item["user_id"]
-            for item in storage.load_all("units_responsibles")
-            if item.get("unit_id") == cfo_id
-            and item.get("is_active")
-            and users.get(item.get("user_id"), {}).get("role") in {"employee", "economist"}
+        return {
+            user_id
+            for user_id in {
+                request_author_id(storage, request["id"]),
+                self.permissions.cfo_responsible_id(cfo_id) if cfo_id else None,
+                self.permissions.cfo_economist_id(cfo_id) if cfo_id else None,
+            }
+            if user_id
         }
-        return module_employee_ids | cfo_participant_ids
+
+    def _sync_participants(self, request: dict, chat: dict, *, repo: Repository | None = None) -> None:
+        storage = repo or self.repo
+        expected_user_ids = self._participant_ids(request, repo=storage)
+        actual_user_ids = {
+            row["user_id"]
+            for row in storage.load_all("chats_participants")
+            if row.get("chat_id") == chat["id"]
+        }
+        for user_id in actual_user_ids - expected_user_ids:
+            storage.delete_where("chats_participants", {"chat_id": chat["id"], "user_id": user_id})
+        for user_id in expected_user_ids - actual_user_ids:
+            storage.insert("chats_participants", {"chat_id": chat["id"], "user_id": user_id})
 
     def notification_recipient_ids(self, request_id: str, sender_id: str) -> set[str]:
         request = get_required(self.repo, "requests", request_id)
         self._require_chat_available(request)
-        return self._participant_ids(request) - {sender_id}
+        chat = self._chat(request)
+        return {
+            row["user_id"]
+            for row in self.repo.load_all("chats_participants")
+            if row.get("chat_id") == chat["id"] and row.get("user_id") != sender_id
+        }
 
     def _require_chat_available(self, request: dict) -> None:
         if request.get("status") == RequestStatus.draft and not any(
@@ -45,10 +59,10 @@ class ChatService:
         storage = repo or self.repo
         chat = next((item for item in storage.load_all("req_chats") if item.get("req_id") == request["id"]), None)
         if chat:
+            self._sync_participants(request, chat, repo=storage)
             return chat
         chat = storage.create("req_chats", {"req_id": request["id"]})
-        for user_id in self._participant_ids(request, repo=storage):
-            storage.insert("chats_participants", {"chat_id": chat["id"], "user_id": user_id})
+        self._sync_participants(request, chat, repo=storage)
         return chat
 
     def _require_participant(self, user: dict, request: dict, chat: dict) -> None:
@@ -60,8 +74,6 @@ class ChatService:
     def get_chat(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
         self._require_chat_available(request)
-        if user["role"] != "admin" and user["id"] not in self._participant_ids(request):
-            raise HTTPException(status_code=403, detail="Нет доступа к чату этой заявки")
         chat = self._chat(request)
         self._require_participant(user, request, chat)
         users = {item["id"]: item for item in self.repo.load_all("users")}
@@ -96,6 +108,10 @@ class ChatService:
         users = {item["id"]: item for item in self.repo.load_all("users")}
         profiles = {item["user_id"]: item for item in self.repo.load_all("profiles")}
         units = {item["id"]: item for item in self.repo.load_all("units")}
+        for request_id, chat in chats_by_request.items():
+            request = requests.get(request_id)
+            if request:
+                self._sync_participants(request, chat)
         participants_by_chat: dict[str, list[dict]] = {}
         for participant in self.repo.load_all("chats_participants"):
             participants_by_chat.setdefault(participant["chat_id"], []).append(participant)
@@ -107,10 +123,13 @@ class ChatService:
         for request_id, request in requests.items():
             if request.get("status") == RequestStatus.draft and request_id not in chats_by_request:
                 continue
-            if user["role"] != "admin" and user["id"] not in self._participant_ids(request):
-                continue
             chat = chats_by_request.get(request_id)
             if not chat:
+                continue
+            if user["role"] != "admin" and not any(
+                row.get("user_id") == user["id"]
+                for row in participants_by_chat.get(chat["id"], [])
+            ):
                 continue
             messages = sorted(messages_by_chat.get(chat["id"], []), key=lambda item: str(item.get("created_at") or ""))
             participant = next((item for item in participants_by_chat.get(chat["id"], []) if item.get("user_id") == user["id"]), None)
