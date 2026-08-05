@@ -248,13 +248,6 @@ class PermissionService:
             return
         self.require_employee_edit_request(user, request)
 
-    def require_chat_access(self, user: dict, request: dict, *, write: bool) -> None:
-        if user.get("role") == "admin":
-            if write:
-                raise HTTPException(status_code=403, detail="Администратор не может писать в чат")
-            return
-        self.require_view_request(user, request)
-
     # Removed request-level workflow methods retained as explicit failures for
     # callers that have not yet been migrated.
     @staticmethod

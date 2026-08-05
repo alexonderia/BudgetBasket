@@ -1,4 +1,5 @@
 import FactCheckOutlinedIcon from '@mui/icons-material/FactCheckOutlined';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import {
   Alert,
@@ -190,6 +191,10 @@ function PositionDetails({
     },
     onSuccess: refresh,
   });
+  const openChat = useMutation({
+    mutationFn: async () => (await api.get<{ id: string }>(`/cfo-positions/${position!.id}/chat`)).data,
+    onSuccess: (chat) => window.dispatchEvent(new CustomEvent('budgetbasket:open-chat', { detail: { chatId: chat.id } })),
+  });
   const decide = useMutation({
     mutationFn: ({ decision, item, sumFact, decisionComment }: {
       decision: ItemStatus;
@@ -218,8 +223,8 @@ function PositionDetails({
         </DialogTitle>
         <DialogContent>
           <Stack spacing={2}>
-            {(action.error || decide.error || addPositionComment.error) && (
-              <Alert severity="error">{errorText(action.error || decide.error || addPositionComment.error)}</Alert>
+            {(action.error || decide.error || addPositionComment.error || openChat.error) && (
+              <Alert severity="error">{errorText(action.error || decide.error || addPositionComment.error || openChat.error)}</Alert>
             )}
             <Stack direction="row" spacing={1} flexWrap="wrap">
               <Chip label={positionStatus[position.status]} />
@@ -306,6 +311,7 @@ function PositionDetails({
           </Stack>
         </DialogContent>
         <DialogActions>
+          {(isCfoResponsible || isEconomist) && <Button startIcon={<ForumOutlinedIcon />} onClick={() => openChat.mutate()} disabled={openChat.isPending}>Открыть чат</Button>}
           <Button onClick={onClose}>Закрыть</Button>
           {isCfoResponsible && ['waiting', 'on_revision'].includes(position.status) && !position.frozen && (
             <Button variant="contained" onClick={() => action.mutate('submit')}>
@@ -398,9 +404,9 @@ export default function CfoPositionsPage({ user, renderRouteGraph }: { user: Use
     <Stack spacing={3}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
         <Box>
-          <Typography variant="h4">Согласование бюджета ЦФО</Typography>
+          <Typography variant="h5">Маршрут обработки заявок и позиций ЦФО</Typography>
           <Typography color="text.secondary">
-            Заявки проверяются ответственным ЦФО, дальнейший маршрут идёт по консолидированным позициям.
+            На схеме: модуль → ответственный ЦФО → экономист → следующие этапы. После проверки заявки объединяются в позиции ЦФО и далее проходят по этому маршруту.
           </Typography>
         </Box>
         <Button

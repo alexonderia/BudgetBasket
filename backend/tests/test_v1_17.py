@@ -49,13 +49,14 @@ def test_request_lines_chat_logs_and_budget_mode(tmp_path):
     assert rejected_by_cfo.json()["status"] == "rejected"
     assert rejected_by_cfo.json()["sum_fact"] == 0
 
-    sent = client.post(f"/requests/{request['id']}/chat/messages", json={"text": "Нужна консультация"}, headers=employee)
+    chat = client.get(f"/requests/{request['id']}/chat", headers=employee).json()
+    sent = client.post(f"/chats/{chat['id']}/messages", json={"text": "Нужна консультация"}, headers=employee)
     assert sent.status_code == 200
-    chat = client.get(f"/requests/{request['id']}/chat", headers=economist)
+    chat = client.get(f"/requests/{request['id']}/chat", headers=employee)
     assert chat.status_code == 200, chat.json()
-    assert [message["text"] for message in chat.json()["messages"]] == ["Нужна консультация"]
+    assert chat.json()["messages"][-1]["text"] == "Нужна консультация"
     logs = client.get(f"/requests/{request['id']}/logs", headers=employee)
-    assert {entry["log"]["action"] for entry in logs.json()} >= {"request_created", "line_created", "chat_message_sent"}
+    assert {entry["log"]["action"] for entry in logs.json()} >= {"request_created", "line_created"}
     assert {entry["user"]["login"] for entry in logs.json()} == {"employee"}
     assert any(entry["log"]["action"] == "cfo_item_decided" for entry in logs.json())
     line_log = next(entry for entry in logs.json() if entry["log"]["action"] == "line_created")

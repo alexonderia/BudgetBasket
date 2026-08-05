@@ -144,6 +144,19 @@ class UnitService:
             {"unit_id": unit_id, "user_id": user_id, "is_active": True},
         )
 
+    def _sync_related_chats(self, unit_id: str) -> None:
+        """Refresh existing conversations after an assignment changes."""
+        chat_service = getattr(self, "chat_service", None)
+        if not chat_service:
+            return
+        units = {row["id"]: row for row in self.repo.load_all("units")}
+        for chat in self.repo.load_all("chats"):
+            relevant = chat.get("unit_id") == unit_id
+            if chat.get("kind") == "module_cfo":
+                relevant = relevant or units.get(chat.get("unit_id"), {}).get("parent_id") == unit_id
+            if relevant:
+                chat_service._sync_participants(chat, repo=self.repo)
+
     def _related_cfo_and_module_ids(self, unit_id: str) -> set[str]:
         """Return the CFO and direct modules that must have different owners."""
         units = {item["id"]: item for item in self.repo.load_all("units")}
@@ -175,7 +188,9 @@ class UnitService:
                 status_code=409,
                 detail="Ответственный за ЦФО и его модули должен быть разным сотрудником",
             )
-        return self._set_assignment(unit_id, employee_id, "employee")
+        result = self._set_assignment(unit_id, employee_id, "employee")
+        self._sync_related_chats(unit_id)
+        return result
 
     def get_responsible(self, unit_id: str) -> dict | None:
         matches = self._active_assignments(unit_id, "employee")
@@ -191,6 +206,7 @@ class UnitService:
                 {"unit_id": unit_id, "user_id": item["user_id"]},
                 {"is_active": False},
             )
+        self._sync_related_chats(unit_id)
         return {"ok": True}
 
     def list_assignments(self, user: dict) -> list[dict]:
@@ -218,6 +234,7 @@ class UnitService:
         if payload.get("assignment_type") != "cfo":
             raise HTTPException(status_code=400, detail="Тип назначения должен быть cfo")
         self._set_assignment(payload["unit_id"], payload["economist_id"], "economist")
+        self._sync_related_chats(payload["unit_id"])
         return {
             "id": f"{payload['economist_id']}:{payload['unit_id']}",
             "economist_id": payload["economist_id"],
@@ -245,4 +262,5 @@ class UnitService:
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Назначение не найдено")
+        self._sync_related_chats(cfo_id)
         return {"id": assignment_id, "is_active": False}

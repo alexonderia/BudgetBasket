@@ -1,4 +1,4 @@
--- BudgetBasket v2-22 reference schema (PostgreSQL)
+-- BudgetBasket v2-23 reference schema (PostgreSQL)
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TABLE roles (
@@ -96,11 +96,15 @@ CREATE TABLE req_item_files (
     PRIMARY KEY (file_id, req_item_id)
 );
 
-CREATE TABLE req_chats (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), req_id uuid NOT NULL UNIQUE REFERENCES requests(id) ON DELETE CASCADE
+CREATE TABLE chats (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    kind text NOT NULL CHECK (kind IN ('module_cfo', 'cfo_economist')),
+    unit_id uuid NOT NULL REFERENCES units(id) ON DELETE RESTRICT,
+    budget_year smallint NOT NULL CHECK (budget_year BETWEEN 2000 AND 2200),
+    CONSTRAINT ux_chats_kind_unit_budget_year UNIQUE (kind, unit_id, budget_year)
 );
 CREATE TABLE chat_messages (
-    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), chat_id uuid NOT NULL REFERENCES req_chats(id) ON DELETE CASCADE,
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(), chat_id uuid NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     reply_to uuid REFERENCES chat_messages(id) ON DELETE SET NULL,
     sender_id uuid REFERENCES users(id) ON DELETE RESTRICT,
     text text NOT NULL, is_system boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now()
@@ -111,7 +115,7 @@ CREATE TABLE message_files (
     PRIMARY KEY (file_id, message_id)
 );
 CREATE TABLE chats_participants (
-    chat_id uuid NOT NULL REFERENCES req_chats(id) ON DELETE CASCADE,
+    chat_id uuid NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
     user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     last_read_message_id uuid REFERENCES chat_messages(id) ON DELETE SET NULL,
     PRIMARY KEY (chat_id, user_id)

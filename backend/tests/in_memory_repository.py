@@ -72,6 +72,13 @@ class InMemoryRepository:
     def create(self, collection_name: str, item: dict) -> dict:
         collection = collection_name.removesuffix(".json")
         created = self._normalize_user(item) if collection == "users" else deepcopy(item)
+        if collection == "chats" and any(
+            row.get("kind") == created.get("kind")
+            and str(row.get("unit_id")) == str(created.get("unit_id"))
+            and int(row.get("budget_year")) == int(created.get("budget_year"))
+            for row in self.rows.setdefault(collection, [])
+        ):
+            raise HTTPException(status_code=400, detail="Database constraint violation")
         if "id" not in created:
             if collection in self._next_ids:
                 created["id"] = self._next_ids[collection]

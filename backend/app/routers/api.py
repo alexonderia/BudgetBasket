@@ -809,7 +809,12 @@ def mark_all_notifications_read(request: Request, user: User):
 
 @router.get("/requests/{request_id}/chat")
 def request_chat(request: Request, request_id: str, user: User):
-    return request.app.state.chat_service.get_chat(user, request_id)
+    return request.app.state.chat_service.get_request_chat(user, request_id)
+
+
+@router.get("/cfo-positions/{position_id}/chat")
+def cfo_position_chat(request: Request, position_id: str, user: User):
+    return request.app.state.chat_service.get_position_chat(user, position_id)
 
 
 @router.get("/chats")
@@ -817,23 +822,33 @@ def list_chats(request: Request, user: User):
     return request.app.state.chat_service.list_chats(user)
 
 
-@router.post("/requests/{request_id}/chat/messages")
-async def send_chat_message(request: Request, request_id: str, payload: ChatMessageCreate, user: User):
-    message = request.app.state.chat_service.send(user, request_id, payload.model_dump())
+async def _broadcast_chat_message(request: Request, chat_id: str, message: dict, sender_id: str) -> None:
     await request.app.state.chat_connections.broadcast(
-        request_id,
+        chat_id,
         {"type": "chat.message.created", "message_id": message["id"]},
     )
-    event = {"type": "chat.message.created", "request_id": request_id, "message_id": message["id"], "text": message["text"]}
-    for user_id in request.app.state.chat_service.notification_recipient_ids(request_id, user["id"]):
+    chat = request.app.state.repo.get_by_id("chats", chat_id)
+    event = {"type": "chat.message.created", "chat_id": chat_id, "message_id": message["id"], "kind": chat["kind"], "text": message["text"]}
+    for user_id in request.app.state.chat_service.notification_recipient_ids(chat_id, sender_id):
         await request.app.state.chat_connections.broadcast_user(user_id, event)
+
+
+@router.get("/chats/{chat_id}")
+def get_chat(request: Request, chat_id: str, user: User):
+    return request.app.state.chat_service.get_chat(user, chat_id)
+
+
+@router.post("/chats/{chat_id}/messages")
+async def send_chat_message(request: Request, chat_id: str, payload: ChatMessageCreate, user: User):
+    message = request.app.state.chat_service.send(user, chat_id, payload.model_dump())
+    await _broadcast_chat_message(request, chat_id, message, user["id"])
     return message
 
 
-@router.post("/requests/{request_id}/chat/messages/images")
+@router.post("/chats/{chat_id}/messages/images")
 async def send_chat_message_with_images(
     request: Request,
-    request_id: str,
+    chat_id: str,
     user: User,
     images: list[UploadFile] = File(...),
     text: str = Form(""),
@@ -844,46 +859,40 @@ async def send_chat_message_with_images(
     await request.app.state.file_service.validate_chat_images(images)
     message = request.app.state.chat_service.send(
         user,
-        request_id,
+        chat_id,
         {"text": text, "reply_to": reply_to},
         allow_empty=True,
     )
     files = [
-        await request.app.state.file_service.upload_for_chat_message(user, request_id, message["id"], image)
+        await request.app.state.file_service.upload_for_chat_message(user, chat_id, message["id"], image)
         for image in images
     ]
     message["files"] = files
-    await request.app.state.chat_connections.broadcast(
-        request_id,
-        {"type": "chat.message.created", "message_id": message["id"]},
-    )
-    event = {"type": "chat.message.created", "request_id": request_id, "message_id": message["id"], "text": message["text"]}
-    for user_id in request.app.state.chat_service.notification_recipient_ids(request_id, user["id"]):
-        await request.app.state.chat_connections.broadcast_user(user_id, event)
+    await _broadcast_chat_message(request, chat_id, message, user["id"])
     return message
 
 
-@router.patch("/requests/{request_id}/chat/read")
-def mark_chat_read(request: Request, request_id: str, payload: ChatReadPatch, user: User):
-    return request.app.state.chat_service.mark_read(user, request_id, payload.last_read_message_id)
+@router.patch("/chats/{chat_id}/read")
+def mark_chat_read(request: Request, chat_id: str, payload: ChatReadPatch, user: User):
+    return request.app.state.chat_service.mark_read(user, chat_id, payload.last_read_message_id)
 
 
-@router.websocket("/ws/requests/{request_id}/chat")
-async def request_chat_websocket(websocket: WebSocket, request_id: str):
+@router.websocket("/ws/chats/{chat_id}")
+async def chat_websocket(websocket: WebSocket, chat_id: str):
     token = websocket.query_params.get("token")
     try:
         user = websocket.app.state.auth_service.me(token)
-        websocket.app.state.chat_service.get_chat(user, request_id)
+        websocket.app.state.chat_service.get_chat(user, chat_id)
     except HTTPException:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await websocket.app.state.chat_connections.connect(request_id, websocket)
+    await websocket.app.state.chat_connections.connect(chat_id, websocket)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        websocket.app.state.chat_connections.disconnect(request_id, websocket)
+        websocket.app.state.chat_connections.disconnect(chat_id, websocket)
 
 
 @router.websocket("/ws/chat-notifications")

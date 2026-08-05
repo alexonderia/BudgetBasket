@@ -14,6 +14,7 @@ from sqlalchemy import (
     MetaData,
     Numeric,
     PrimaryKeyConstraint,
+    SmallInteger,
     Table,
     Text,
     create_engine,
@@ -191,14 +192,19 @@ req_item_files = Table(
     PrimaryKeyConstraint("file_id", "req_item_id"), Index("idx_req_item_files_req_item_id", "req_item_id"),
 )
 
-req_chats = Table(
-    "req_chats", metadata, uuid_pk(),
-    Column("req_id", PgUUID(as_uuid=True), ForeignKey("requests.id", ondelete="CASCADE"), nullable=False, unique=True),
+chats = Table(
+    "chats", metadata, uuid_pk(),
+    Column("kind", Text, nullable=False),
+    Column("unit_id", PgUUID(as_uuid=True), ForeignKey("units.id", ondelete="RESTRICT"), nullable=False),
+    Column("budget_year", SmallInteger, nullable=False),
+    CheckConstraint("kind IN ('module_cfo', 'cfo_economist')", name="chats_kind_chk"),
+    CheckConstraint("budget_year BETWEEN 2000 AND 2200", name="chats_budget_year_chk"),
+    Index("ux_chats_kind_unit_budget_year", "kind", "unit_id", "budget_year", unique=True),
 )
 
 chat_messages = Table(
     "chat_messages", metadata, uuid_pk(),
-    Column("chat_id", PgUUID(as_uuid=True), ForeignKey("req_chats.id", ondelete="CASCADE"), nullable=False),
+    Column("chat_id", PgUUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False),
     Column("reply_to", PgUUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL")),
     Column("sender_id", PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT")),
     Column("text", Text, nullable=False), Column("is_system", Boolean, nullable=False, server_default=text("false")),
@@ -215,7 +221,7 @@ message_files = Table(
 
 chats_participants = Table(
     "chats_participants", metadata,
-    Column("chat_id", PgUUID(as_uuid=True), ForeignKey("req_chats.id", ondelete="CASCADE"), nullable=False),
+    Column("chat_id", PgUUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False),
     Column("user_id", PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("last_read_message_id", PgUUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="SET NULL")),
     PrimaryKeyConstraint("chat_id", "user_id"), Index("idx_chats_participants_user_id", "user_id"),

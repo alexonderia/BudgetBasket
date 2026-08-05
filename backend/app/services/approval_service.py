@@ -970,6 +970,12 @@ class ApprovalService:
                 repo, user, economist_step, "position_received", event_id=event_id,
                 comment=comment, cfo_position_id=position_id,
             )
+            if self.chat_service:
+                self.chat_service.system_message_for_position(
+                    after,
+                    "Позиция ЦФО передана экономисту на проверку.",
+                    repo=repo,
+                )
             economist_id = self.permissions.cfo_economist_id(position["cfo_unit_id"])
             self._notify(
                 repo, economist_id, "cfo_position.assigned",
@@ -1104,6 +1110,12 @@ class ApprovalService:
                 before=before, after=after, comment=comment,
                 current_step_id=self._current_step_id(repo, position),
             )
+            if self.chat_service:
+                self.chat_service.system_message_for_position(
+                    after,
+                    "Экономист завершил проверку позиции ЦФО.",
+                    repo=repo,
+                )
         return self.public_position(after)
 
     def freeze_position(self, user: dict, position_id: str, comment: str = "") -> dict:
@@ -1297,6 +1309,12 @@ class ApprovalService:
                 repo, user, step, "position_returned", event_id=event_id,
                 comment=comment, cfo_position_id=position_id, target_step_id=target_step_id,
             )
+            if self.chat_service:
+                self.chat_service.system_message_for_position(
+                    after,
+                    "Позиция ЦФО возвращена на доработку ответственному за ЦФО.",
+                    repo=repo,
+                )
             notify_id = (
                 self.permissions.cfo_economist_id(target["unit_id"])
                 if target.get("unit_id")

@@ -136,6 +136,11 @@ export function Layout({
   const [profileOpen, setProfileOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [chatInboxOpen, setChatInboxOpen] = useState(false);
+  useEffect(() => {
+    const openInbox = () => setChatInboxOpen(true);
+    window.addEventListener('budgetbasket:open-chat', openInbox);
+    return () => window.removeEventListener('budgetbasket:open-chat', openInbox);
+  }, []);
   const [summaryOpen, setSummaryOpen] = useState(true);
   const [summaryMenuAnchor, setSummaryMenuAnchor] = useState<HTMLElement | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileDraft>(emptyProfile);
@@ -145,7 +150,7 @@ export function Layout({
     setToast({ message, severity, key: Date.now() });
   }, []);
   const toastCtx = useMemo(() => ({ showToast }), [showToast]);
-  const canUseChat = user.role === 'employee' || user.role === 'economist';
+  const canUseChat = user.role === 'admin' || user.role === 'employee' || user.role === 'economist';
   const canUseNotifications = user.role !== 'admin';
 
   useEffect(() => {
@@ -165,11 +170,11 @@ export function Layout({
       };
       socket.onmessage = (event) => {
         try {
-          const payload = JSON.parse(event.data) as { type?: string; request_id?: string };
-          if (payload.type === 'chat.message.created' && payload.request_id) {
+          const payload = JSON.parse(event.data) as { type?: string; chat_id?: string; kind?: string };
+          if (payload.type === 'chat.message.created' && payload.chat_id) {
             queryClient.invalidateQueries({ queryKey: ['chats'] });
-            queryClient.invalidateQueries({ queryKey: ['request-details', payload.request_id, 'chat'] });
-            showToast(`Новое сообщение по заявке ${payload.request_id.slice(0, 8)}`, 'info');
+            queryClient.invalidateQueries({ queryKey: ['chats', payload.chat_id] });
+            showToast(payload.kind === 'cfo_economist' ? 'Новое сообщение в чате ЦФО с экономистом' : 'Новое сообщение в чате модуля и ЦФО', 'info');
             return;
           }
           queryClient.invalidateQueries({ queryKey: ['cfo-incoming-requests'] });

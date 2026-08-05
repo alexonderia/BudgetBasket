@@ -266,6 +266,12 @@ class RequestService:
                 cfo_unit_id=cfo_id,
                 repo=repo,
             )
+            if getattr(self, "chat_service", None):
+                self.chat_service.system_message_for_request(
+                    updated,
+                    f"Заявка {request_id[:8]} направлена ответственному за ЦФО.",
+                    repo=repo,
+                )
             if self.notifications:
                 self.notifications.create(
                     responsible_id,

@@ -70,6 +70,7 @@ def create_app(*, repository: Repository | None = None, settings: Settings | Non
     app.state.auth_service = AuthService(repository)
     app.state.user_service = UserService(repository)
     app.state.unit_service = UnitService(repository)
+    app.state.unit_service.chat_service = chat_service
     app.state.catalog_service = CatalogService(repository)
     app.state.request_service = request_service
     app.state.approval_service = approval_service
@@ -78,6 +79,8 @@ def create_app(*, repository: Repository | None = None, settings: Settings | Non
     app.state.chat_connections = ChatConnectionManager()
     app.state.file_guard_client = file_guard
     app.state.file_service = FileService(repository, permissions, upload_dir, settings, file_guard, request_service=request_service)
+    app.state.file_service.chat_service = chat_service
+    request_service.chat_service = chat_service
     app.state.notification_service = notification_service
     app.state.excel_service = ExcelService(repository, permissions, request_service, app.state.file_service, export_dir, file_guard)
     app.add_middleware(

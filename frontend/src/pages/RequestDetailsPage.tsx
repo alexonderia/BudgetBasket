@@ -54,7 +54,7 @@ import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
-import { requestChatWebSocketUrl } from '../api/websocket';
+import { chatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { FilePreviewDialog } from '../components/FilePreviewDialog';
 import { ChatMessageImages } from '../components/ChatMessageImages';
@@ -350,6 +350,7 @@ type ChatMessage = {
   files: FileAttachment[];
 };
 type RequestChat = {
+  id: string;
   participants: { user_id: string; last_read_message_id: string | null }[];
   messages: ChatMessage[];
 };
@@ -2208,7 +2209,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     if (container) container.scrollTop = container.scrollHeight;
   }, [chatMessages.length]);
   const markChatRead = useMutation({
-    mutationFn: (messageId: string) => api.patch(`/requests/${id}/chat/read`, { last_read_message_id: messageId }),
+    mutationFn: (messageId: string) => api.patch(`/chats/${chat?.id}/read`, { last_read_message_id: messageId }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [...detailsKey, 'chat'] }),
   });
   useEffect(() => {
@@ -2231,7 +2232,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   }, [chat, request?.status, searchParams, setSearchParams]);
   useEffect(() => {
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
-    if (!request?.id || (!chat && request.status === 'draft') || !token) return;
+    if (!request?.id || !chat || !token) return;
 
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
@@ -2239,7 +2240,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     let reconnectDelay = 1_000;
 
     const connect = () => {
-      socket = new WebSocket(requestChatWebSocketUrl(request.id, token));
+      socket = new WebSocket(chatWebSocketUrl(chat.id, token));
       socket.onopen = () => {
         reconnectDelay = 1_000;
         queryClient.invalidateQueries({ queryKey: ['request-details', id, 'chat'] });
@@ -2267,14 +2268,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [chat, id, queryClient, request?.id, request?.status]);
+  }, [chat, id, queryClient, request?.status]);
   const sendChatMessage = useMutation({
     mutationFn: () => {
-      if (!chatImages.length) return api.post(`/requests/${id}/chat/messages`, { text: chatText.trim() });
+      if (!chatImages.length) return api.post(`/chats/${chat!.id}/messages`, { text: chatText.trim() });
       const form = new FormData();
       form.append('text', chatText.trim());
       chatImages.forEach((image) => form.append('images', image));
-      return api.post(`/requests/${id}/chat/messages/images`, form);
+      return api.post(`/chats/${chat!.id}/messages/images`, form);
     },
     onSuccess: () => {
       setChatText('');

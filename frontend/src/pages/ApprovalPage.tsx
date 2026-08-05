@@ -994,7 +994,14 @@ function ApprovalGraph({
           const isEconomistStep = Boolean(step.is_economist_step);
           const isFinal = !isLeaf && step.user?.role === 'zgd';
           const isSelected = step.id === selectedStepId;
-          const isViewerStep = Boolean(viewerUserId) && (step.responsible?.id === viewerUserId || step.user?.id === viewerUserId);
+          // `responsible` describes the CFO owner on a leaf step. Economist
+          // and reviewer steps may carry that same contextual field, but their
+          // current performer is exclusively `user`.
+          const isViewerStep = Boolean(viewerUserId) && (
+            isLeaf
+              ? step.responsible?.id === viewerUserId
+              : step.user?.id === viewerUserId
+          );
           const contact = step.user?.profile;
           const isContactOpen = openContactStepId === step.id;
           const statusTone = graphStepStatusTones[step.status];
