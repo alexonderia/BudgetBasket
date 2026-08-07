@@ -86,9 +86,10 @@ class InMemoryRepository:
             elif collection not in {"profiles", "units_responsibles", "req_item_files", "req_item_month_plans", "message_files", "chats_participants", "step_edges"}:
                 created["id"] = str(uuid4())
         if collection == "cfo_positions":
+            created.setdefault("status", "waiting")
+        if collection == "req_items":
             created.setdefault("frozen", False)
             created.setdefault("fixed", False)
-            created.setdefault("status", "waiting")
         if collection in {"req_logs", "step_logs", "cfo_position_logs", "notifications"}:
             created.setdefault("created_at", datetime.now(timezone.utc).isoformat())
         self.rows.setdefault(collection, []).append(created)

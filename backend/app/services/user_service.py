@@ -93,10 +93,14 @@ class UserService:
             for item in self.repo.load_all("units_responsibles")
             if item.get("user_id") == user_id and item.get("is_active")
         }
+        position_ids = {
+            item["id"] for item in self.repo.load_all("cfo_positions")
+            if item.get("cfo_unit_id") in assigned_units
+        }
         if any(
-            item.get("cfo_unit_id") in assigned_units
+            item.get("cfo_position_id") in position_ids
             and (item.get("frozen") or item.get("fixed"))
-            for item in self.repo.load_all("cfo_positions")
+            for item in self.repo.load_all("req_items")
         ):
             raise HTTPException(status_code=409, detail="У пользователя есть замороженные позиции ЦФО")
         self.repo.delete_where("profiles", {"user_id": user_id})

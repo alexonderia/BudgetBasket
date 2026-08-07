@@ -256,3 +256,22 @@ class ChatService:
         storage = repo or self.repo
         chat = self._get_or_create("cfo_economist", position["cfo_unit_id"], position["budget_year"], repo=storage)
         return storage.create("chat_messages", {"chat_id": chat["id"], "reply_to": None, "sender_id": None, "text": text, "is_system": True})
+
+    def comment_for_position(self, user: dict, position: dict, text: str, *, repo: Repository | None = None) -> dict:
+        """Persist a workflow comment as an authored message in the CFO chat."""
+        storage = repo or self.repo
+        chat = self._get_or_create("cfo_economist", position["cfo_unit_id"], position["budget_year"], repo=storage)
+        self._sync_participants(chat, repo=storage)
+        return storage.create(
+            "chat_messages",
+            {"chat_id": chat["id"], "reply_to": None, "sender_id": user["id"], "text": text.strip()},
+        )
+
+    def comment_for_request(self, user: dict, request: dict, text: str, *, repo: Repository | None = None) -> dict:
+        storage = repo or self.repo
+        chat = self._get_or_create("module_cfo", request["unit_id"], request["budget_year"], repo=storage)
+        self._sync_participants(chat, repo=storage)
+        return storage.create(
+            "chat_messages",
+            {"chat_id": chat["id"], "reply_to": None, "sender_id": user["id"], "text": text.strip()},
+        )

@@ -3,6 +3,7 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import UndoIcon from '@mui/icons-material/Undo';
@@ -39,6 +40,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ApprovalRegister } from '../components/ApprovalRegister';
+import { RequestHistoryDrawer, type RequestHistoryTarget } from '../components/request-history/RequestHistoryDrawer';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
@@ -155,6 +157,7 @@ function RequestsListPage({ user }: { user: User }) {
     include_files: user.role === 'zgd',
   });
   const [deleteTarget, setDeleteTarget] = useState<BudgetRequest | null>(null);
+  const [historyTarget, setHistoryTarget] = useState<RequestHistoryTarget | null>(null);
   const deleteTargetId = deleteTarget?.id || '';
 
   const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
@@ -491,7 +494,7 @@ function RequestsListPage({ user }: { user: User }) {
 
   const requestTableColumns = useMemo<TableColumnDefinition<BudgetRequest, RequestTableColumn>[]>(() => {
     const columns: TableColumnDefinition<BudgetRequest, RequestTableColumn>[] = [
-    ...(user.role === 'employee' && filteredRequests.some((item) => item.status === 'draft') ? [{ id: 'actions' as const, label: 'Действие', sortable: false, filterable: false, hideable: false, getValue: () => '' }] : []),
+    ...(user.role === 'employee' ? [{ id: 'actions' as const, label: 'Действие', sortable: false, filterable: false, hideable: false, getValue: () => '' }] : []),
     { id: 'unit', label: 'Объединение заявки', getValue: (item) => formatUnitName(item.unit_id) },
     { id: 'status', label: 'Статус', getValue: (item) => requestStatusLabels[item.status] || item.status },
     ...(user.role === 'approver' || user.role === 'zgd' ? [{ id: 'my_step' as const, label: 'Мой этап', getValue: (item: BudgetRequest) => item.my_step_statuses?.map((step) => step.reviewed ? 'Согласовано' : step.status).join(', ') || '—' }] : []),
@@ -576,7 +579,40 @@ function RequestsListPage({ user }: { user: User }) {
   const renderRequestCell = (item: BudgetRequest, columnId: RequestTableColumn) => {
     const canDelete = item.status === 'draft' && user.role === 'employee';
     if (columnId === 'actions') {
-      return <TableCell key={columnId}><Stack direction="row" spacing={0.5}>{canDelete && <Tooltip title="Удалить"><IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }} aria-label="Удалить"><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>}</Stack></TableCell>;
+      return (
+        <TableCell key={columnId}>
+          <Stack direction="row" spacing={0.5}>
+            <Tooltip title="История изменений">
+              <IconButton
+                size="small"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setHistoryTarget({
+                    requestId: item.id,
+                    title: 'История изменений',
+                    subtitle: `Заявка №${item.id.slice(0, 8)}`,
+                  });
+                }}
+                aria-label="История изменений"
+              >
+                <HistoryOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            {canDelete ? (
+              <Tooltip title="Удалить">
+                <IconButton
+                  size="small"
+                  color="error"
+                  onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }}
+                  aria-label="Удалить"
+                >
+                  <DeleteOutlineIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
+          </Stack>
+        </TableCell>
+      );
     }
     if (columnId === 'unit') return <TableCell key={columnId}>{formatUnitName(item.unit_id)}</TableCell>;
     if (columnId === 'status') return <TableCell key={columnId}><Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap><RequestStatusBadge status={item.status} />{item.frozen && <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}><LockOutlinedIcon color={item.fixed ? 'success' : 'warning'} fontSize="small" /></Tooltip>}</Stack></TableCell>;
@@ -1167,6 +1203,7 @@ function RequestsListPage({ user }: { user: User }) {
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => deleteTarget && deleteRequest.mutate(deleteTarget.id)}
       />
+      <RequestHistoryDrawer target={historyTarget} onClose={() => setHistoryTarget(null)} />
     </Stack>
   );
 }

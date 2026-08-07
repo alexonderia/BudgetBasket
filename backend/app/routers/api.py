@@ -18,12 +18,16 @@ from app.models import (
     CfoPositionActionIn,
     CfoPositionCommentIn,
     CfoPositionReturnIn,
+    CfoPositionRevisionIn,
     ItemCreate,
     ItemDecisionIn,
     ItemPatch,
+    AnalyticsFieldsPatch,
     LoginIn,
     ProfilePatch,
     RegisterGroupDecisionIn,
+    RegisterGroupCfoRevisionIn,
+    RegisterGroupWorkflowActionIn,
     RequestCreate,
     RequestPatch,
     ResponsibleIn,
@@ -49,6 +53,13 @@ async def _broadcast_notifications(request: Request, result: dict, event_type: s
             user_id,
             {"type": event_type, "reload_required": True},
         )
+    return result
+
+
+async def _broadcast_workflow_result(request: Request, result: dict, event_type: str, sender_id: str) -> dict:
+    await _broadcast_notifications(request, result, event_type)
+    for message in result.get("chat_messages", []):
+        await _broadcast_chat_message(request, message["chat_id"], message, sender_id)
     return result
 
 
@@ -174,7 +185,7 @@ async def approve_position_at_step(
     payload: CfoPositionActionIn, user: User,
 ):
     result = request.app.state.approval_service.approve_position_at_step(
-        user, step_id, position_id, payload.comment
+        user, step_id, position_id, payload.comment, payload.item_ids
     )
     return await _broadcast_notifications(request, result, "cfo_position.updated")
 
@@ -185,7 +196,7 @@ async def return_position_at_step(
     payload: CfoPositionReturnIn, user: User,
 ):
     result = request.app.state.approval_service.return_position(
-        user, step_id, position_id, payload.target_step_id, payload.comment
+        user, step_id, position_id, payload.target_step_id, payload.comment, payload.item_ids
     )
     return await _broadcast_notifications(request, result, "cfo_position.returned")
 
@@ -410,6 +421,46 @@ def dashboard_table(request: Request, user: User, unit_id: str | None = None, is
     return request.app.state.request_service.dashboard_table(user, unit_id, is_income=is_income)
 
 
+@router.get("/approval-register/analytics-filters")
+def approval_register_analytics_filters(
+    request: Request,
+    user: User,
+    budget_year: int | None = None,
+    cfo_id: str | None = None,
+    category_id: str | None = None,
+    article_id: str | None = None,
+    module_id: str | None = None,
+    request_id: str | None = None,
+    status: str | None = None,
+    request_status: str | None = None,
+    search: str | None = None,
+    mine_only: bool = False,
+    analytics_1: str | None = None,
+    analytics_2: str | None = None,
+    analytics_3: str | None = None,
+    analytics_4: str | None = None,
+    analytics_5: str | None = None,
+):
+    return request.app.state.request_service.approval_register_analytics_filters(
+        user,
+        budget_year=budget_year,
+        cfo_id=cfo_id,
+        category_id=category_id,
+        article_id=article_id,
+        module_id=module_id,
+        request_id=request_id,
+        status=status,
+        request_status=request_status,
+        search=search,
+        mine_only=mine_only,
+        analytics_1=analytics_1,
+        analytics_2=analytics_2,
+        analytics_3=analytics_3,
+        analytics_4=analytics_4,
+        analytics_5=analytics_5,
+    )
+
+
 @router.get("/approval-register")
 def approval_register(
     request: Request,
@@ -425,12 +476,22 @@ def approval_register(
     request_status: str | None = None,
     search: str | None = None,
     mine_only: bool = False,
+    analytics_1: str | None = None,
+    analytics_2: str | None = None,
+    analytics_3: str | None = None,
+    analytics_4: str | None = None,
+    analytics_5: str | None = None,
 ):
     return request.app.state.request_service.approval_register(
         user, view, budget_year=budget_year, cfo_id=cfo_id,
         category_id=category_id, article_id=article_id, module_id=module_id, request_id=request_id,
         status=status, request_status=request_status, search=search,
         mine_only=mine_only,
+        analytics_1=analytics_1,
+        analytics_2=analytics_2,
+        analytics_3=analytics_3,
+        analytics_4=analytics_4,
+        analytics_5=analytics_5,
     )
 
 
@@ -450,6 +511,11 @@ def approval_register_rows(
     request_status: str | None = None,
     search: str | None = None,
     mine_only: bool = False,
+    analytics_1: str | None = None,
+    analytics_2: str | None = None,
+    analytics_3: str | None = None,
+    analytics_4: str | None = None,
+    analytics_5: str | None = None,
 ):
     if page < 1:
         raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
@@ -457,6 +523,11 @@ def approval_register_rows(
         user, module_id, page, page_size, request_id=request_id, budget_year=budget_year, cfo_id=cfo_id,
         category_id=category_id, article_id=article_id, status=status,
         request_status=request_status, search=search, mine_only=mine_only,
+        analytics_1=analytics_1,
+        analytics_2=analytics_2,
+        analytics_3=analytics_3,
+        analytics_4=analytics_4,
+        analytics_5=analytics_5,
     )
 
 
@@ -476,6 +547,100 @@ def decide_approval_register_group_cfo(
         user,
         {"item_ids": item_ids, "decision": payload.decision, "comment": payload.comment},
     )
+
+
+@router.patch("/approval-register/groups/{group_type}/{group_id}/analytics")
+def apply_approval_register_group_analytics(
+    request: Request,
+    group_type: str,
+    group_id: str,
+    payload: AnalyticsFieldsPatch,
+    user: User,
+    request_id: str | None = None,
+    status: str | None = None,
+    budget_year: int | None = None,
+    search: str | None = None,
+    analytics_1: str | None = None,
+    analytics_2: str | None = None,
+    analytics_3: str | None = None,
+    analytics_4: str | None = None,
+    analytics_5: str | None = None,
+):
+    patch = clean_patch(payload)
+    if not patch:
+        raise HTTPException(status_code=400, detail="Укажите поля аналитики")
+    filters = {
+        "request_id": request_id,
+        "status": status,
+        "budget_year": budget_year,
+        "search": search,
+        "analytics_1": analytics_1,
+        "analytics_2": analytics_2,
+        "analytics_3": analytics_3,
+        "analytics_4": analytics_4,
+        "analytics_5": analytics_5,
+    }
+    item_ids = request.app.state.request_service.approval_register_group_analytics_item_ids(
+        user, group_type, group_id, **filters,
+    )
+    return request.app.state.budget_item_service.apply_analytics_bulk(user, item_ids, patch)
+
+
+@router.get("/approval-register/groups/{group_type}/{group_id}/actionable-rows")
+def approval_register_actionable_rows(
+    request: Request,
+    group_type: str,
+    group_id: str,
+    user: User,
+    request_id: str | None = None,
+    status: str | None = None,
+    budget_year: int | None = None,
+    search: str | None = None,
+):
+    return request.app.state.request_service.approval_register_group_actionable_rows(
+        user,
+        group_type,
+        group_id,
+        request_id=request_id,
+        status=status,
+        budget_year=budget_year,
+        search=search,
+    )
+
+
+@router.get("/approval-register/groups/{group_type}/{group_id}/revision-lines")
+def approval_register_revision_lines(
+    request: Request,
+    group_type: str,
+    group_id: str,
+    user: User,
+    mode: str | None = None,
+    request_id: str | None = None,
+):
+    return request.app.state.request_service.approval_register_group_revision_lines(
+        user, group_type, group_id, mode=mode, request_id=request_id,
+    )
+
+
+@router.post("/approval-register/groups/{group_type}/{group_id}/cfo-revision")
+async def cfo_revision_approval_register_group(
+    request: Request,
+    group_type: str,
+    group_id: str,
+    payload: RegisterGroupCfoRevisionIn,
+    user: User,
+    request_id: str | None = None,
+):
+    result = request.app.state.budget_item_service.cfo_revision_from_register(
+        user,
+        group_type,
+        group_id,
+        payload.model_dump(),
+        request_id=request_id,
+    )
+    for message in result.get("chat_messages", []):
+        await _broadcast_chat_message(request, message["chat_id"], message, user["id"])
+    return result
 
 
 @router.get("/requests/export/closed")
@@ -586,12 +751,47 @@ def patch_request_item(request: Request, item_id: str, payload: ItemPatch, user:
 
 
 @router.post("/items/{item_id}/cfo-decision")
-def decide_request_item_cfo(
+async def decide_request_item_cfo(
     request: Request, item_id: str, payload: ItemDecisionIn, user: User
 ):
-    return request.app.state.budget_item_service.decide_cfo(
+    result = request.app.state.budget_item_service.decide_cfo(
         user, item_id, payload.model_dump(exclude_unset=True)
     )
+    for message in result.get("chat_messages", []):
+        await _broadcast_chat_message(request, message["chat_id"], message, user["id"])
+    return result
+
+
+@router.post("/approval-register/groups/{group_type}/{group_id}/workflow-action")
+async def act_on_approval_register_group(
+    request: Request,
+    group_type: str,
+    group_id: str,
+    payload: RegisterGroupWorkflowActionIn,
+    user: User,
+    request_id: str | None = None,
+):
+    position_ids = request.app.state.request_service.approval_register_group_position_ids(
+        user, group_type, group_id, request_id=request_id,
+    )
+    if payload.action == "submit":
+        result = request.app.state.approval_service.submit_positions_from_register(
+            user, position_ids, payload.comment,
+        )
+        return await _broadcast_notifications(request, result, "cfo_position.assigned")
+    if payload.action == "approve":
+        result = request.app.state.approval_service.approve_positions_from_register(
+            user, position_ids, payload.comment,
+        )
+        return await _broadcast_notifications(request, result, "cfo_position.updated")
+    result = request.app.state.approval_service.return_positions_from_register(
+        user,
+        position_ids,
+        payload.target_step_id or "",
+        payload.comment,
+        [item.model_dump() for item in payload.items] if payload.items else None,
+    )
+    return await _broadcast_workflow_result(request, result, "cfo_position.returned", user["id"])
 
 
 @router.post("/items/cfo-decision/bulk")
@@ -772,7 +972,7 @@ async def freeze_cfo_position(
     request: Request, position_id: str, payload: CfoPositionActionIn, user: User
 ):
     result = request.app.state.approval_service.freeze_position(
-        user, position_id, payload.comment
+        user, position_id, payload.comment, payload.item_ids
     )
     return await _broadcast_notifications(request, result, "cfo_position.assigned")
 
@@ -782,8 +982,29 @@ def unfreeze_cfo_position(
     request: Request, position_id: str, payload: CfoPositionActionIn, user: User
 ):
     return request.app.state.approval_service.unfreeze_position(
-        user, position_id, payload.comment
+        user, position_id, payload.comment, payload.item_ids
     )
+
+
+@router.post("/cfo-positions/{position_id}/reopen-fixed")
+async def reopen_fixed_cfo_position_items(
+    request: Request, position_id: str, payload: CfoPositionRevisionIn, user: User
+):
+    result = request.app.state.approval_service.reopen_fixed_items(
+        user, position_id, payload.target_step_id, payload.comment,
+        [item.item_id for item in payload.items],
+    )
+    return await _broadcast_workflow_result(request, result, "cfo_position.returned", user["id"])
+
+
+@router.post("/cfo-positions/{position_id}/return-for-revision")
+async def return_cfo_position_for_revision(
+    request: Request, position_id: str, payload: CfoPositionRevisionIn, user: User
+):
+    result = request.app.state.approval_service.return_for_revision(
+        user, position_id, payload.model_dump()
+    )
+    return await _broadcast_workflow_result(request, result, "cfo_position.returned", user["id"])
 
 
 @router.get("/notifications")

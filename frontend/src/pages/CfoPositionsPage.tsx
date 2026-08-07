@@ -5,6 +5,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -32,6 +33,7 @@ import { type ReactNode, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { CfoRequestReviewDialog } from '../components/CfoRequestReviewDialog';
+import { ArticleRevisionDialog } from '../components/ArticleRevisionDialog';
 import type {
   ApprovalStep,
   BudgetItem,
@@ -156,6 +158,7 @@ function PositionDetails({
   const [comment, setComment] = useState('');
   const [positionComment, setPositionComment] = useState('');
   const [targetItem, setTargetItem] = useState<BudgetItem | null>(null);
+  const [revisionOpen, setRevisionOpen] = useState(false);
   const currentStep = steps.find((step) => step.id === position?.current_step_id);
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
@@ -230,8 +233,8 @@ function PositionDetails({
               <Chip label={positionStatus[position.status]} />
               <Chip label={`План: ${money(position.sum_plan)}`} />
               <Chip label={`Согласовано: ${money(position.sum_fact)}`} />
-              {position.frozen && <Chip color="info" label="Заморожена" />}
-              {position.fixed && <Chip color="success" label="Зафиксирована" />}
+              <Chip color={position.all_items_frozen ? 'info' : 'default'} label={`Заморожено: ${position.frozen_items_count}/${position.items_count}`} />
+              <Chip color={position.all_items_fixed ? 'success' : 'default'} label={`Зафиксировано: ${position.fixed_items_count}/${position.items_count}`} />
             </Stack>
             <TableContainer component={Paper} variant="outlined">
               <Table size="small">
@@ -242,6 +245,7 @@ function PositionDetails({
                     <TableCell align="right">План</TableCell>
                     <TableCell align="right">Решение</TableCell>
                     <TableCell>Статус</TableCell>
+                    <TableCell>Блокировка</TableCell>
                     {isEconomist && <TableCell />}
                   </TableRow>
                 </TableHead>
@@ -256,11 +260,12 @@ function PositionDetails({
                       <TableCell align="right">{money(item.sum_plan)}</TableCell>
                       <TableCell align="right">{money(item.sum_fact)}</TableCell>
                       <TableCell><Chip size="small" label={itemStatus[item.status]} /></TableCell>
+                      <TableCell><Stack direction="row" spacing={0.5}>{item.fixed && <Chip size="small" color="success" label="Зафиксирована" />}{item.frozen && !item.fixed && <Chip size="small" color="info" label="Заморожена" />}{!item.frozen && !item.fixed && position.status === 'on_revision' && <Chip size="small" color="warning" label="Доработка" />}</Stack></TableCell>
                       {isEconomist && (
                         <TableCell>
                           <Button
                             size="small"
-                            disabled={position.frozen || position.current_step?.unit_id !== position.cfo_unit_id}
+                            disabled={item.frozen || item.fixed || position.current_step?.unit_id !== position.cfo_unit_id}
                             onClick={() => setTargetItem(item)}
                           >
                             Решение
@@ -313,20 +318,20 @@ function PositionDetails({
         <DialogActions>
           {(isCfoResponsible || isEconomist) && <Button startIcon={<ForumOutlinedIcon />} onClick={() => openChat.mutate()} disabled={openChat.isPending}>Открыть чат</Button>}
           <Button onClick={onClose}>Закрыть</Button>
-          {isCfoResponsible && ['waiting', 'on_revision'].includes(position.status) && !position.frozen && (
+          {isCfoResponsible && ['waiting', 'on_revision'].includes(position.status) && !position.all_items_fixed && (
             <Button variant="contained" onClick={() => action.mutate('submit')}>
               Передать экономисту
             </Button>
           )}
-          {isEconomist && !position.frozen && position.status === 'on_approval' && (
+          {isEconomist && position.open_items_count > 0 && position.status === 'on_approval' && (
             <Button onClick={() => action.mutate('complete')}>Завершить проверку строк</Button>
           )}
-          {isEconomist && !position.frozen && position.status === 'approved' && (
+          {isEconomist && position.open_items_count > 0 && position.status === 'approved' && (
             <Button variant="contained" onClick={() => action.mutate('freeze')}>
               Заморозить и передать
             </Button>
           )}
-          {isEconomist && position.frozen && position.status === 'on_revision' && (
+          {isEconomist && position.frozen_items_count > 0 && position.status === 'on_revision' && (
             <Button variant="contained" onClick={() => action.mutate('unfreeze')}>
               Разморозить для доработки
             </Button>
@@ -336,8 +341,7 @@ function PositionDetails({
               {!!currentStep?.child_step_ids?.length && (
                 <Button
                   color="warning"
-                  disabled={!comment.trim()}
-                  onClick={() => action.mutate('return')}
+                  onClick={() => setRevisionOpen(true)}
                 >
                   Вернуть
                 </Button>
@@ -362,6 +366,49 @@ function PositionDetails({
             decisionComment,
           });
         }}
+      />
+      <ArticleRevisionDialog
+        open={revisionOpen}
+        onClose={() => setRevisionOpen(false)}
+        onSuccess={refresh}
+        mode="workflow"
+        positionId={position.id}
+        initialLines={position.contributions
+          .filter((item) => !item.fixed)
+          .map((item) => ({
+            id: item.id,
+            request_id: item.request_id,
+            request_status: item.request.status,
+            budget_year: item.request.budget_year,
+            module_id: item.request.unit_id,
+            module_name: item.module?.name || '—',
+            cfo_id: position.cfo_unit_id,
+            cfo_name: position.cfo?.name || '—',
+            category_id: '',
+            category_name: '',
+            article_id: position.dds_id || position.invest_id || '',
+            article_name: position.article?.name || '—',
+            kind: position.dds_id ? 'dds' : 'invest',
+            name: item.name,
+            justification: item.justification || '',
+            comment: item.comment || '',
+            files_count: 0,
+            requested_sum: Number(item.sum_plan || 0),
+            approved_sum: Number(item.sum_fact || 0),
+            status: item.status,
+            updated_at: '',
+            is_collecting: false,
+            is_cfo_review: false,
+            is_cfo_review_actionable: false,
+            position_id: position.id,
+            is_in_approval: true,
+            is_approval_actionable: true,
+            approval_stage: null,
+            frozen: item.frozen,
+            fixed: item.fixed,
+          }))}
+        steps={currentStep ? [currentStep] : steps}
+        user={user}
       />
     </>
   );
@@ -479,7 +526,7 @@ export default function CfoPositionsPage({ user, renderRouteGraph }: { user: Use
                     <TableCell>
                       <Chip
                         size="small"
-                        color={item.fixed ? 'success' : item.frozen ? 'info' : 'default'}
+                        color={item.all_items_fixed ? 'success' : item.all_items_frozen ? 'info' : 'default'}
                         label={positionStatus[item.status]}
                       />
                     </TableCell>

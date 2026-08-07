@@ -1,6 +1,6 @@
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -166,6 +166,11 @@ class ItemCreate(StrictModel):
     sum_plan: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
     name: str = ""
     justification: str = ""
+    analytics_1: str = ""
+    analytics_2: str = ""
+    analytics_3: str = ""
+    analytics_4: str = ""
+    analytics_5: str = ""
     month_plans: list[ItemMonthPlan] = Field(default_factory=list)
 
 
@@ -179,6 +184,11 @@ class ItemPatch(StrictModel):
     comment: str | None = None
     name: str | None = Field(default=None, min_length=1)
     justification: str | None = None
+    analytics_1: str | None = None
+    analytics_2: str | None = None
+    analytics_3: str | None = None
+    analytics_4: str | None = None
+    analytics_5: str | None = None
     month_plans: list[ItemMonthPlan] | None = None
     clear_month_plans: bool = False
 
@@ -247,8 +257,33 @@ class RegisterGroupDecisionIn(StrictModel):
     comment: str = ""
 
 
+class RegisterGroupWorkflowActionIn(StrictModel):
+    """Action over all actionable CFO positions in an article or CFO group."""
+
+    action: Literal["submit", "approve", "return_for_revision"]
+    comment: str = ""
+    target_step_id: str | None = None
+    items: list["RevisionItemIn"] | None = None
+
+
+class RegisterGroupCfoRevisionIn(StrictModel):
+    """Partial CFO review return for a register article/CFO group."""
+
+    comment: str = Field(min_length=1)
+    items: list["RevisionItemIn"] = Field(min_length=1)
+
+
+class AnalyticsFieldsPatch(StrictModel):
+    analytics_1: str | None = None
+    analytics_2: str | None = None
+    analytics_3: str | None = None
+    analytics_4: str | None = None
+    analytics_5: str | None = None
+
+
 class CfoPositionActionIn(StrictModel):
     comment: str = ""
+    item_ids: list[str] = Field(default_factory=list)
 
 
 class CfoPositionCommentIn(StrictModel):
@@ -258,6 +293,19 @@ class CfoPositionCommentIn(StrictModel):
 class CfoPositionReturnIn(StrictModel):
     target_step_id: str
     comment: str = Field(min_length=1)
+    item_ids: list[str] = Field(default_factory=list)
+
+
+class RevisionItemIn(StrictModel):
+    item_id: str
+    comment: str = ""
+    suggested_sum_fact: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+
+
+class CfoPositionRevisionIn(StrictModel):
+    target_step_id: str
+    comment: str = Field(min_length=1)
+    items: list[RevisionItemIn] = Field(min_length=1)
 
 
 class NotificationReadIn(StrictModel):

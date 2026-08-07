@@ -1,13 +1,14 @@
-import type { ApprovalRegisterRow, ItemStatus, RegisterAggregateStatus, RegisterAggregates } from '../../types';
+import type { ApprovalRegisterGroup, ApprovalRegisterRow, ItemStatus, RegisterAggregateStatus, RegisterAggregates, User } from '../../types';
+import { ANALYTICS_FIELD_KEYS, EMPTY_ANALYTICS_FILTERS, type AnalyticsFieldKey } from '../../utils/analyticsFields';
 
 export type RegistryView = 'cfo' | 'category' | 'article' | 'module' | 'request';
-export type RegistryColumnId = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'status' | 'justification' | 'comment' | 'files' | 'actions';
+export type RegistryColumnId = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'status' | 'justification' | 'comment' | 'files' | 'actions' | AnalyticsFieldKey;
 
 export type RegistryFilters = {
   search: string;
   status: '' | ItemStatus;
   budgetYear: string;
-};
+} & Record<AnalyticsFieldKey, string>;
 
 export const REGISTRY_VIEW_LABELS: Record<RegistryView, string> = {
   cfo: 'По ЦФО',
@@ -23,11 +24,12 @@ export const REGISTRY_COLUMNS: Array<{ id: RegistryColumnId; label: string; widt
   { id: 'requested', label: 'Запрошено, ₽', width: 118 },
   { id: 'approved', label: 'Согласовано, ₽', width: 126 },
   { id: 'rejected', label: 'Отклонено, ₽', width: 118 },
-  { id: 'status', label: 'Статус', width: 148 },
+  { id: 'status', label: 'Статус', width: 188 },
+  { id: 'actions', label: 'Действия', width: 108, hideable: false },
   { id: 'justification', label: 'Обоснование', width: 300 },
   { id: 'comment', label: 'Комментарий', width: 220 },
   { id: 'files', label: 'Файлы', width: 86 },
-  { id: 'actions', label: 'Действия', width: 108, hideable: false },
+  ...ANALYTICS_FIELD_KEYS.map((id) => ({ id, label: `Аналитика ${id.slice(-1)}`, width: 160, hideable: true })),
 ];
 
 export const DEFAULT_COLUMN_VISIBILITY: Record<RegistryColumnId, boolean> = {
@@ -41,6 +43,10 @@ export const DEFAULT_COLUMN_VISIBILITY: Record<RegistryColumnId, boolean> = {
   comment: true,
   files: true,
   actions: true,
+  ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
+    result[key] = false;
+    return result;
+  }, {} as Record<AnalyticsFieldKey, boolean>),
 };
 
 export const DEFAULT_COLUMN_WIDTHS = REGISTRY_COLUMNS.reduce((result, column) => {
@@ -77,7 +83,46 @@ export const AGGREGATE_STATUS_LABELS: Record<RegisterAggregateStatus, string> = 
 };
 
 export function isRowActionable(item: ApprovalRegisterRow) {
-  return item.is_cfo_review_actionable || (item.is_approval_actionable && !!item.position_id);
+  if (item.status_context?.editability) {
+    return item.status_context.editability.can_decide;
+  }
+  return item.status === 'on_review'
+    && (item.is_cfo_review_actionable || (item.is_approval_actionable && !!item.position_id));
+}
+
+export function isGroupActionable(group: ApprovalRegisterGroup) {
+  return (group.type === 'article' || group.type === 'cfo')
+    && (group.aggregates.cfo_review_actionable_requests > 0 || group.aggregates.actionable_positions > 0);
+}
+
+export function isGroupSelectable(group: ApprovalRegisterGroup) {
+  return group.aggregates.cfo_review_actionable_requests > 0 || group.aggregates.actionable_positions > 0;
+}
+
+export function canEditRevisionLineDetails(role: User['role']) {
+  return role === 'economist' || role === 'employee';
+}
+
+export function canEditApprovedAmount(role: User['role'], item: ApprovalRegisterRow) {
+  if (!canEditRevisionLineDetails(role)) return false;
+  if (item.status_context?.editability) {
+    return item.status_context.editability.can_edit_amount;
+  }
+  return isRowActionable(item);
+}
+
+export function groupHasCfoActions(group: ApprovalRegisterGroup) {
+  return group.aggregates.cfo_review_actionable_requests > 0;
+}
+
+export function groupHasWorkflowActions(group: ApprovalRegisterGroup) {
+  return group.aggregates.actionable_positions > 0;
+}
+
+export function workflowApproveLabel(role: User['role']) {
+  if (role === 'employee') return 'Передать экономисту';
+  if (role === 'economist') return 'Согласовать и передать';
+  return 'Согласовать';
 }
 
 export function rowReadiness(item: ApprovalRegisterRow) {
@@ -114,11 +159,240 @@ export function rowRejectedAmount(item: ApprovalRegisterRow) {
 export const AGGREGATE_DISPLAY_LABELS: Record<RegisterAggregateStatus, string> = {
   approved: 'Согласовано',
   rejected: 'Отклонено',
-  partially_approved: 'На рассмотрении',
+  partially_approved: 'Частично рассмотрено',
   on_review: 'На рассмотрении',
-  in_progress: 'На рассмотрении',
+  in_progress: 'Частично рассмотрено',
   no_data: 'Черновик',
 };
+
+export type RegistryStatusTone = 'success' | 'error' | 'warning' | 'info' | 'default';
+
+export type RegistryStatusDisplay = {
+  label: string;
+  tone: RegistryStatusTone;
+  hint: string;
+  shortHint?: string;
+};
+
+export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisplay {
+  if (item.status === 'approved') {
+    return {
+      label: 'Утверждено',
+      tone: 'success',
+      hint: 'Решение принято, строка больше не требует действий',
+      shortHint: 'Решение принято',
+    };
+  }
+  if (item.status === 'approved_with_changes') {
+    return {
+      label: 'Утверждено с изменениями',
+      tone: 'success',
+      hint: 'Согласовано с корректировкой суммы',
+      shortHint: 'Сумма скорректирована',
+    };
+  }
+  if (item.status === 'rejected') {
+    return {
+      label: 'Отклонено',
+      tone: 'error',
+      hint: item.frozen ? 'Строка возвращена на доработку и заморожена' : 'Строка отклонена и ожидает исправлений',
+      shortHint: 'На доработке',
+    };
+  }
+
+  if (item.is_collecting || item.request_status === 'draft') {
+    return {
+      label: 'Черновик',
+      tone: 'default',
+      hint: 'Заявка ещё не отправлена на проверку. Согласование недоступно',
+      shortHint: 'Не отправлено',
+    };
+  }
+  if (item.request_status === 'cancelled') {
+    return {
+      label: 'Заявка отменена',
+      tone: 'default',
+      hint: 'Заявка отменена, действия недоступны',
+      shortHint: 'Отменена',
+    };
+  }
+  if (item.request_status === 'rejected') {
+    return {
+      label: 'Заявка отклонена',
+      tone: 'error',
+      hint: 'Заявка отклонена целиком на этапе проверки ЦФО',
+      shortHint: 'Заявка отклонена',
+    };
+  }
+
+  if (item.is_cfo_review) {
+    if (item.is_cfo_review_actionable) {
+      return {
+        label: 'Ожидает вашего решения',
+        tone: 'warning',
+        hint: 'Проверка ответственным ЦФО: можно согласовать или вернуть на доработку',
+        shortHint: 'Можно принять решение',
+      };
+    }
+    return {
+      label: 'Проверка ЦФО',
+      tone: 'info',
+      hint: 'Заявка на проверке у ответственного ЦФО. Ваше решение пока недоступно',
+      shortHint: 'Ждёт ответственного ЦФО',
+    };
+  }
+
+  if (item.is_in_approval) {
+    if (item.fixed) {
+      return {
+        label: 'Зафиксировано',
+        tone: 'success',
+        hint: 'Строка зафиксирована после финального согласования',
+        shortHint: 'Зафиксировано',
+      };
+    }
+    if (item.frozen) {
+      return {
+        label: 'На доработке',
+        tone: 'warning',
+        hint: 'Строка возвращена на доработку и заморожена до исправлений',
+        shortHint: 'Ожидает исправлений',
+      };
+    }
+    if (item.is_approval_actionable) {
+      const stage = item.approval_stage || 'согласование';
+      return {
+        label: 'Ожидает вашего решения',
+        tone: 'warning',
+        hint: `Текущий этап: ${stage}. Можно согласовать или вернуть на доработку`,
+        shortHint: 'Можно принять решение',
+      };
+    }
+    const stage = item.approval_stage || 'согласование';
+    return {
+      label: 'Ожидает предыдущих этапов',
+      tone: 'default',
+      hint: `Сейчас на этапе «${stage}». Решение станет доступно после предыдущих согласований`,
+      shortHint: 'Ждёт предыдущих этапов',
+    };
+  }
+
+  if (item.status === 'on_review') {
+    return {
+      label: 'На рассмотрении',
+      tone: 'warning',
+      hint: 'Строка ожидает решения в текущем процессе',
+      shortHint: 'Ожидает решения',
+    };
+  }
+
+  return {
+    label: 'Не начато',
+    tone: 'default',
+    hint: 'Данные ещё не отправлены в процесс согласования',
+    shortHint: 'Не отправлено',
+  };
+}
+
+export function groupRegistryStatus(aggregates: RegisterAggregates): RegistryStatusDisplay {
+  if (!aggregates.total_rows) {
+    return {
+      label: 'Нет данных',
+      tone: 'default',
+      hint: 'В группе нет строк для отображения',
+      shortHint: 'Нет строк',
+    };
+  }
+
+  if (aggregates.aggregate_status === 'approved') {
+    return {
+      label: 'Всё согласовано',
+      tone: 'success',
+      hint: `Все ${aggregates.total_rows} строк утверждены`,
+      shortHint: 'Все строки утверждены',
+    };
+  }
+  if (aggregates.aggregate_status === 'rejected') {
+    return {
+      label: 'Есть отклонения',
+      tone: 'error',
+      hint: `${aggregates.rejected_rows} из ${aggregates.total_rows} строк отклонено`,
+      shortHint: 'Есть отклонённые строки',
+    };
+  }
+  if (aggregates.aggregate_status === 'partially_approved') {
+    const reviewed = aggregates.approved_rows + aggregates.rejected_rows;
+    return {
+      label: 'Частично рассмотрено',
+      tone: 'info',
+      hint: `Проверено ${reviewed} из ${aggregates.total_rows} строк`,
+      shortHint: `Проверено ${reviewed} из ${aggregates.total_rows}`,
+    };
+  }
+
+  if (aggregates.collecting_requests > 0) {
+    if (aggregates.collecting_requests === aggregates.requests_count) {
+      return {
+        label: 'Черновик',
+        tone: 'default',
+        hint: 'Заявки не отправлены на проверку. Согласование недоступно',
+        shortHint: 'Не отправлено',
+      };
+    }
+    return {
+      label: 'Частично в черновике',
+      tone: 'default',
+      hint: `${aggregates.collecting_requests} из ${aggregates.requests_count} заявок ещё не отправлены`,
+      shortHint: `${aggregates.collecting_requests} заявок не отправлено`,
+    };
+  }
+
+  if (aggregates.cfo_review_actionable_requests > 0) {
+    return {
+      label: 'Ожидает вашего решения',
+      tone: 'warning',
+      hint: `${aggregates.cfo_review_actionable_requests} заявок ждут проверки ответственного ЦФО`,
+      shortHint: 'Можно принять решение',
+    };
+  }
+  if (aggregates.actionable_positions > 0) {
+    return {
+      label: 'Ожидает вашего решения',
+      tone: 'warning',
+      hint: `${aggregates.actionable_positions} позиций ждут вашего согласования`,
+      shortHint: 'Можно принять решение',
+    };
+  }
+
+  if (aggregates.cfo_review_requests > 0) {
+    return {
+      label: 'Проверка ЦФО',
+      tone: 'info',
+      hint: `${aggregates.cfo_review_requests} заявок на проверке у ответственного ЦФО`,
+      shortHint: 'Ждёт ответственного ЦФО',
+    };
+  }
+  if (aggregates.in_approval_positions > 0) {
+    return {
+      label: 'На согласовании',
+      tone: 'info',
+      hint: `${aggregates.in_approval_positions} позиций в маршруте согласования, ожидают предыдущих этапов`,
+      shortHint: 'Ждёт предыдущих этапов',
+    };
+  }
+
+  return {
+    label: AGGREGATE_STATUS_LABELS[aggregates.aggregate_status] || 'На рассмотрении',
+    tone: 'warning',
+    hint: `Ожидает решения: ${aggregates.pending_rows} из ${aggregates.total_rows} строк`,
+    shortHint: `Ожидает ${aggregates.pending_rows} строк`,
+  };
+}
+
+export function rowActionBlockedReason(item: ApprovalRegisterRow) {
+  if (isRowActionable(item)) return null;
+  return item.status_context?.editability.detail || rowRegistryStatus(item).hint;
+}
 
 export function toMoneyInput(value: number) {
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);

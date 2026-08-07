@@ -2,6 +2,7 @@ from app.seed import (
     APPROVER_STEP_ID,
     APPROVER_ID,
     CFO_ID,
+    DDS_OPER_ID,
     DDS_LICENSE_ID,
     ECONOMIST_ID,
     ECONOMIST_STEP_ID,
@@ -275,7 +276,7 @@ def test_full_position_route_freezes_and_zgd_fixes(tmp_path):
         headers=economist,
     )
     assert frozen.status_code == 200
-    assert frozen.json()["frozen"] is True
+    assert frozen.json()["all_items_frozen"] is True
     assert frozen.json()["current_step_id"] == APPROVER_STEP_ID
     approval_register = client.get("/approval-register", headers=approver)
     assert approval_register.status_code == 200
@@ -325,7 +326,7 @@ def test_full_position_route_freezes_and_zgd_fixes(tmp_path):
         headers=zgd,
     )
     assert fixed.status_code == 200
-    assert fixed.json()["fixed"] is True
+    assert fixed.json()["all_items_fixed"] is True
     assert fixed.json()["current_step_id"] is None
 
 
@@ -360,14 +361,105 @@ def test_reviewer_return_requires_reason_and_economist_unfreezes(tmp_path):
     )
     assert returned.status_code == 200
     assert returned.json()["status"] == "on_revision"
-    assert returned.json()["frozen"] is True
+    assert returned.json()["frozen_items_count"] == 0
     unfrozen = client.post(
         f"/cfo-positions/{position_id}/unfreeze",
         json={"comment": "Принято"},
         headers=economist,
     )
     assert unfrozen.status_code == 200
-    assert unfrozen.json()["frozen"] is False
+    assert unfrozen.json()["open_items_count"] >= 1
+
+
+def test_register_group_actions_work_for_article_and_cfo(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+
+    # The CFO owner can send a whole article, not only one position card.
+    submitted = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={"action": "submit"}, headers=employee,
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["positions"][0]["current_step_id"] == ECONOMIST_STEP_ID
+
+    assert client.post(
+        f"/cfo-positions/{position_id}/items/{items[0]['id']}/decision",
+        json={"decision": "approved", "comment": ""}, headers=economist,
+    ).status_code == 200
+    approved_article = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={"action": "approve", "comment": "Группа проверена"}, headers=economist,
+    )
+    assert approved_article.status_code == 200, approved_article.text
+    assert approved_article.json()["positions"][0]["current_step_id"] == APPROVER_STEP_ID
+
+    # The same action at the CFO level moves every actionable article of the CFO.
+    approved_cfo = client.post(
+        f"/approval-register/groups/cfo/{CFO_ID}/workflow-action",
+        json={"action": "approve", "comment": "Согласовано по ЦФО"}, headers=approver,
+    )
+    assert approved_cfo.status_code == 200, approved_cfo.text
+    assert approved_cfo.json()["positions"][0]["current_step_id"] == ROOT_STEP_ID
+
+
+def test_partial_revision_unfreezes_only_selected_lines_and_creates_block(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    request, items = create_submitted_request(client, employee, item_count=2)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(item["id"], "approved") for item in items]
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(client, employee, economist, position_id, [item["id"] for item in items])
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze", json={"comment": "", "item_ids": [item["id"] for item in items]}, headers=economist,
+    ).status_code == 200
+
+    returned = client.post(
+        f"/cfo-positions/{position_id}/return-for-revision",
+        json={
+            "target_step_id": ECONOMIST_STEP_ID,
+            "comment": "Проверьте первую строку",
+            "items": [{"item_id": items[0]["id"], "comment": "Уточнить сумму"}],
+        },
+        headers=approver,
+    )
+    assert returned.status_code == 200, returned.text
+    position = returned.json()
+    by_id = {item["id"]: item for item in position["contributions"]}
+    assert by_id[items[0]["id"]]["frozen"] is False
+    assert by_id[items[1]["id"]]["frozen"] is True
+    assert by_id[items[0]["id"]]["sum_fact"] == 100
+
+
+def test_zgd_can_reopen_a_fixed_line(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    zgd = auth(client, "zgd", "zgd")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(client, employee, request["id"], [(items[0]["id"], "approved")])["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+    client.post(f"/cfo-positions/{position_id}/freeze", json={"comment": ""}, headers=economist)
+    client.post(f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve", json={"comment": ""}, headers=approver)
+    assert client.post(f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve", json={"comment": ""}, headers=zgd).status_code == 200
+    reopened = client.post(
+        f"/cfo-positions/{position_id}/reopen-fixed",
+        json={"target_step_id": APPROVER_STEP_ID, "comment": "Нужна доработка", "items": [{"item_id": items[0]["id"]}]},
+        headers=zgd,
+    )
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["contributions"][0]["fixed"] is False
+    assert reopened.json()["contributions"][0]["frozen"] is False
 
 
 def test_late_line_blocks_economist_completion_and_notifies(tmp_path):
@@ -468,7 +560,7 @@ def test_frozen_position_rejects_late_contribution(tmp_path):
         json={"comment": ""},
         headers=economist,
     )
-    assert client.app.state.repo.get_by_id("cfo_positions", position_id)["frozen"] is True
+    assert client.app.state.repo.get_by_id("req_items", items[0]["id"])["frozen"] is True
 
 
 def test_position_logs_contain_old_new_values_and_request_history_is_merged(tmp_path):

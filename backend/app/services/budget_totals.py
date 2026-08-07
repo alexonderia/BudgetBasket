@@ -3,19 +3,15 @@ from app.repositories.base import Repository
 
 
 def annual_budgets_by_unit(repo: Repository) -> dict[str, float]:
-    """Return budgets formed only by lines in fixed CFO positions."""
+    """Return budgets formed only by final-fixed request lines."""
     units = {unit["id"]: unit for unit in repo.load_all("units")}
     totals = {unit_id: 0.0 for unit_id in units}
     requests = {row["id"]: row for row in repo.load_all("requests")}
-    fixed_position_ids = {
-        row["id"] for row in repo.load_all("cfo_positions") if row.get("fixed")
-    }
-
     for item in repo.load_all("req_items"):
         request = requests.get(item.get("request_id"))
         if (
             not request
-            or item.get("cfo_position_id") not in fixed_position_ids
+            or not item.get("fixed")
             or item.get("is_income", False)
             or item.get("status") not in APPROVED_ITEM_STATUSES
         ):

@@ -18,8 +18,6 @@ def test_budget_tables_keep_only_the_agreed_columns():
         "invest_id",
         "status",
         "current_step_id",
-        "frozen",
-        "fixed",
         "created_at",
         "updated_at",
     ]
@@ -36,4 +34,11 @@ def test_budget_tables_keep_only_the_agreed_columns():
         "justification",
         "status",
         "comment",
+        "analytics_1",
+        "analytics_2",
+        "analytics_3",
+        "analytics_4",
+        "analytics_5",
+        "frozen",
+        "fixed",
     ]

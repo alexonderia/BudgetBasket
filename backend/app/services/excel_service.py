@@ -522,15 +522,10 @@ class ExcelService:
         is_income = {"income": True, "expense": False}.get(export_kind)
 
         selected_unit_ids = self._export_unit_ids(unit_id, department_id, department_ids, module_ids)
-        eligible_position_ids = {
-            position["id"]
-            for position in self.repo.load_all("cfo_positions")
-            if not fixed_only or position.get("fixed")
-        }
         position_request_ids = {
             item["request_id"]
             for item in self.repo.load_all("req_items")
-            if item.get("cfo_position_id") in eligible_position_ids
+            if not fixed_only or item.get("fixed")
         }
         requests = []
         for status in selected_statuses:

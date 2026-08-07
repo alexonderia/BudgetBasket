@@ -93,6 +93,13 @@ export interface BudgetItem {
   justification: string;
   status: ItemStatus;
   comment: string | null;
+  frozen: boolean;
+  fixed: boolean;
+  analytics_1: string;
+  analytics_2: string;
+  analytics_3: string;
+  analytics_4: string;
+  analytics_5: string;
   month_plans: ItemMonthPlan[];
 }
 
@@ -118,6 +125,16 @@ export interface RegisterAggregates {
   actionable_positions: number;
 }
 
+export interface RegisterGroupAnalyticsField {
+  value: string;
+  mixed: boolean;
+}
+
+export interface RegisterGroupAnalytics {
+  can_edit: boolean;
+  fields: Record<string, RegisterGroupAnalyticsField>;
+}
+
 export interface ApprovalRegisterGroup {
   id: string;
   type: 'cfo' | 'category' | 'article' | 'module' | 'request';
@@ -130,12 +147,43 @@ export interface ApprovalRegisterGroup {
   aggregates: RegisterAggregates;
   children: ApprovalRegisterGroup[];
   can_load_rows: boolean;
+  analytics?: RegisterGroupAnalytics;
 }
 
 export interface ApprovalRegisterResponse {
   view: 'cfo' | 'category' | 'article' | 'module' | 'request';
   groups: ApprovalRegisterGroup[];
   aggregates: RegisterAggregates;
+}
+
+export interface RegisterLineStatusDecision {
+  at: string;
+  by_id?: string | null;
+  by_name?: string | null;
+  action: string;
+  action_label: string;
+  stage?: string | null;
+}
+
+export interface RegisterLineStatusOwner {
+  by_id?: string | null;
+  by_name?: string | null;
+  role_label: string;
+}
+
+export interface RegisterLineEditability {
+  can_decide: boolean;
+  can_edit_amount: boolean;
+  can_edit_analytics: boolean;
+  mode: 'editable' | 'readonly' | 'locked';
+  summary: string;
+  detail: string;
+}
+
+export interface RegisterLineStatusContext {
+  last_decision?: RegisterLineStatusDecision | null;
+  current_owner?: RegisterLineStatusOwner | null;
+  editability: RegisterLineEditability;
 }
 
 export interface ApprovalRegisterRow {
@@ -167,6 +215,14 @@ export interface ApprovalRegisterRow {
   is_in_approval: boolean;
   is_approval_actionable: boolean;
   approval_stage: string | null;
+  frozen?: boolean;
+  fixed?: boolean;
+  analytics_1?: string;
+  analytics_2?: string;
+  analytics_3?: string;
+  analytics_4?: string;
+  analytics_5?: string;
+  status_context?: RegisterLineStatusContext;
 }
 
 export interface ApprovalRegisterRowsResponse {
@@ -231,8 +287,12 @@ export interface CfoPosition {
   invest_id?: string | null;
   status: CfoPositionStatus;
   current_step_id: string | null;
-  frozen: boolean;
-  fixed: boolean;
+  frozen_items_count: number;
+  fixed_items_count: number;
+  open_items_count: number;
+  all_items_frozen: boolean;
+  all_items_fixed: boolean;
+  can_forward: boolean;
   sum_plan: number;
   sum_fact: number;
   items_count: number;
@@ -282,6 +342,22 @@ export interface StepLog {
     child_step_id?: string;
     request_ids?: string[];
     targets?: { child_step_id: string; request_ids: string[] }[];
+  };
+}
+
+export interface RequestLog {
+  id: number;
+  created_at: string;
+  source?: 'request' | 'cfo_position';
+  user: { id: string; login: string; role: Role; profile?: Profile | null } | null;
+  subject: { type: 'request_line'; name: string | null; article: string | null; category: string | null } | null;
+  log: {
+    action: string;
+    entity: string;
+    entity_id?: string;
+    req_item_id?: string;
+    comment?: string | null;
+    changes: Record<string, { from: unknown; to: unknown }>;
   };
 }
 

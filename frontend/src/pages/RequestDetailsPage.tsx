@@ -56,6 +56,7 @@ import { api } from '../api/client';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { chatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { RequestHistoryDrawer } from '../components/request-history/RequestHistoryDrawer';
 import { FilePreviewDialog } from '../components/FilePreviewDialog';
 import { ChatMessageImages } from '../components/ChatMessageImages';
 import { useAppToast } from '../components/Layout';
@@ -69,12 +70,14 @@ import { itemStatusLabels, money, requestStatusLabels, stepStatusLabels } from '
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { normalizePositiveAmount } from '../utils/validation';
 import { AUTH_TOKEN_KEY } from '../utils/session';
+import { ANALYTICS_FIELD_KEYS, ANALYTICS_FIELD_LABELS, analyticsFieldValue, canEditItemAnalytics, type AnalyticsFieldKey } from '../utils/analyticsFields';
+import { EditableAnalyticsCell } from '../components/EditableAnalyticsCell';
 
 const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx,.zip';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
 const UPLOAD_EXTENSIONS = new Set(UPLOAD_ACCEPT.split(','));
 
-type ItemTableColumn = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'status' | 'justification' | 'comment' | 'files' | 'actions';
+type ItemTableColumn = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'status' | 'justification' | 'comment' | 'files' | 'actions' | AnalyticsFieldKey;
 type BulkItemDecision = 'approved' | 'rejected';
 type RequestDeletePreviewColumn = 'kind' | 'name' | 'sum';
 type RequestDeletePreviewRow = {
@@ -122,6 +125,11 @@ type RequestItemTableRow =
   | { type: 'group'; groupId: string; label: string; items: BudgetItem[]; level: 'article' | 'category'; canApprove: boolean }
   | { type: 'item'; item: BudgetItem };
 
+const ANALYTICS_COLUMN_WIDTHS = ANALYTICS_FIELD_KEYS.reduce((result, key) => {
+  result[key] = 140;
+  return result;
+}, {} as Record<AnalyticsFieldKey, number>);
+
 const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
   select: 40,
   structure: 320,
@@ -133,6 +141,7 @@ const DEFAULT_ITEM_TABLE_COLUMN_WIDTHS: Record<ItemTableColumn, number> = {
   comment: 180,
   files: 88,
   actions: 92,
+  ...ANALYTICS_COLUMN_WIDTHS,
 };
 
 const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
@@ -146,6 +155,7 @@ const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
   comment: 130,
   files: 72,
   actions: 72,
+  ...ANALYTICS_COLUMN_WIDTHS,
 };
 
 function itemRequestedAmount(item: BudgetItem) {
@@ -354,18 +364,6 @@ type RequestChat = {
   participants: { user_id: string; last_read_message_id: string | null }[];
   messages: ChatMessage[];
 };
-type RequestLog = {
-  id: number;
-  created_at: string;
-  user: { id: string; login: string; role: User['role']; profile?: Profile | null } | null;
-  subject: { type: 'request_line'; name: string | null; article: string | null; category: string | null } | null;
-  log: {
-    action: string;
-    entity: string;
-    changes: Record<string, { from: unknown; to: unknown }>;
-  };
-};
-
 type DraftChangeHandler = (itemId: string, patch: Partial<BudgetItem>) => void;
 
 const ItemTextEditor = memo(function ItemTextEditor({
@@ -376,7 +374,7 @@ const ItemTextEditor = memo(function ItemTextEditor({
   required = false,
   value,
 }: {
-  field: 'name' | 'justification';
+  field: 'name' | 'justification' | AnalyticsFieldKey;
   itemId: string;
   multiline?: boolean;
   onDraftChange: DraftChangeHandler;
@@ -483,75 +481,6 @@ function RedistributionDialog({
   );
 }
 
-const historyActionLabels: Record<string, string> = {
-  created: 'Заявка создана',
-  submitted: 'Заявка отправлена на рассмотрение',
-  withdrawn: 'Заявка отозвана в черновик',
-  cancelled: 'Заявка отменена',
-  review_started: 'Начато рассмотрение заявки',
-  finalized: 'Рассмотрение заявки завершено',
-  reopened: 'Заявка возвращена на рассмотрение',
-  frozen: 'Бюджет зафиксирован',
-  unfrozen: 'Бюджет разморожен',
-  line_created: 'Создана строка заявки',
-  line_updated: 'Изменена строка заявки',
-  line_deleted: 'Удалена строка заявки',
-  file_attached: 'Добавлен файл',
-  file_deleted: 'Удалён файл',
-  chat_message_sent: 'Отправлено сообщение в чат',
-  system_message_sent: 'Отправлено системное сообщение в чат',
-};
-
-const historyFieldLabels: Record<string, string> = {
-  name: 'Наименование',
-  justification: 'Обоснование',
-  sum_plan: 'Плановая сумма',
-  sum_fact: 'Утверждённая сумма',
-  status: 'Статус',
-  comment: 'Комментарий',
-  frozen: 'Фиксация бюджета',
-  fixed: 'Финальная фиксация ЗГД',
-  is_income: 'Тип строки',
-  dds_id: 'Статья ДДС',
-  invest_id: 'Инвест-проект',
-  text: 'Текст сообщения',
-};
-
-const approvalRouteActionLabels: Record<string, string> = {
-  step_created: 'Этап создан',
-  step_reopened: 'Этап открыт повторно',
-  step_opened: 'Этап открыт для согласования',
-  step_approved: 'Этап согласован',
-  step_returned: 'Заявка возвращена на доработку',
-  step_status_changed: 'Статус этапа изменён',
-  approval_graph_closed: 'Маршрут закрыт после фиксации ЗГД',
-  approval_request_step_approved: 'Заявка согласована на этапе',
-  approval_request_fixed: 'Заявка зафиксирована ЗГД',
-  approval_step_opened: 'Этап открыт для согласования',
-  approval_step_waiting: 'Этап ожидает предыдущий этап',
-  approval_request_forwarded: 'Заявка передана на следующий этап',
-  approval_request_returned: 'Заявка возвращена на доработку',
-  approval_request_returned_to_employee: 'Заявка возвращена сотруднику на доработку',
-  approval_request_reopened_for_revision: 'Заявка направлена на доработку',
-  approval_request_revision_accepted: 'Заявка принята после доработки',
-  approval_request_final_revoked: 'Финальное согласование ЗГД отменено',
-  approval_economist_review_resumed: 'Экономист возобновил рассмотрение заявки',
-};
-
-function approvalActionLabel(action: string) {
-  return approvalRouteActionLabels[action] || 'Состояние согласования изменено';
-}
-
-const technicalHistoryFields = new Set([
-  'id', 'item_id', 'request_id', 'req_id', 'unit_id', 'economist_id', 'created_at', 'updated_at',
-]);
-
-function historyActorName(actor: RequestLog['user']) {
-  if (!actor) return 'Неизвестный пользователь';
-  const profile = actor.profile;
-  return [profile?.last_name, profile?.name, profile?.second_name].filter(Boolean).join(' ') || actor.login;
-}
-
 function approvalUserName(user: User | null) {
   if (!user) return 'Не назначен';
   const profile = user.profile;
@@ -629,59 +558,6 @@ function ApprovalRouteStepper({
         );
       })}
     </Box>
-  );
-}
-
-function historyValue(value: unknown, field: string, entity: string, action: string) {
-  if (value === null || value === undefined || value === '') return '—';
-  if (typeof value === 'boolean') {
-    if (field === 'is_income') return value ? 'Доход' : 'Расход';
-    return value ? 'Да' : 'Нет';
-  }
-  if (field === 'sum_plan' || field === 'sum_fact') return money(Number(value));
-  if (field === 'status' && typeof value === 'string') {
-    if (action.startsWith('approval_')) return stepStatusLabels[value as StepStatus] || requestStatusLabels[value as keyof typeof requestStatusLabels] || value;
-    return entity === 'req_item'
-      ? itemStatusLabels[value as ItemStatus] || value
-      : requestStatusLabels[value as keyof typeof requestStatusLabels] || stepStatusLabels[value as StepStatus] || value;
-  }
-  if (field === 'frozen') return value ? 'Зафиксирован' : 'Разморожен';
-  return String(value);
-}
-
-function historyChanges(entry: RequestLog) {
-  return Object.entries(entry.log.changes || {})
-    .filter(([field]) => !technicalHistoryFields.has(field))
-    .map(([field, change]) => ({
-      field: historyFieldLabels[field] || 'Параметр заявки',
-      from: historyValue(change.from, field, entry.log.entity, entry.log.action),
-      to: historyValue(change.to, field, entry.log.entity, entry.log.action),
-    }));
-}
-
-type HistoryChange = { field: string; from: string; to: string };
-
-function HistoryChangeList({ changes, heading = false }: { changes: HistoryChange[]; heading?: boolean }) {
-  return (
-    <Stack className="request-history-changes" spacing={0.75}>
-      {heading && (
-        <Stack className="request-history-changes-heading" direction="row" justifyContent="space-between" alignItems="center">
-          <Typography variant="caption" fontWeight={700}>Изменения</Typography>
-          <Typography variant="caption" color="text.secondary">{changes.length} {changes.length === 1 ? 'поле' : 'поля'}</Typography>
-        </Stack>
-      )}
-      {changes.map((change) => (
-        <Box key={change.field} className="request-history-change">
-          <Typography className="request-history-change-label" variant="caption" color="text.secondary">{change.field}</Typography>
-          <Stack direction="row" spacing={0.75} alignItems="baseline" flexWrap="wrap" useFlexGap>
-            <Typography className="request-history-change-old" variant="body2">{change.from}</Typography>
-            <Typography variant="caption" color="text.secondary">→</Typography>
-            <Typography className="request-history-change-new" variant="body2">{change.to}</Typography>
-          </Stack>
-        </Box>
-      ))}
-      {!changes.length && <Typography variant="body2" color="text.secondary">Изменений полей нет.</Typography>}
-    </Stack>
   );
 }
 
@@ -1132,6 +1008,12 @@ function ItemsTable({
     { id: 'status', label: 'Статус', getValue: (item) => itemStatusLabels[item.status] || item.status },
     { id: 'justification', label: 'Обоснование', getValue: (item) => item.justification || '—' },
     { id: 'comment', label: 'Комментарий', getValue: (item) => item.comment || (item.status === 'rejected' ? 'Комментарий рекомендуется' : '—') },
+    ...ANALYTICS_FIELD_KEYS.map((key) => ({
+      id: key,
+      label: ANALYTICS_FIELD_LABELS[key],
+      defaultVisible: false,
+      getValue: (item: BudgetItem) => analyticsFieldValue(item, key) || '—',
+    })),
     { id: 'files', label: 'Файлы', sortable: false, filterable: false, getValue: () => '' },
     { id: 'actions', label: 'Действия', sortable: false, filterable: false, hideable: false, getValue: () => '' },
   ], []);
@@ -1455,6 +1337,34 @@ function ItemsTable({
             )}
           </TableCell>
         );
+      case 'analytics_1':
+      case 'analytics_2':
+      case 'analytics_3':
+      case 'analytics_4':
+      case 'analytics_5': {
+        const value = local[columnId] ?? item[columnId] ?? '';
+        const useDraftEditor = employeeCanEdit && isEditingItem && !isDeleted;
+        const useInlineEditor = canEditItemAnalytics(item) && !useDraftEditor && !isDeleted;
+        return (
+          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+            {useDraftEditor ? (
+              <ItemTextEditor
+                field={columnId}
+                itemId={item.id}
+                value={value}
+                onDraftChange={updateEmployeeDraft}
+              />
+            ) : useInlineEditor ? (
+              <EditableAnalyticsCell
+                itemId={item.id}
+                field={columnId}
+                value={value}
+                editable
+              />
+            ) : value || '—'}
+          </TableCell>
+        );
+      }
       case 'files':
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
@@ -1780,7 +1690,7 @@ function ItemsTable({
             content = <Chip size="small" label={status.label} color={status.color} variant="outlined" sx={{ height: 22, fontSize: 11, fontWeight: 600 }} />;
           } else if (column.id === 'actions' && onApprove && totals.pendingCount > 0) {
             content = <Button size="small" color="success" sx={{ px: 0.5, minWidth: 0, fontSize: 11 }} onClick={onApprove}>Согласовать</Button>;
-          } else if (column.id === 'comment' || column.id === 'justification' || column.id === 'files') {
+          } else if (column.id === 'comment' || column.id === 'justification' || column.id === 'files' || ANALYTICS_FIELD_KEYS.includes(column.id as AnalyticsFieldKey)) {
             content = '—';
           }
           return (
@@ -2191,15 +2101,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     enabled: !!id,
     retry: false,
   });
-  const { data: logs = [] } = useQuery({
-    queryKey: [...detailsKey, 'request-logs'],
-    queryFn: async () => (await api.get<RequestLog[]>(`/requests/${id}/logs`)).data,
-    enabled: !!id,
-  });
-  const contentLogs = useMemo(
-    () => logs.filter((entry) => !entry.log.action.startsWith('approval_')),
-    [logs],
-  );
   const [chatText, setChatText] = useState('');
   const [chatImages, setChatImages] = useState<File[]>([]);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
@@ -2909,103 +2810,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           </DialogActions>
         </Dialog>
 
-        <Drawer anchor="right" open={historyOpen} onClose={() => setHistoryOpen(false)} PaperProps={{ className: 'request-history-drawer' }}>
-          <Stack className="request-chat-header" direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
-            <Box>
-              <Typography variant="h6">История изменений</Typography>
-              <Typography variant="body2" color="text.secondary">Все события по заявке</Typography>
-            </Box>
-            <IconButton onClick={() => setHistoryOpen(false)} aria-label="Закрыть историю изменений"><CloseIcon /></IconButton>
-          </Stack>
-          <Tabs
-            value={historyTab}
-            onChange={(_, value: 'content' | 'approval') => setHistoryTab(value)}
-            variant="fullWidth"
-            sx={{ px: 1.5, borderBottom: 1, borderColor: 'divider' }}
-          >
-            <Tab value="content" label="История содержимого" />
-            <Tab value="approval" label="История согласования" />
-          </Tabs>
-          <Stack sx={{ px: 2.5, overflowY: 'auto' }}>
-            {historyTab === 'content' && contentLogs.map((entry) => {
-              const changes = historyChanges(entry);
-              const isLineChange = !!entry.subject;
-              const content = (
-                <Stack className="request-history-entry-content" spacing={0.25}>
-                  <Typography className="request-history-kind" variant="overline" color="text.secondary" lineHeight={1.2}>{isLineChange ? 'Строка заявки' : 'Заявка'}</Typography>
-                  <Typography className="request-history-action" fontWeight={700} lineHeight={1.35}>{historyActionLabels[entry.log.action] || 'Данные заявки изменены'}</Typography>
-                  <Typography className="request-history-meta" variant="caption" color="text.secondary">
-                    {new Date(entry.created_at).toLocaleString('ru-RU')} · {historyActorName(entry.user)}
-                  </Typography>
-                  {isLineChange && (
-                    <>
-                      <Typography className="request-history-subject" variant="body2" sx={{ pt: 0.5 }}>
-                        <Box component="span" color="text.secondary">Строка: </Box>
-                        <Box component="span" fontWeight={700}>{entry.subject?.name || 'Наименование не указано'}</Box>
-                      </Typography>
-                      {(entry.subject?.category || entry.subject?.article) && (
-                        <Typography className="request-history-context" variant="caption" color="text.secondary">
-                          {[entry.subject?.category, entry.subject?.article].filter(Boolean).join(' · ')}
-                        </Typography>
-                      )}
-                    </>
-                  )}
-                </Stack>
-              );
-
-              return isLineChange && changes.length > 0 ? (
-                <Accordion key={entry.id} disableGutters elevation={0} sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'transparent', '&:before': { display: 'none' } }}>
-                  <AccordionSummary
-                    expandIcon={<ExpandMoreIcon fontSize="small" />}
-                    aria-controls={`request-log-${entry.id}-changes`}
-                    id={`request-log-${entry.id}-header`}
-                    sx={{ px: 0, py: 1.25, '& .MuiAccordionSummary-content': { my: 0 }, '& .MuiAccordionSummary-content.Mui-expanded': { my: 0 } }}
-                  >
-                    {content}
-                  </AccordionSummary>
-                  <AccordionDetails id={`request-log-${entry.id}-changes`} sx={{ px: 0, pt: 0, pb: 1.5 }}>
-                    <HistoryChangeList changes={changes} heading />
-                  </AccordionDetails>
-                </Accordion>
-              ) : (
-                <Box key={entry.id} sx={{ py: 1.5, borderBottom: 1, borderColor: 'divider' }}>
-                  {content}
-                  {!isLineChange && <HistoryChangeList changes={changes} />}
-                </Box>
-              );
-            })}
-            {historyTab === 'content' && !contentLogs.length && <Typography sx={{ py: 2 }} color="text.secondary">Изменений пока нет.</Typography>}
-            {historyTab === 'approval' && resolvedApprovalRoute
-              .flatMap(({ step, logs: stepLogs }) => stepLogs.filter((entry) => entry.log.action !== 'approval_step_waiting').map((entry) => ({ step, entry })))
-              .sort((left, right) => new Date(right.entry.created_at).getTime() - new Date(left.entry.created_at).getTime())
-              .map(({ step, entry }) => (
-                <Box key={`${step.id}:${entry.id}`} sx={{ py: 1.5, borderBottom: 1, borderColor: 'divider' }}>
-                  <Stack className="request-history-entry-content" spacing={0.25}>
-                    <Typography className="request-history-kind" variant="overline" color="text.secondary" lineHeight={1.2}>Согласование заявки</Typography>
-                    <Typography className="request-history-action" fontWeight={700} lineHeight={1.35}>
-                      {approvalActionLabel(entry.log.action)}
-                    </Typography>
-                    <Typography className="request-history-meta" variant="caption" color="text.secondary">
-                      {new Date(entry.created_at).toLocaleString('ru-RU')} · {approvalUserName(entry.user)}
-                    </Typography>
-                    <Typography className="request-history-subject" variant="body2" sx={{ pt: 0.5 }}>
-                      <Box component="span" color="text.secondary">Этап: </Box>
-                      <Box component="span" fontWeight={700}>{approvalStepTitle(step)}</Box>
-                    </Typography>
-                    {entry.log.comment && (
-                      <Typography variant="body2" sx={{ pt: 0.25 }}>
-                        <Box component="span" color="text.secondary">Комментарий этапа: </Box>
-                        {entry.log.comment}
-                      </Typography>
-                    )}
-                  </Stack>
-                </Box>
-              ))}
-            {historyTab === 'approval' && !approvalRoutePending && !resolvedApprovalRoute.some(({ logs: stepLogs }) => stepLogs.some((entry) => entry.log.action !== 'approval_step_waiting')) && (
-              <Typography sx={{ py: 2 }} color="text.secondary">Событий согласования пока нет.</Typography>
-            )}
-          </Stack>
-        </Drawer>
+        <RequestHistoryDrawer
+          target={historyOpen && id ? { requestId: id, title: 'История изменений', subtitle: 'Все события по заявке' } : null}
+          onClose={() => setHistoryOpen(false)}
+          defaultTab={historyTab}
+        />
 
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
           {itemsPending ? (

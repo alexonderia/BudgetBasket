@@ -251,7 +251,10 @@ class UnitService:
         if any(
             item.get("cfo_unit_id") == cfo_id
             and item.get("status") in {"on_approval", "on_revision"}
-            and not item.get("fixed")
+            and any(
+                line.get("cfo_position_id") == item.get("id") and not line.get("fixed")
+                for line in self.repo.load_all("req_items")
+            )
             for item in self.repo.load_all("cfo_positions")
         ):
             raise HTTPException(status_code=409, detail="У экономиста есть активные позиции")

@@ -53,13 +53,10 @@ CREATE TABLE cfo_positions (
     invest_id uuid REFERENCES invests_catalog(id) ON DELETE RESTRICT,
     status text NOT NULL DEFAULT 'waiting',
     current_step_id uuid,
-    frozen boolean NOT NULL DEFAULT false,
-    fixed boolean NOT NULL DEFAULT false,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT cfo_positions_article_chk CHECK ((dds_id IS NULL) <> (invest_id IS NULL)),
-    CONSTRAINT cfo_positions_status_chk CHECK (status IN ('waiting', 'on_review', 'on_approval', 'approved', 'on_revision')),
-    CONSTRAINT cfo_positions_fixed_requires_frozen_chk CHECK (NOT fixed OR frozen)
+    CONSTRAINT cfo_positions_status_chk CHECK (status IN ('waiting', 'on_review', 'on_approval', 'approved', 'on_revision'))
 );
 CREATE TABLE req_items (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), request_id uuid NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
@@ -69,10 +66,14 @@ CREATE TABLE req_items (
     is_income boolean NOT NULL DEFAULT false,
     name text NOT NULL, sum_plan numeric(14,2) NOT NULL DEFAULT 0, sum_fact numeric(14,2) NOT NULL DEFAULT 0,
     justification text NOT NULL DEFAULT '', status text NOT NULL DEFAULT 'on_review', comment text NOT NULL DEFAULT '',
+    analytics_1 text NOT NULL DEFAULT '', analytics_2 text NOT NULL DEFAULT '', analytics_3 text NOT NULL DEFAULT '',
+    analytics_4 text NOT NULL DEFAULT '', analytics_5 text NOT NULL DEFAULT '',
+    frozen boolean NOT NULL DEFAULT false, fixed boolean NOT NULL DEFAULT false,
     CONSTRAINT req_items_sum_plan_chk CHECK (sum_plan >= 0),
     CONSTRAINT req_items_sum_fact_chk CHECK (sum_fact >= 0),
     CONSTRAINT req_items_status_chk CHECK (status IN ('on_review', 'rejected', 'approved_with_changes', 'approved', 'deleted')),
-    CONSTRAINT req_items_article_chk CHECK ((dds_id IS NULL) <> (invest_id IS NULL))
+    CONSTRAINT req_items_article_chk CHECK ((dds_id IS NULL) <> (invest_id IS NULL)),
+    CONSTRAINT req_items_fixed_requires_frozen_chk CHECK (NOT fixed OR frozen)
 );
 CREATE TABLE req_item_month_plans (
     req_item_id uuid NOT NULL REFERENCES req_items(id) ON DELETE CASCADE,

@@ -6,7 +6,7 @@ from app.models import ItemStatus, RequestStatus
 from app.repositories.base import Repository
 from app.services.common import clean_request_item_name, get_required
 from app.services.permission_service import PermissionService
-from app.services.request_service import RequestService
+from app.services.request_service import ANALYTICS_FIELDS, RequestService
 
 
 class BudgetItemService:
@@ -14,6 +14,7 @@ class BudgetItemService:
         self.repo = repo
         self.permissions = permissions
         self.requests = requests
+        self.chat_service = None
 
     @staticmethod
     def _decimal(value: object) -> Decimal:
@@ -149,6 +150,7 @@ class BudgetItemService:
             "justification": payload.get("justification", "").strip(),
             "status": ItemStatus.on_review,
             "comment": "",
+            **{field: str(payload.get(field) or "").strip() for field in ANALYTICS_FIELDS},
         }
         with self.repo.transaction() as repo:
             created = repo.create("req_items", item)
@@ -167,25 +169,101 @@ class BudgetItemService:
         fields = {
             "dds_id", "invest_id", "name", "sum_plan", "justification",
             "is_income", "month_plans", "clear_month_plans",
+            *ANALYTICS_FIELDS,
         }
         if set(patch) - fields:
             raise HTTPException(status_code=403, detail="Поля рассмотрения изменяются только командами решения")
         return dict(patch)
 
+    def _apply_item_update(
+        self,
+        user: dict,
+        item: dict,
+        request: dict,
+        normalized: dict,
+        *,
+        plans: list[dict] | None = None,
+    ) -> dict:
+        before = self._public_item(item, self._month_plans_for_item(item))
+        effective = {key: value for key, value in normalized.items() if item.get(key) != value}
+        if not effective and plans is None:
+            return before
+        with self.repo.transaction() as repo:
+            updated = repo.update("req_items", item["id"], effective) if effective else item
+            if plans is not None:
+                self._replace_month_plans(repo, item["id"], plans)
+            self.requests.recalculate_total(item["request_id"], repo=repo)
+            after = self._public_item(
+                updated,
+                plans if plans is not None else before["month_plans"],
+            )
+            self.requests.log(
+                user, item["request_id"], "line_updated", entity="req_item",
+                entity_id=item["id"], before=before, after=after, repo=repo,
+            )
+        return after
+
+    def _patch_item_analytics(self, user: dict, item: dict, request: dict, patch: dict) -> dict:
+        self.permissions.require_view_request(user, request)
+        if item.get("fixed"):
+            raise HTTPException(status_code=409, detail="Зафиксированную строку нельзя изменить")
+        normalized = {
+            field: str(patch[field]).strip()
+            for field in patch
+            if field in ANALYTICS_FIELDS
+        }
+        return self._apply_item_update(user, item, request, normalized)
+
+    def apply_analytics_bulk(self, user: dict, item_ids: list[str], patch: dict) -> dict:
+        normalized = {
+            field: str(patch[field]).strip()
+            for field in patch
+            if field in ANALYTICS_FIELDS
+        }
+        if not normalized:
+            raise HTTPException(status_code=400, detail="Укажите поля аналитики")
+        updated_ids: list[str] = []
+        with self.repo.transaction() as repo:
+            for item_id in item_ids:
+                item = get_required(repo, "req_items", item_id)
+                request = get_required(repo, "requests", item["request_id"])
+                if item.get("status") == ItemStatus.deleted or item.get("fixed"):
+                    continue
+                self.permissions.require_view_request(user, request)
+                effective = {
+                    key: value for key, value in normalized.items()
+                    if item.get(key) != value
+                }
+                if not effective:
+                    continue
+                before = self._public_item(item, self._month_plans_for_item(item))
+                updated = repo.update("req_items", item_id, effective)
+                after = self._public_item(updated, before["month_plans"])
+                self.requests.log(
+                    user, item["request_id"], "line_updated", entity="req_item",
+                    entity_id=item_id, before=before, after=after, repo=repo,
+                )
+                updated_ids.append(item_id)
+        if not updated_ids:
+            raise HTTPException(status_code=409, detail="Нет строк для обновления аналитики")
+        return {"updated_count": len(updated_ids), "item_ids": updated_ids}
+
     def patch_item(self, user: dict, item_id: str, patch: dict) -> dict:
         item = get_required(self.repo, "req_items", item_id)
         request = get_required(self.repo, "requests", item["request_id"])
-        self.permissions.require_employee_edit_request(user, request)
         if item.get("status") == ItemStatus.deleted:
             raise HTTPException(status_code=400, detail="Удалённую строку нельзя изменить")
+        if patch and set(patch) <= set(ANALYTICS_FIELDS):
+            return self._patch_item_analytics(user, item, request, patch)
+        self.permissions.require_employee_edit_request(user, request)
         normalized = self._employee_patch(patch)
         if "dds_id" in normalized or "invest_id" in normalized:
             kind, article_id = self._validate_article(request, {**item, **normalized})
             normalized["dds_id"] = article_id if kind == "dds" else None
             normalized["invest_id"] = article_id if kind == "invest" else None
-        for field in ("name", "justification"):
+        for field in ("name", "justification", *ANALYTICS_FIELDS):
             if field in normalized:
-                normalized[field] = normalized[field].strip()
+                normalized[field] = str(normalized[field]).strip()
         if "name" in normalized and not normalized["name"]:
             raise HTTPException(status_code=400, detail="Укажите наименование строки")
 
@@ -204,24 +282,7 @@ class BudgetItemService:
         elif not is_income and item.get("is_income"):
             plans = []
 
-        before = self._public_item(item, self._month_plans_for_item(item))
-        effective = {key: value for key, value in normalized.items() if item.get(key) != value}
-        if not effective and plans is None:
-            return before
-        with self.repo.transaction() as repo:
-            updated = repo.update("req_items", item_id, effective) if effective else item
-            if plans is not None:
-                self._replace_month_plans(repo, item_id, plans)
-            self.requests.recalculate_total(item["request_id"], repo=repo)
-            after = self._public_item(
-                updated,
-                plans if plans is not None else before["month_plans"],
-            )
-            self.requests.log(
-                user, item["request_id"], "line_updated", entity="req_item",
-                entity_id=item_id, before=before, after=after, repo=repo,
-            )
-        return after
+        return self._apply_item_update(user, item, request, normalized, plans=plans)
 
     @staticmethod
     def normalize_decision(item: dict, payload: dict) -> dict:
@@ -268,6 +329,11 @@ class BudgetItemService:
             entity="req_item", entity_id=item["id"], before=before, after=after,
             comment=payload.get("comment"), repo=repo,
         )
+        if self.chat_service and (payload.get("comment") or "").strip() and not payload.get("skip_chat"):
+            message = self.chat_service.comment_for_request(
+                user, request, f"{item.get('name')}: {(payload.get('comment') or '').strip()}", repo=repo,
+            )
+            after["chat_messages"] = [message]
         return after
 
     def decide_cfo(self, user: dict, item_id: str, payload: dict) -> dict:
@@ -285,6 +351,56 @@ class BudgetItemService:
                 for item_id in payload["item_ids"]
             ]
         return [self._public_item(row, self._month_plans_for_item(row)) for row in result]
+
+    def cfo_revision_from_register(
+        self,
+        user: dict,
+        group_type: str,
+        group_id: str,
+        payload: dict,
+        **filters,
+    ) -> dict:
+        allowed_ids = set(self.requests.approval_register_group_item_ids(user, group_type, group_id, **filters))
+        selected = payload.get("items") or []
+        if not selected:
+            raise HTTPException(status_code=422, detail="Выберите хотя бы одну строку")
+        unknown = [row["item_id"] for row in selected if row["item_id"] not in allowed_ids]
+        if unknown:
+            raise HTTPException(status_code=422, detail="Часть выбранных строк недоступна для возврата")
+        block_comment = (payload.get("comment") or "").strip()
+        if not block_comment:
+            raise HTTPException(status_code=422, detail="Укажите комментарий к доработке")
+        chat_messages: list[dict] = []
+        with self.repo.transaction() as repo:
+            requests_by_id = {row["id"]: row for row in repo.load_all("requests")}
+            if self.chat_service and user.get("role") == "employee":
+                affected_request_ids = {
+                    get_required(repo, "req_items", row["item_id"])["request_id"]
+                    for row in selected
+                }
+                for request_id in sorted(affected_request_ids):
+                    request = requests_by_id.get(request_id)
+                    if request:
+                        chat_messages.append(
+                            self.chat_service.comment_for_request(user, request, block_comment, repo=repo)
+                        )
+            results = []
+            for row in selected:
+                item = get_required(repo, "req_items", row["item_id"])
+                line_comment = (row.get("comment") or "").strip() or block_comment
+                line_specific = bool((row.get("comment") or "").strip())
+                result = self._decide_cfo(
+                    repo,
+                    user,
+                    item,
+                    {
+                        "decision": ItemStatus.rejected,
+                        "comment": line_comment,
+                        "skip_chat": not line_specific,
+                    },
+                )
+                results.append(self._public_item(result, self._month_plans_for_item(result)))
+        return {"items": results, "chat_messages": chat_messages}
 
     def delete_item(self, user: dict, item_id: str) -> dict:
         item = get_required(self.repo, "req_items", item_id)

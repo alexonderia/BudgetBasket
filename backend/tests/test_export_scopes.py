@@ -31,8 +31,6 @@ def create_fixed_position_data(client):
             "is_income": False,
             "status": "approved",
             "current_step_id": None,
-            "frozen": True,
-            "fixed": True,
         },
     )
     item = repo.create(
@@ -49,12 +47,14 @@ def create_fixed_position_data(client):
             "status": "approved_with_changes",
             "comment": "Снижено",
             "is_income": False,
+            "frozen": True,
+            "fixed": True,
         },
     )
     return request, position, item
 
 
-def test_export_fixed_scope_uses_cfo_positions(tmp_path):
+def test_export_fixed_scope_uses_fixed_request_lines(tmp_path):
     client = make_client(tmp_path)
     admin = auth(client, "admin", "admin")
     create_fixed_position_data(client)

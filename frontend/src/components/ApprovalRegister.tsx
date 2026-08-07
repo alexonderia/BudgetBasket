@@ -4,6 +4,7 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
+import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
@@ -43,44 +44,104 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { api } from '../api/client';
 import { usePageChromeActions, usePageChromeLeading } from './Layout';
-import { ItemStatusBadge } from './StatusBadge';
 import { ConfirmDialog } from './ConfirmDialog';
-import { TableColumnResizeHandle, TableColumnTools } from './TableColumnControls';
+import { ArticleRevisionDialog, type RevisionTarget } from './ArticleRevisionDialog';
+import { TableColumnHeader, TableColumnTools } from './TableColumnControls';
 import {
   AGGREGATE_DISPLAY_LABELS,
+  canEditApprovedAmount,
   DEFAULT_COLUMN_VISIBILITY,
   DEFAULT_COLUMN_ORDER,
   DEFAULT_COLUMN_WIDTHS,
   groupReadinessPercent,
+  groupHasCfoActions,
+  groupHasWorkflowActions,
+  groupRegistryStatus,
+  isGroupActionable,
+  isGroupSelectable,
   isRowActionable,
   parseMoneyInput,
   REGISTRY_COLUMNS,
   REGISTRY_VIEW_LABELS,
   orderedRegistryColumns,
+  rowRegistryStatus,
   rowRejectedAmount,
   STATUS_LABELS,
   toMoneyInput,
+  workflowApproveLabel,
   type RegistryColumnId,
   type RegistryFilters,
   type RegistryView,
 } from './approval-register/registryConfig';
-import type { ApprovalRegisterGroup, ApprovalRegisterResponse, ApprovalRegisterRow, ApprovalRegisterRowsResponse, BudgetItem, FileAttachment, ItemStatus, RegisterAggregates, User } from '../types';
+import {
+  buildRegisterControlRows,
+  computeRegisterVisibility,
+  filterRegisterGroups,
+  getRegisterAutoFitValues,
+  REGISTRY_COLUMN_MIN_WIDTHS,
+  REGISTRY_TABLE_COLUMN_DEFINITIONS,
+  sortRegisterGroups,
+  sortRegisterItems,
+} from './approval-register/registryTableColumns';
+import { useTableColumnControls, type TableSortState } from '../utils/tableColumns';
+import { RegistryGroupStatusCell, RegistryStatusCell } from './approval-register/RegistryStatusCell';
+import { STATUS_LEGEND_SPECS, StatusVisualBadge } from './approval-register/registryStatusVisual';
+import { RequestHistoryDrawer, type RequestHistoryTarget } from './request-history/RequestHistoryDrawer';
+import { RequestHistoryPanel } from './request-history/RequestHistoryPanel';
+import { ANALYTICS_FIELD_KEYS, ANALYTICS_FIELD_LABELS, EMPTY_ANALYTICS_FILTERS, buildRegisterFilterParams, canEditItemAnalytics, type AnalyticsFieldKey } from '../utils/analyticsFields';
+import { EditableAnalyticsCell } from './EditableAnalyticsCell';
+import { GroupAnalyticsCell } from './GroupAnalyticsCell';
+import type { ApprovalRegisterGroup, ApprovalRegisterResponse, ApprovalRegisterRow, ApprovalRegisterRowsResponse, ApprovalStep, BudgetItem, FileAttachment, ItemStatus, RegisterAggregates, RequestLog, User } from '../types';
 import { money } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
 
 const PREFERENCES_KEY = 'budgetbasket:approval-register:preferences';
 const LEGACY_COLUMNS_KEY = 'budgetbasket:approval-register:columns';
 const REQUEST_PAGE_SIZE_KEY = 'budgetbasket:register:request-page-size';
-const EMPTY_FILTERS: RegistryFilters = { search: '', status: '', budgetYear: '' };
+const EMPTY_FILTERS: RegistryFilters = { search: '', status: '', budgetYear: '', ...EMPTY_ANALYTICS_FILTERS };
 
 type RowDecision = 'approved' | 'approved_with_changes' | 'rejected';
 type DecisionTarget = { rows: ApprovalRegisterRow[]; decision: RowDecision; amount?: number };
-type RowLog = { id: number; created_at: string; action?: string; log?: { action?: string } };
-
 function groupEntityId(group: ApprovalRegisterGroup) {
   const segment = group.id.split('/').at(-1) || '';
   const prefix = `${group.type}:`;
   return segment.startsWith(prefix) ? segment.slice(prefix.length) : '';
+}
+
+function revisionTargetFromGroup(group: ApprovalRegisterGroup) {
+  return {
+    groupType: group.type as 'cfo' | 'article' | 'category' | 'module',
+    groupId: groupEntityId(group),
+    groupName: group.name,
+  };
+}
+
+function collectDescendantGroups(group: ApprovalRegisterGroup): ApprovalRegisterGroup[] {
+  return [group, ...group.children.flatMap(collectDescendantGroups)];
+}
+
+function buildParentMap(groups: ApprovalRegisterGroup[]): Map<string, string> {
+  const parents = new Map<string, string>();
+  const walk = (nodes: ApprovalRegisterGroup[], parentId?: string) => {
+    nodes.forEach((node) => {
+      if (parentId) parents.set(node.id, parentId);
+      walk(node.children, node.id);
+    });
+  };
+  walk(groups);
+  return parents;
+}
+
+function topLevelSelectedGroups(groups: ApprovalRegisterGroup[], parents: Map<string, string>) {
+  const ids = new Set(groups.map((group) => group.id));
+  return groups.filter((group) => {
+    let parentId = parents.get(group.id);
+    while (parentId) {
+      if (ids.has(parentId)) return false;
+      parentId = parents.get(parentId);
+    }
+    return true;
+  });
 }
 
 function readPreferences(): { view?: RegistryView; filters?: RegistryFilters; order: RegistryColumnId[]; visibility: Record<RegistryColumnId, boolean>; widths: Record<RegistryColumnId, number> } {
@@ -116,33 +177,14 @@ const REGISTRY_FILTER_SX = {
 };
 
 function RegistryStatusLegend({ compact = false }: { compact?: boolean }) {
-  const items = [
-    { color: '#059669', label: 'Согласовано' },
-    { color: '#DC2626', label: 'Отклонено' },
-    { color: '#D97706', label: 'На рассмотрении' },
-    { color: '#94A3B8', label: 'Черновик' },
-  ];
   return (
-    <Stack direction="row" spacing={compact ? 1 : 1.5} flexWrap="wrap" useFlexGap alignItems="center">
-      {items.map((item) => (
-        <Stack key={item.label} direction="row" spacing={0.5} alignItems="center">
-          <Box sx={{ width: compact ? 7 : 8, height: compact ? 7 : 8, borderRadius: '50%', bgcolor: item.color }} />
-          <Typography variant="caption" color="text.secondary" sx={{ fontSize: compact ? 11 : 12, lineHeight: 1.2 }}>{item.label}</Typography>
-        </Stack>
+    <Stack direction="row" spacing={compact ? 0.75 : 1} flexWrap="wrap" useFlexGap alignItems="center">
+      {STATUS_LEGEND_SPECS.map((spec) => (
+        <Box key={spec.text} sx={{ width: compact ? 118 : 132, flex: '0 0 auto' }}>
+          <StatusVisualBadge spec={spec} />
+        </Box>
       ))}
     </Stack>
-  );
-}
-
-function CompactStatusChip({ label, color }: { label: string; color: 'success' | 'error' | 'warning' | 'default' }) {
-  return (
-    <Chip
-      size="small"
-      variant="outlined"
-      label={label}
-      color={color}
-      sx={{ height: 22, fontSize: 11, fontWeight: 600, '& .MuiChip-label': { px: 0.85, py: 0 } }}
-    />
   );
 }
 
@@ -210,6 +252,7 @@ function RegistryFilterBar({
   onExport,
   columnTools,
   availableViews,
+  analyticsFilterOptions = {},
 }: {
   view: RegistryView;
   filters: RegistryFilters;
@@ -219,8 +262,14 @@ function RegistryFilterBar({
   onExport: () => void;
   columnTools: React.ReactNode;
   availableViews: RegistryView[];
+  analyticsFilterOptions?: Partial<Record<AnalyticsFieldKey, string[]>>;
 }) {
-  const hasActiveFilters = Boolean(filters.search || filters.status || filters.budgetYear);
+  const hasActiveFilters = Boolean(
+    filters.search
+    || filters.status
+    || filters.budgetYear
+    || ANALYTICS_FIELD_KEYS.some((key) => filters[key]),
+  );
   return (
     <Paper variant="outlined" className="approval-register-filters" sx={{ px: 1, py: 0.75, borderColor: 'rgba(15, 23, 42, 0.08)', borderRadius: 1.5, bgcolor: '#F8FAFC' }}>
       <Stack direction={{ xs: 'column', xl: 'row' }} spacing={0.75} alignItems={{ xl: 'center' }} justifyContent="space-between">
@@ -241,6 +290,20 @@ function RegistryFilterBar({
             {(Object.keys(STATUS_LABELS) as ItemStatus[]).map((status) => <MenuItem key={status} value={status} dense>{STATUS_LABELS[status]}</MenuItem>)}
           </TextField>
           <TextField size="small" label="Бюджетный год" type="number" placeholder="2025" value={filters.budgetYear} onChange={(event) => onChange({ ...filters, budgetYear: event.target.value })} sx={{ ...filterFieldSx(118), maxWidth: { lg: 118 } }} />
+          {ANALYTICS_FIELD_KEYS.filter((key) => (analyticsFilterOptions[key] || []).length > 0).map((key) => (
+            <TextField
+              key={key}
+              select
+              size="small"
+              label={ANALYTICS_FIELD_LABELS[key]}
+              value={filters[key]}
+              onChange={(event) => onChange({ ...filters, [key]: event.target.value })}
+              sx={{ ...filterFieldSx(150), maxWidth: { lg: 170 } }}
+            >
+              <MenuItem value="" dense>Все</MenuItem>
+              {(analyticsFilterOptions[key] || []).map((value) => <MenuItem key={value} value={value} dense>{value}</MenuItem>)}
+            </TextField>
+          ))}
           <Button size="small" variant="text" color="inherit" startIcon={<RestartAltIcon sx={{ fontSize: 18 }} />} onClick={onReset} sx={{ minWidth: 0, px: 1, fontSize: 13, whiteSpace: 'nowrap' }}>
             Сбросить
           </Button>
@@ -257,6 +320,9 @@ function RegistryFilterBar({
           {filters.search ? <Chip label={`Поиск: ${filters.search}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} /> : null}
           {filters.status ? <Chip label={`Статус: ${STATUS_LABELS[filters.status]}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} /> : null}
           {filters.budgetYear ? <Chip label={`Год: ${filters.budgetYear}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} /> : null}
+          {ANALYTICS_FIELD_KEYS.filter((key) => filters[key]).map((key) => (
+            <Chip key={key} label={`${ANALYTICS_FIELD_LABELS[key]}: ${filters[key]}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} />
+          ))}
         </Stack>
       ) : null}
     </Paper>
@@ -325,7 +391,7 @@ function EditableMoneyCell({ item, active, onCommit }: { item: ApprovalRegisterR
     onCommit(amount);
   };
   if (!active) return <Typography variant="body2" sx={{ fontSize: 13 }}>{money(item.approved_sum)}</Typography>;
-  if (!editing) return <Box component="button" type="button" onDoubleClick={() => setEditing(true)} onKeyDown={(event) => { if (event.key === 'Enter') setEditing(true); }} sx={{ border: 0, bgcolor: 'transparent', font: 'inherit', fontSize: 13, cursor: 'text', p: 0, textAlign: 'right', width: '100%' }} title="Дважды щёлкните, чтобы изменить сумму">{money(item.approved_sum)}</Box>;
+  if (!editing) return <Box component="button" type="button" onClick={(event) => { event.stopPropagation(); setEditing(true); }} onKeyDown={(event) => { if (event.key === 'Enter') setEditing(true); }} sx={{ border: 0, bgcolor: 'transparent', font: 'inherit', fontSize: 13, cursor: 'pointer', p: 0, textAlign: 'right', width: '100%', color: 'primary.main', textDecoration: 'underline dotted rgba(37, 99, 235, 0.45)' }} title="Нажмите, чтобы изменить согласованную сумму">{money(item.approved_sum)}</Box>;
   return <TextField autoFocus size="small" value={value} onChange={(event) => setValue(event.target.value)} error={parseMoneyInput(value) === null || (parseMoneyInput(value) || 0) > item.requested_sum} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); save(); } if (event.key === 'Escape') { setValue(toMoneyInput(item.approved_sum)); setEditing(false); } }} onBlur={save} inputProps={{ inputMode: 'decimal', 'aria-label': 'Согласованная сумма' }} sx={{ width: '100%', '& .MuiInputBase-input': { py: 0.2, px: 0.75, fontSize: 13, textAlign: 'right' } }} />;
 }
 
@@ -345,44 +411,214 @@ function DecisionDialog({ target, onClose, onSave, saving, error }: { target: De
   </Stack></DialogContent><DialogActions><Button onClick={onClose} disabled={saving}>Отмена</Button><Button variant="contained" disabled={saving || (requiresComment && !comment.trim()) || (target.decision === 'approved_with_changes' && (adjustedAmount === null || adjustedAmount === undefined || adjustedAmount > target.rows[0].requested_sum))} onClick={() => onSave(comment.trim(), adjustedAmount ?? undefined)}>{saving ? 'Сохраняется…' : 'Подтвердить'}</Button></DialogActions></Dialog>;
 }
 
-function RegistryDetailsDrawer({ item, onClose }: { item: ApprovalRegisterRow | null; onClose: () => void }) {
+function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: ApprovalRegisterRow | null; onClose: () => void; onOpenHistory: (item: ApprovalRegisterRow, full?: boolean) => void }) {
   const { data: files = [] } = useQuery({ queryKey: ['registry-item-files', item?.id], queryFn: async () => (await api.get<FileAttachment[]>(`/items/${item!.id}/files`)).data, enabled: !!item });
-  const { data: logs = [] } = useQuery({ queryKey: ['registry-request-logs', item?.request_id], queryFn: async () => (await api.get<RowLog[]>(`/requests/${item!.request_id}/logs`)).data, enabled: !!item });
-  return <Drawer anchor="right" open={!!item} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: 460 }, p: 2.5 } }}>
+  const { data: logs = [], isPending: logsPending } = useQuery({
+    queryKey: ['registry-request-logs', item?.request_id],
+    queryFn: async () => (await api.get<RequestLog[]>(`/requests/${item!.request_id}/logs`)).data,
+    enabled: !!item,
+  });
+  return <Drawer anchor="right" open={!!item} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: 520 }, p: 2.5 } }}>
     {item && <Stack spacing={2}><Box><Typography variant="h6">{item.name}</Typography><Typography variant="body2" color="text.secondary">Заявка №{item.request_id.slice(0, 8)}</Typography></Box><Divider />
+      {item.status_context && (
+        <Box sx={{ p: 1.25, borderRadius: 1, border: '1px solid', borderColor: 'divider', bgcolor: item.status_context.editability.mode === 'editable' ? 'warning.50' : 'grey.50' }}>
+          <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+            {item.status_context.editability.mode === 'editable' ? 'Можно изменить' : item.status_context.editability.mode === 'locked' ? 'Изменения заблокированы' : 'Только просмотр'}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">{item.status_context.editability.detail}</Typography>
+          {item.status_context.last_decision?.by_name && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
+              Последнее решение: {item.status_context.last_decision.action_label} · {item.status_context.last_decision.by_name}
+              {item.status_context.last_decision.stage ? ` · ${item.status_context.last_decision.stage}` : ''}
+            </Typography>
+          )}
+          {item.status_context.current_owner?.by_name && item.status_context.editability.mode !== 'editable' && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+              Сейчас ждёт {item.status_context.current_owner.role_label}: {item.status_context.current_owner.by_name}
+            </Typography>
+          )}
+        </Box>
+      )}
       {[['ЦФО', item.cfo_name], ['Статья', item.article_name], ['Категория', item.category_name], ['Модуль', item.module_name], ['Запрошено', money(item.requested_sum)], ['Согласовано', money(item.approved_sum)], ['Статус', STATUS_LABELS[item.status]], ['Обоснование', item.justification || '—'], ['Комментарий экономиста', item.comment || '—']].map(([label, value]) => <Box key={label}><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="body2">{value}</Typography></Box>)}
+      {ANALYTICS_FIELD_KEYS.map((key) => (
+        <Box key={key}>
+          <Typography variant="caption" color="text.secondary">{ANALYTICS_FIELD_LABELS[key]}</Typography>
+          <EditableAnalyticsCell
+            itemId={item.id}
+            field={key}
+            value={item[key] || ''}
+            editable={canEditItemAnalytics(item)}
+            multiline
+          />
+        </Box>
+      ))}
       <Box><Typography variant="subtitle2">Прикреплённые файлы</Typography>{files.length ? files.map((file) => <Typography key={file.id} variant="body2">{file.original_name}</Typography>) : <Typography variant="body2" color="text.secondary">Нет файлов</Typography>}</Box>
-      <Box><Typography variant="subtitle2">История изменений</Typography>{logs.length ? logs.slice(0, 8).map((log) => <Typography key={log.id} variant="body2" color="text.secondary">{new Date(log.created_at).toLocaleString('ru-RU')} · {log.log?.action || log.action || 'Изменение заявки'}</Typography>) : <Typography variant="body2" color="text.secondary">История пока пуста</Typography>}</Box>
+      <Box>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+          <Typography variant="subtitle2">История изменений</Typography>
+          <Button size="small" onClick={() => onOpenHistory(item, true)}>Открыть полностью</Button>
+        </Stack>
+        <RequestHistoryPanel logs={logs} loading={logsPending} lineId={item.id} lineName={item.name} embedded showTabs />
+      </Box>
       <Button component="a" href={`/requests/${item.request_id}?article_id=${encodeURIComponent(item.article_id)}&category_id=${encodeURIComponent(item.category_id)}`} target="_blank" rel="noopener noreferrer" variant="outlined" startIcon={<OpenInNewIcon />}>Открыть заявку</Button>
     </Stack>}
   </Drawer>;
 }
 
-function RowActions({ item, onDecision, onOpen }: { item: ApprovalRegisterRow; onDecision: (target: DecisionTarget) => void; onOpen: () => void }) {
+function RowActions({ item, onDecision, onOpen, onHistory }: { item: ApprovalRegisterRow; onDecision: (target: DecisionTarget) => void; onOpen: () => void; onHistory: () => void }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const actionable = isRowActionable(item);
   const approve = () => onDecision({ rows: [item], decision: 'approved' });
   const reject = () => onDecision({ rows: [item], decision: 'rejected' });
-  return <Stack direction="row" spacing={0} justifyContent="flex-end" sx={{ '& .MuiIconButton-root': { p: 0.35 } }}><Tooltip title="Открыть подробнее"><IconButton size="small" onClick={onOpen}><OpenInNewIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>{actionable && <><Tooltip title="Согласовать"><IconButton size="small" color="success" onClick={approve}><CheckCircleOutlineIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip><Tooltip title="Отправить на доработку"><IconButton size="small" color="error" onClick={reject}><CancelOutlinedIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip><IconButton size="small" onClick={(event) => setAnchor(event.currentTarget)} aria-label="Дополнительные действия"><MoreVertIcon sx={{ fontSize: 17 }} /></IconButton><Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}><MenuItem dense onClick={() => { setAnchor(null); onDecision({ rows: [item], decision: 'approved_with_changes', amount: item.approved_sum || item.requested_sum }); }}>Согласовать с корректировкой</MenuItem><MenuItem dense onClick={() => { setAnchor(null); onOpen(); }}>Открыть подробнее</MenuItem></Menu></>}</Stack>;
+  return (
+    <Stack direction="row" spacing={0} justifyContent="flex-end" sx={{ '& .MuiIconButton-root': { p: 0.35 } }}>
+      {actionable && <>
+        <Tooltip title="Согласовать"><IconButton size="small" color="success" onClick={(event) => { event.stopPropagation(); approve(); }}><CheckCircleOutlineIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
+        <Tooltip title="Отправить на доработку"><IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); reject(); }}><CancelOutlinedIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
+        <IconButton size="small" onClick={(event) => { event.stopPropagation(); setAnchor(event.currentTarget); }} aria-label="Дополнительные действия"><MoreVertIcon sx={{ fontSize: 17 }} /></IconButton>
+        <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+          <MenuItem dense onClick={() => { setAnchor(null); onDecision({ rows: [item], decision: 'approved_with_changes', amount: item.approved_sum || item.requested_sum }); }}>Согласовать с корректировкой</MenuItem>
+          <MenuItem dense onClick={() => { setAnchor(null); onOpen(); }}>Открыть подробнее</MenuItem>
+        </Menu>
+      </>}
+      <Tooltip title="История изменений">
+        <IconButton size="small" onClick={(event) => { event.stopPropagation(); onHistory(); }} aria-label="История изменений">
+          <HistoryOutlinedIcon sx={{ fontSize: 17 }} />
+        </IconButton>
+      </Tooltip>
+    </Stack>
+  );
 }
 
-function RegistryRowCells({ item, columns, widths, selected, active, onSelect, onActive, onDecision, onOpen }: { item: ApprovalRegisterRow; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selected: boolean; active: boolean; onSelect: (checked: boolean) => void; onActive: () => void; onDecision: (target: DecisionTarget) => void; onOpen: () => void }) {
+function GroupActions({
+  group,
+  user,
+  onApproveCfo,
+  onReturnCfo,
+  onWorkflowApprove,
+  onWorkflowReturn,
+}: {
+  group: ApprovalRegisterGroup;
+  user: User;
+  onApproveCfo: (group: ApprovalRegisterGroup) => void;
+  onReturnCfo: (group: ApprovalRegisterGroup) => void;
+  onWorkflowApprove: (group: ApprovalRegisterGroup) => void;
+  onWorkflowReturn: (group: ApprovalRegisterGroup) => void;
+}) {
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const hasCfo = groupHasCfoActions(group);
+  const hasWorkflow = groupHasWorkflowActions(group);
+  if (!hasCfo && !hasWorkflow) return null;
+
+  const primaryApprove = hasCfo ? () => onApproveCfo(group) : () => onWorkflowApprove(group);
+  const primaryReject = hasCfo ? () => onReturnCfo(group) : () => onWorkflowReturn(group);
+  const approveTitle = hasCfo ? 'Согласовать все доступные строки группы' : workflowApproveLabel(user.role);
+  const rejectTitle = hasCfo ? 'Вернуть все доступные строки группы на доработку' : 'Вернуть все доступные позиции группы на доработку';
+  const showReject = hasCfo || user.role !== 'employee';
+
+  return (
+    <Stack direction="row" spacing={0} justifyContent="flex-end" sx={{ '& .MuiIconButton-root': { p: 0.35 } }}>
+      <Tooltip title={approveTitle}>
+        <IconButton size="small" color="success" onClick={primaryApprove}>
+          <CheckCircleOutlineIcon sx={{ fontSize: 17 }} />
+        </IconButton>
+      </Tooltip>
+      {showReject && (
+        <Tooltip title={rejectTitle}>
+          <IconButton size="small" color="error" onClick={primaryReject}>
+            <CancelOutlinedIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+      {hasCfo && hasWorkflow && (
+        <>
+          <IconButton size="small" onClick={(event) => setAnchor(event.currentTarget)} aria-label="Дополнительные действия по позициям">
+            <MoreVertIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+          <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
+            <MenuItem dense onClick={() => { setAnchor(null); onWorkflowApprove(group); }}>{workflowApproveLabel(user.role)}</MenuItem>
+            {user.role !== 'employee' && (
+              <MenuItem dense onClick={() => { setAnchor(null); onWorkflowReturn(group); }}>На доработку (позиции)</MenuItem>
+            )}
+          </Menu>
+        </>
+      )}
+    </Stack>
+  );
+}
+
+function SelectionBar({
+  selectionRoots,
+  selectedRows,
+  onApprove,
+  onReject,
+  onClear,
+}: {
+  selectionRoots: ApprovalRegisterGroup[];
+  selectedRows: ApprovalRegisterRow[];
+  onApprove: () => void;
+  onReject: () => void;
+  onClear: () => void;
+}) {
+  const isGroupSelection = selectionRoots.length > 0;
+  const requestedSum = selectedRows.reduce((total, item) => total + item.requested_sum, 0);
+  const summary = isGroupSelection
+    ? (selectionRoots.length === 1
+      ? `Выбрана группа: ${selectionRoots[0].name}`
+      : `Выбрано групп: ${selectionRoots.length}`)
+    : `Выбрано строк: ${selectedRows.length}`;
+
+  return (
+    <Paper variant="outlined" sx={{ px: 1.25, py: 0.75, borderColor: 'primary.main', bgcolor: 'primary.50' }}>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
+        <Typography variant="body2" fontWeight={700}>
+          {summary} · {selectedRows.length} строк · запрошено: {money(requestedSum)}
+        </Typography>
+        <Box sx={{ flex: 1 }} />
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+          <Button size="small" color="success" variant="contained" onClick={onApprove}>Согласовать</Button>
+          <Button size="small" color="warning" variant="outlined" onClick={onReject}>На доработку</Button>
+          <Button size="small" color="inherit" onClick={onClear}>Снять выделение</Button>
+        </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+
+function RegistryRowCells({ item, columns, widths, selected, active, user, onSelect, onActive, onDecision, onOpen, onHistory }: { item: ApprovalRegisterRow; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selected: boolean; active: boolean; user: User; onSelect: (checked: boolean) => void; onActive: () => void; onDecision: (target: DecisionTarget) => void; onOpen: () => void; onHistory: () => void }) {
   const actionEnabled = isRowActionable(item);
+  const amountEditable = canEditApprovedAmount(user.role, item);
+  const rowStatus = rowRegistryStatus(item);
   const commitAmount = (amount: number) => onDecision({ rows: [item], decision: amount === item.requested_sum ? 'approved' : 'approved_with_changes', amount });
   const cellTextSx = { fontSize: 13, lineHeight: 1.25 };
   const cells: Partial<Record<RegistryColumnId, React.ReactNode>> = {
-    select: <Checkbox size="small" checked={selected} disabled={!item.is_cfo_review_actionable} onChange={(_, checked) => onSelect(checked)} sx={{ p: 0.35 }} inputProps={{ 'aria-label': `Выбрать ${item.name}` }} />,
+    select: actionEnabled
+      ? <Checkbox size="small" checked={selected} onChange={(_, checked) => onSelect(checked)} sx={{ p: 0.35 }} inputProps={{ 'aria-label': `Выбрать ${item.name}` }} />
+      : null,
     structure: <Typography variant="body2" title={item.name} noWrap sx={{ ...cellTextSx, fontWeight: 500 }}>{item.name}</Typography>,
     requested: <Typography variant="body2" sx={cellTextSx}>{money(item.requested_sum)}</Typography>,
-    approved: <EditableMoneyCell item={item} active={actionEnabled} onCommit={commitAmount} />,
+    approved: <EditableMoneyCell item={item} active={amountEditable} onCommit={commitAmount} />,
     rejected: <Typography variant="body2" sx={{ ...cellTextSx, color: rowRejectedAmount(item) ? 'error.main' : 'inherit' }}>{rejectedMoney(rowRejectedAmount(item))}</Typography>,
-    status: <Box sx={{ '& .MuiChip-root': { height: 22, fontSize: 11, fontWeight: 600, '& .MuiChip-label': { px: 0.85 } } }}><ItemStatusBadge status={item.status} /></Box>,
+    status: <RegistryStatusCell status={rowStatus} item={item} />,
     justification: <Typography variant="body2" noWrap title={item.justification || '—'} sx={cellTextSx}>{item.justification || '—'}</Typography>,
     comment: <Typography variant="body2" noWrap title={item.comment || '—'} sx={cellTextSx}>{item.comment || '—'}</Typography>,
     files: <Typography variant="body2" align="center" sx={cellTextSx}>{item.files_count || '—'}</Typography>,
-    actions: <RowActions item={item} onDecision={onDecision} onOpen={onOpen} />,
+    actions: <RowActions item={item} onDecision={onDecision} onOpen={onOpen} onHistory={onHistory} />,
+    ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
+      const fieldValue = item[key] || '';
+      const editable = canEditItemAnalytics(item);
+      result[key] = (
+        <EditableAnalyticsCell
+          itemId={item.id}
+          field={key}
+          value={fieldValue}
+          editable={editable}
+        />
+      );
+      return result;
+    }, {} as Partial<Record<RegistryColumnId, React.ReactNode>>),
   };
-  return <TableRow hover selected={active} tabIndex={0} onClick={onActive} onDoubleClick={onOpen} onKeyDown={(event) => { if (event.key === 'Enter') onOpen(); if (event.key.toLocaleLowerCase('ru-RU') === 'с' && actionEnabled) onDecision({ rows: [item], decision: 'approved' }); }} className="approval-register-row approval-register-row--item" sx={{ '& td': { py: 0.2, px: 0.75, height: 36, bgcolor: '#fff' }, '&.Mui-selected td': { bgcolor: '#edf5ff' }, '&:hover td': { bgcolor: '#f7fbff' } }}>
+  return <TableRow hover selected={active} tabIndex={0} onClick={onActive} onDoubleClick={onOpen} onKeyDown={(event) => { if (event.key === 'Enter') onOpen(); if (event.key.toLocaleLowerCase('ru-RU') === 'с' && actionEnabled) onDecision({ rows: [item], decision: 'approved' }); }} className="approval-register-row approval-register-row--item" sx={{ '& td': { py: 0.35, px: 0.75, minHeight: 40, bgcolor: '#fff' }, '&.Mui-selected td': { bgcolor: '#edf5ff' }, '&:hover td': { bgcolor: '#f7fbff' } }}>
     {columns.map((column) => {
       const fixed = column.id === 'select' || column.id === 'structure';
       const align = ['requested', 'approved', 'rejected'].includes(column.id) ? 'right' : ['select', 'files'].includes(column.id) ? 'center' : 'left';
@@ -391,30 +627,32 @@ function RegistryRowCells({ item, columns, widths, selected, active, onSelect, o
   </TableRow>;
 }
 
-function RegisterRows({ group, expanded, filters, columns, widths, selectedIds, activeId, onToggleSelected, onActive, onDecision, onOpen, onItems, requestId }: { group: ApprovalRegisterGroup; expanded: boolean; filters: RegistryFilters; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selectedIds: Set<string>; activeId: string | null; onToggleSelected: (item: ApprovalRegisterRow, checked: boolean) => void; onActive: (item: ApprovalRegisterRow) => void; onDecision: (target: DecisionTarget) => void; onOpen: (item: ApprovalRegisterRow) => void; onItems: (items: ApprovalRegisterRow[]) => void; requestId?: string }) {
+function RegisterRows({ group, expanded, filters, columns, widths, selectedIds, activeId, user, onToggleSelected, onActive, onDecision, onOpen, onHistory, onItems, requestId, visibleItemIds, columnSort }: { group: ApprovalRegisterGroup; expanded: boolean; filters: RegistryFilters; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selectedIds: Set<string>; activeId: string | null; user: User; onToggleSelected: (item: ApprovalRegisterRow, checked: boolean) => void; onActive: (item: ApprovalRegisterRow) => void; onDecision: (target: DecisionTarget) => void; onOpen: (item: ApprovalRegisterRow) => void; onHistory: (item: ApprovalRegisterRow) => void; onItems: (groupId: string, items: ApprovalRegisterRow[]) => void; requestId?: string; visibleItemIds: Set<string> | null; columnSort: TableSortState<RegistryColumnId> | null }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => Number(sessionStorage.getItem(REQUEST_PAGE_SIZE_KEY)) || 50);
-  useEffect(() => { setPage(1); }, [group.id, filters.status, filters.budgetYear, filters.search]);
+  useEffect(() => { setPage(1); }, [group.id, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isFetching, error } = useQuery({
     queryKey: ['approval-register-rows', group.id, group.module_id, group.article_id, group.category_id, requestId, page, pageSize, filters],
     queryFn: async ({ signal }) => (await api.get<ApprovalRegisterRowsResponse>('/approval-register/rows', {
-      params: {
+      params: buildRegisterFilterParams(filters, {
         module_id: group.module_id,
         article_id: group.article_id,
         category_id: group.category_id,
         request_id: requestId,
         page,
         page_size: pageSize,
-        status: filters.status || undefined,
-        budget_year: filters.budgetYear || undefined,
-        search: filters.search || undefined,
-      },
+      }),
       signal,
     })).data,
     enabled: expanded,
     placeholderData: (previous) => previous,
   });
-  useEffect(() => { if (data) onItems(data.items); }, [data, onItems]);
+  useEffect(() => { if (data) onItems(group.id, data.items); }, [data, group.id, onItems]);
+  const displayItems = useMemo(() => {
+    let items = data?.items || [];
+    if (visibleItemIds) items = items.filter((item) => visibleItemIds.has(item.id));
+    return sortRegisterItems(items, columnSort);
+  }, [columnSort, data?.items, visibleItemIds]);
   if (!expanded) return null;
   const columnsCount = columns.length;
   const pagination = data?.pagination;
@@ -423,7 +661,7 @@ function RegisterRows({ group, expanded, filters, columns, widths, selectedIds, 
   return <>
     {isFetching && !data && <TableRow><TableCell colSpan={columnsCount} sx={{ pl: 5, py: 0.5 }}><Typography variant="caption" color="text.secondary">Загрузка строк…</Typography></TableCell></TableRow>}
     {error && <TableRow><TableCell colSpan={columnsCount} sx={{ pl: 5 }}><Alert severity="error" sx={{ py: 0.25 }}>Не удалось загрузить строки заявки. Повторите попытку.</Alert></TableCell></TableRow>}
-    {data?.items.map((item) => <RegistryRowCells key={item.id} item={item} columns={columns} widths={widths} selected={selectedIds.has(item.id)} active={activeId === item.id} onSelect={(checked) => onToggleSelected(item, checked)} onActive={() => onActive(item)} onDecision={onDecision} onOpen={() => onOpen(item)} />)}
+    {displayItems.map((item) => <RegistryRowCells key={item.id} item={item} columns={columns} widths={widths} selected={selectedIds.has(item.id)} active={activeId === item.id} user={user} onSelect={(checked) => onToggleSelected(item, checked)} onActive={() => onActive(item)} onDecision={onDecision} onOpen={() => onOpen(item)} onHistory={() => onHistory(item)} />)}
     {data && !data.items.length && <TableRow><TableCell colSpan={columnsCount} sx={{ pl: 5 }}><Typography variant="caption" color="text.secondary">Строк заявки не найдено.</Typography></TableCell></TableRow>}
     {pagination && pagination.total_items > 0 && (
       <TableRow className="approval-register-request-pagination">
@@ -466,25 +704,102 @@ function RegisterRows({ group, expanded, filters, columns, widths, selectedIds, 
   </>;
 }
 
-function TreeRows({ groups, level, expanded, filters, columns, widths, selectedIds, activeId, onToggle, onToggleSelected, onActive, onDecision, onOpen, onApproveGroup, onItems, requestId }: { groups: ApprovalRegisterGroup[]; level: number; expanded: Set<string>; filters: RegistryFilters; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selectedIds: Set<string>; activeId: string | null; onToggle: (id: string) => void; onToggleSelected: (item: ApprovalRegisterRow, checked: boolean) => void; onActive: (item: ApprovalRegisterRow) => void; onDecision: (target: DecisionTarget) => void; onOpen: (item: ApprovalRegisterRow) => void; onApproveGroup: (group: ApprovalRegisterGroup) => void; onItems: (items: ApprovalRegisterRow[]) => void; requestId?: string }) {
-  return <>{groups.map((group) => {
+function TreeRows({
+  groups,
+  level,
+  expanded,
+  filters,
+  columns,
+  widths,
+  selectedIds,
+  selectedGroupIds,
+  activeId,
+  onToggle,
+  onToggleSelected,
+  onToggleGroupSelected,
+  onActive,
+  onDecision,
+  onOpen,
+  onHistory,
+  onApproveGroup,
+  onCfoReviewReturn,
+  onWorkflowApprove,
+  onWorkflowReturn,
+  onItems,
+  requestId,
+  user,
+  visibleGroupIds,
+  visibleItemIds,
+  columnSort,
+}: {
+  groups: ApprovalRegisterGroup[];
+  level: number;
+  expanded: Set<string>;
+  filters: RegistryFilters;
+  columns: typeof REGISTRY_COLUMNS;
+  widths: Record<RegistryColumnId, number>;
+  selectedIds: Set<string>;
+  selectedGroupIds: Set<string>;
+  activeId: string | null;
+  onToggle: (id: string) => void;
+  onToggleSelected: (item: ApprovalRegisterRow, checked: boolean) => void;
+  onToggleGroupSelected: (group: ApprovalRegisterGroup, checked: boolean) => void;
+  onActive: (item: ApprovalRegisterRow) => void;
+  onDecision: (target: DecisionTarget) => void;
+  onOpen: (item: ApprovalRegisterRow) => void;
+  onHistory: (item: ApprovalRegisterRow) => void;
+  onApproveGroup: (group: ApprovalRegisterGroup) => void;
+  onCfoReviewReturn: (group: ApprovalRegisterGroup) => void;
+  onWorkflowApprove: (group: ApprovalRegisterGroup) => void;
+  onWorkflowReturn: (group: ApprovalRegisterGroup) => void;
+  onItems: (groupId: string, items: ApprovalRegisterRow[]) => void;
+  requestId?: string;
+  user: User;
+  visibleGroupIds: Set<string> | null;
+  visibleItemIds: Set<string> | null;
+  columnSort: TableSortState<RegistryColumnId> | null;
+}) {
+  const displayGroups = useMemo(
+    () => sortRegisterGroups(filterRegisterGroups(groups, visibleGroupIds), columnSort),
+    [columnSort, groups, visibleGroupIds],
+  );
+
+  return <>{displayGroups.map((group) => {
     const isExpanded = expanded.has(group.id);
     const hasContent = group.children.length > 0 || group.can_load_rows;
+    const groupSelectable = isGroupSelectable(group);
     const groupCells: Partial<Record<RegistryColumnId, React.ReactNode>> = {
-      select: null,
+      select: groupSelectable
+        ? <Checkbox size="small" checked={selectedGroupIds.has(group.id)} onChange={(_, checked) => onToggleGroupSelected(group, checked)} onClick={(event) => event.stopPropagation()} sx={{ p: 0.35 }} inputProps={{ 'aria-label': `Выбрать ${group.name}` }} />
+        : null,
       structure: <Stack direction="row" alignItems="center" spacing={0.25} sx={{ pl: level * 1.15, minWidth: 0 }}><Box sx={{ width: 22, flex: '0 0 auto' }}>{hasContent && <IconButton size="small" aria-label={isExpanded ? 'Свернуть группу' : 'Раскрыть группу'} onClick={() => onToggle(group.id)} sx={{ p: 0.25 }}>{isExpanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}</IconButton>}</Box><Box minWidth={0}><Typography variant="body2" fontWeight={level === 0 ? 700 : 600} noWrap title={group.name} sx={{ fontSize: 13, lineHeight: 1.25 }}>{group.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>{group.label} · {group.aggregates.total_rows} строк{group.type === 'module' && group.request_ids.length === 1 && <> · <Box component="a" href={`/requests/${group.request_ids[0]}?article_id=${encodeURIComponent(group.article_id)}&category_id=${encodeURIComponent(group.category_id)}`} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()} sx={{ color: 'primary.main', font: 'inherit', cursor: 'pointer', textDecoration: 'underline' }}>заявка №{group.request_ids[0].slice(0, 8)}</Box></>}</Typography></Box></Stack>,
       requested: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(group.aggregates.requested_sum)}</Typography>,
       approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(group.aggregates.approved_sum)}</Typography>,
       rejected: <Typography variant="body2" sx={{ fontSize: 13, color: group.aggregates.rejected_sum ? 'error.main' : 'inherit' }}>{rejectedMoney(group.aggregates.rejected_sum)}</Typography>,
-      status: <CompactStatusChip label={AGGREGATE_DISPLAY_LABELS[group.aggregates.aggregate_status]} color={group.aggregates.aggregate_status === 'approved' ? 'success' : group.aggregates.aggregate_status === 'rejected' ? 'error' : group.aggregates.aggregate_status === 'no_data' ? 'default' : 'warning'} />,
+      status: <RegistryGroupStatusCell status={groupRegistryStatus(group.aggregates)} aggregates={group.aggregates} />,
       justification: '—',
       comment: '—',
       files: '—',
-      actions: group.type === 'article' && group.aggregates.cfo_review_actionable_requests > 0
-        ? <Tooltip title="Согласовать все доступные строки статьи"><Button size="small" color="success" sx={{ px: 0.5, minWidth: 0, fontSize: 11, whiteSpace: 'nowrap' }} onClick={() => onApproveGroup(group)}>Согласовать</Button></Tooltip>
+      actions: isGroupActionable(group) && groupSelectable
+        ? <GroupActions group={group} user={user} onApproveCfo={onApproveGroup} onReturnCfo={onCfoReviewReturn} onWorkflowApprove={onWorkflowApprove} onWorkflowReturn={onWorkflowReturn} />
         : null,
+      ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
+        if ((group.type === 'article' || group.type === 'category') && group.analytics) {
+          result[key] = (
+            <GroupAnalyticsCell
+              group={group}
+              field={key}
+              filters={filters}
+              requestId={requestId}
+            />
+          );
+        } else {
+          result[key] = '—';
+        }
+        return result;
+      }, {} as Partial<Record<RegistryColumnId, React.ReactNode>>),
     };
-    return <Fragment key={group.id}><TableRow hover className="approval-register-row" sx={{ '& td': { py: 0.2, px: 0.75, height: 34, bgcolor: level === 0 ? '#f4f9ff' : '#fff', borderBottom: level === 0 ? '1px solid rgba(15, 23, 42, 0.08)' : undefined, fontSize: 13 }, '&:hover td': { bgcolor: '#edf6ff' } }}>{columns.map((column) => { const fixed = column.id === 'select' || column.id === 'structure'; return <TableCell key={column.id} align={['requested', 'approved', 'rejected', 'pending'].includes(column.id) ? 'right' : column.id === 'select' ? 'center' : 'left'} sx={{ width: widths[column.id], minWidth: widths[column.id], maxWidth: widths[column.id], overflow: 'hidden', position: fixed ? 'sticky' : 'static', left: column.id === 'structure' ? widths.select : 0, zIndex: fixed ? 2 : 0, bgcolor: level === 0 ? '#f4f9ff !important' : '#fff !important', borderRight: '1px solid', borderColor: 'rgba(15, 23, 42, 0.06)', fontWeight: ['requested', 'approved', 'rejected', 'pending'].includes(column.id) ? (level === 0 ? 700 : 500) : undefined }}>{groupCells[column.id]}</TableCell>; })}</TableRow>{isExpanded && group.children.length > 0 && <TreeRows groups={group.children} level={level + 1} expanded={expanded} filters={filters} columns={columns} widths={widths} selectedIds={selectedIds} activeId={activeId} onToggle={onToggle} onToggleSelected={onToggleSelected} onActive={onActive} onDecision={onDecision} onOpen={onOpen} onApproveGroup={onApproveGroup} onItems={onItems} requestId={requestId} />}{group.can_load_rows && <RegisterRows group={group} expanded={isExpanded} filters={filters} columns={columns} widths={widths} selectedIds={selectedIds} activeId={activeId} onToggleSelected={onToggleSelected} onActive={onActive} onDecision={onDecision} onOpen={onOpen} onItems={onItems} requestId={requestId} />}</Fragment>;
+    return <Fragment key={group.id}><TableRow hover className="approval-register-row" sx={{ '& td': { py: 0.25, px: 0.75, height: 34, bgcolor: level === 0 ? '#f4f9ff' : '#fff', borderBottom: level === 0 ? '1px solid rgba(15, 23, 42, 0.08)' : undefined, fontSize: 13 }, '&:hover td': { bgcolor: '#edf6ff' } }}>{columns.map((column) => { const fixed = column.id === 'select' || column.id === 'structure'; return <TableCell key={column.id} align={['requested', 'approved', 'rejected', 'pending'].includes(column.id) ? 'right' : column.id === 'select' ? 'center' : 'left'} sx={{ width: widths[column.id], minWidth: widths[column.id], maxWidth: widths[column.id], overflow: 'hidden', position: fixed ? 'sticky' : 'static', left: column.id === 'structure' ? widths.select : 0, zIndex: fixed ? 2 : 0, bgcolor: level === 0 ? '#f4f9ff !important' : '#fff !important', borderRight: '1px solid', borderColor: 'rgba(15, 23, 42, 0.06)', fontWeight: ['requested', 'approved', 'rejected', 'pending'].includes(column.id) ? (level === 0 ? 700 : 500) : undefined }}>{groupCells[column.id]}</TableCell>; })}</TableRow>{isExpanded && group.children.length > 0 && <TreeRows groups={group.children} level={level + 1} expanded={expanded} filters={filters} columns={columns} widths={widths} selectedIds={selectedIds} selectedGroupIds={selectedGroupIds} activeId={activeId} onToggle={onToggle} onToggleSelected={onToggleSelected} onToggleGroupSelected={onToggleGroupSelected} onActive={onActive} onDecision={onDecision} onOpen={onOpen} onHistory={onHistory} onApproveGroup={onApproveGroup} onCfoReviewReturn={onCfoReviewReturn} onWorkflowApprove={onWorkflowApprove} onWorkflowReturn={onWorkflowReturn} onItems={onItems} requestId={requestId} user={user} visibleGroupIds={visibleGroupIds} visibleItemIds={visibleItemIds} columnSort={columnSort} />}{group.can_load_rows && <RegisterRows group={group} expanded={isExpanded} filters={filters} columns={columns} widths={widths} selectedIds={selectedIds} activeId={activeId} user={user} onToggleSelected={onToggleSelected} onActive={onActive} onDecision={onDecision} onOpen={onOpen} onHistory={onHistory} onItems={onItems} requestId={requestId} visibleItemIds={visibleItemIds} columnSort={columnSort} />}</Fragment>;
   })}</>;
 }
 
@@ -513,11 +828,30 @@ export function ApprovalRegister({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [preferences, setPreferences] = useState(() => ({ order: storedPreferences.order, visibility: storedPreferences.visibility, widths: storedPreferences.widths }));
   const [draggedColumn, setDraggedColumn] = useState<RegistryColumnId | null>(null);
+  const [loadedItems, setLoadedItems] = useState<Map<string, { item: ApprovalRegisterRow; groupId: string }>>(new Map());
   const [selected, setSelected] = useState<Map<string, ApprovalRegisterRow>>(new Map());
+  const [selectedGroups, setSelectedGroups] = useState<Map<string, ApprovalRegisterGroup>>(new Map());
   const [activeItem, setActiveItem] = useState<ApprovalRegisterRow | null>(null);
   const [detailsItem, setDetailsItem] = useState<ApprovalRegisterRow | null>(null);
+  const [historyTarget, setHistoryTarget] = useState<RequestHistoryTarget | null>(null);
+  const openHistory = useCallback((item: ApprovalRegisterRow, full = false) => {
+    setHistoryTarget({
+      requestId: item.request_id,
+      lineId: full ? undefined : item.id,
+      lineName: full ? undefined : item.name,
+      title: 'История изменений',
+      subtitle: full
+        ? `Заявка №${item.request_id.slice(0, 8)}`
+        : `${item.name} · заявка №${item.request_id.slice(0, 8)}`,
+    });
+  }, []);
   const [decisionTarget, setDecisionTarget] = useState<DecisionTarget | null>(null);
-  const [groupToApprove, setGroupToApprove] = useState<ApprovalRegisterGroup | null>(null);
+  const [groupsToApprove, setGroupsToApprove] = useState<ApprovalRegisterGroup[]>([]);
+  const [revisionDialog, setRevisionDialog] = useState<{
+    mode: 'cfo' | 'workflow';
+    target?: RevisionTarget | null;
+    initialLines?: ApprovalRegisterRow[];
+  } | null>(null);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
   const deferredSearch = useDeferredValue(filters.search);
@@ -525,20 +859,39 @@ export function ApprovalRegister({
   const queryClient = useQueryClient();
   useEffect(() => { sessionStorage.setItem('budgetbasket:register:view', view); }, [view]);
   useEffect(() => { localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ version: 1, view, filters, ...preferences })); }, [filters, preferences, view]);
-  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); }, [view, filters.status, filters.budgetYear, deferredSearch]);
+  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, filters.status, filters.budgetYear, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isLoading, error, isFetching } = useQuery({
     queryKey: ['approval-register', requestId, view, effectiveFilters],
     queryFn: async ({ signal }) => (await api.get<ApprovalRegisterResponse>('/approval-register', {
-      params: {
-        view,
-        status: effectiveFilters.status || undefined,
-        budget_year: effectiveFilters.budgetYear || undefined,
-        search: deferredSearch || undefined,
-        request_id: requestId,
-      },
+      params: buildRegisterFilterParams(effectiveFilters, { view, request_id: requestId }),
       signal,
     })).data,
   });
+  const { data: analyticsFilterOptions = {} } = useQuery({
+    queryKey: ['approval-register-analytics-filters', requestId, effectiveFilters],
+    queryFn: async ({ signal }) => (await api.get<Partial<Record<AnalyticsFieldKey, string[]>>>('/approval-register/analytics-filters', {
+      params: buildRegisterFilterParams(effectiveFilters, { request_id: requestId }),
+      signal,
+    })).data,
+  });
+  const { data: mySteps = [] } = useQuery({
+    queryKey: ['my-approval-steps'],
+    queryFn: async () => (await api.get<ApprovalStep[]>('/steps/my')).data,
+    enabled: revisionDialog?.mode === 'workflow',
+  });
+  const refreshAfterRevision = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+    queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+    setSelected(new Map());
+    setSelectedGroups(new Map());
+  }, [queryClient]);
+  const openGroupRevision = (groups: ApprovalRegisterGroup[], mode: 'cfo' | 'workflow') => {
+    const parents = buildParentMap(data?.groups || []);
+    const roots = topLevelSelectedGroups(groups, parents);
+    const group = roots[0];
+    if (!group) return;
+    setRevisionDialog({ mode, target: revisionTargetFromGroup(group) });
+  };
   const decide = useMutation({ mutationFn: async ({ target, comment, amount }: { target: DecisionTarget; comment: string; amount?: number }) => {
     const first = target.rows[0];
     const payload = { decision: target.decision, comment, ...(amount === undefined ? {} : { sum_fact: amount }) };
@@ -549,18 +902,41 @@ export function ApprovalRegister({
   }, onSuccess: (response, variables) => {
     if (variables.target.rows.length === 1) updateRegisterCache(queryClient, variables.target.rows[0], response.data as BudgetItem);
     else queryClient.invalidateQueries({ queryKey: ['approval-register'] });
-    setSelected(new Map()); setDecisionTarget(null); setDecisionError(null);
+    setSelected(new Map()); setSelectedGroups(new Map()); setDecisionTarget(null); setDecisionError(null);
   }, onError: () => setDecisionError('Не удалось сохранить решение. Данные не изменены; попробуйте ещё раз.') });
-  const approveArticle = useMutation({
-    mutationFn: async (group: ApprovalRegisterGroup) => api.post(
-      `/approval-register/groups/${group.type}/${groupEntityId(group)}/cfo-decision`,
-      { decision: 'approved', comment: '' },
-      { params: { request_id: requestId } },
-    ),
+  const approveGroups = useMutation({
+    mutationFn: async (groups: ApprovalRegisterGroup[]) => {
+      for (const group of groups) {
+        await api.post(
+          `/approval-register/groups/${group.type}/${groupEntityId(group)}/cfo-decision`,
+          { decision: 'approved', comment: '' },
+          { params: { request_id: requestId } },
+        );
+      }
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['approval-register'] });
       queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
-      setGroupToApprove(null);
+      setGroupsToApprove([]);
+      setSelectedGroups(new Map());
+    },
+  });
+  const workflowGroupAction = useMutation({
+    mutationFn: async ({ groups, action, comment = '', targetStepId }: { groups: ApprovalRegisterGroup[]; action: 'submit' | 'approve' | 'return_for_revision'; comment?: string; targetStepId?: string }) => {
+      for (const group of groups) {
+        await api.post(
+          `/approval-register/groups/${group.type}/${groupEntityId(group)}/workflow-action`,
+          { action, comment, ...(targetStepId ? { target_step_id: targetStepId } : {}) },
+          { params: { request_id: requestId } },
+        );
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+      queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
+      queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+      setSelectedGroups(new Map());
     },
   });
   const toggle = (id: string) => setExpanded((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
@@ -599,45 +975,200 @@ export function ApprovalRegister({
     });
     setDraggedColumn(null);
   };
-  const resizeColumn = (id: RegistryColumnId, event: ReactPointerEvent<HTMLSpanElement>) => { event.preventDefault(); const startX = event.clientX; const startWidth = preferences.widths[id]; const onMove = (moveEvent: PointerEvent) => setPreferences((current) => ({ ...current, widths: { ...current.widths, [id]: Math.max(id === 'structure' ? 280 : 88, startWidth + moveEvent.clientX - startX) } })); const onUp = () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); }; window.addEventListener('pointermove', onMove); window.addEventListener('pointerup', onUp); };
+  const resizeColumn = (id: RegistryColumnId, event: ReactPointerEvent<HTMLSpanElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = preferences.widths[id];
+    const onMove = (moveEvent: PointerEvent) => setPreferences((current) => ({
+      ...current,
+      widths: {
+        ...current.widths,
+        [id]: Math.max(REGISTRY_COLUMN_MIN_WIDTHS[id], startWidth + moveEvent.clientX - startX),
+      },
+    }));
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+  const controlRows = useMemo(
+    () => buildRegisterControlRows(data?.groups || [], [...loadedItems.values()]),
+    [data?.groups, loadedItems],
+  );
+  const columnControls = useTableColumnControls({
+    rows: controlRows,
+    columns: REGISTRY_TABLE_COLUMN_DEFINITIONS,
+  });
+  const { visibleGroupIds, visibleItemIds } = useMemo(
+    () => computeRegisterVisibility(data?.groups || [], columnControls.rows, columnControls.hasActiveFilters),
+    [columnControls.rows, columnControls.hasActiveFilters, data?.groups],
+  );
+  const autoFitColumn = (id: RegistryColumnId) => {
+    const values = getRegisterAutoFitValues(controlRows, id);
+    const label = REGISTRY_COLUMNS.find((column) => column.id === id)?.label || '';
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.font = '14px Roboto, Arial, sans-serif';
+    const widest = Math.max(
+      context.measureText(label).width,
+      ...values.map((value) => context.measureText(value).width),
+      0,
+    );
+    setPreferences((current) => ({
+      ...current,
+      widths: {
+        ...current.widths,
+        [id]: Math.min(420, Math.max(REGISTRY_COLUMN_MIN_WIDTHS[id], Math.ceil(widest + 56))),
+      },
+    }));
+  };
   const visibleColumns = orderedRegistryColumns(preferences.order, preferences.visibility);
   const tableWidth = visibleColumns.reduce((total, column) => total + preferences.widths[column.id], 0);
   const selectedRows = [...selected.values()];
-  const exportRegister = () => { const rows: string[][] = [['Структура', 'Запрошено', 'Согласовано', 'Статус']]; const visit = (groups: ApprovalRegisterGroup[], level = 0) => groups.forEach((group) => { rows.push([`${'  '.repeat(level)}${group.name}`, String(group.aggregates.requested_sum), String(group.aggregates.approved_sum), AGGREGATE_DISPLAY_LABELS[group.aggregates.aggregate_status]]); visit(group.children, level + 1); }); visit(data?.groups || []); const content = rows.map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(';')).join('\n'); const url = URL.createObjectURL(new Blob([`\ufeff${content}`], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = 'реестр-бюджетных-заявок.csv'; link.click(); URL.revokeObjectURL(url); };
-  const updateKnownItems = useCallback((items: ApprovalRegisterRow[]) => setSelected((current) => {
-    let changed = false;
-    const next = new Map(current);
-    items.forEach((item) => {
-      if (next.has(item.id) && next.get(item.id) !== item) {
-        next.set(item.id, item);
-        changed = true;
-      }
+  const selectedGroupList = [...selectedGroups.values()];
+  const groupParents = useMemo(() => buildParentMap(data?.groups || []), [data?.groups]);
+  const selectionRoots = useMemo(
+    () => topLevelSelectedGroups(selectedGroupList, groupParents),
+    [selectedGroupList, groupParents],
+  );
+  const hasSelection = selectedRows.length > 0 || selectedGroupList.length > 0;
+  const loadGroupActionableRows = useCallback(async (group: ApprovalRegisterGroup) => (
+    await api.get<{ lines: ApprovalRegisterRow[] }>(
+      `/approval-register/groups/${group.type}/${groupEntityId(group)}/actionable-rows`,
+      {
+        params: {
+          request_id: requestId,
+          status: effectiveFilters.status || undefined,
+          budget_year: effectiveFilters.budgetYear || undefined,
+          search: effectiveFilters.search || undefined,
+        },
+      },
+    )
+  ).data.lines, [effectiveFilters, requestId]);
+  const clearSelection = () => {
+    setSelected(new Map());
+    setSelectedGroups(new Map());
+  };
+  const handleBulkApprove = () => {
+    if (selectionRoots.length > 0) {
+      const cfoRoots = cfoGroupsForAction(selectionRoots);
+      const workflowRoots = workflowGroupsForAction(selectionRoots);
+      if (cfoRoots.length) setGroupsToApprove(cfoRoots);
+      else if (workflowRoots.length) workflowGroupAction.mutate({ groups: workflowRoots, action: 'approve' });
+      return;
+    }
+    setDecisionError(null);
+    setDecisionTarget({ rows: selectedRows, decision: 'approved' });
+  };
+  const handleBulkReject = () => {
+    if (selectionRoots.length > 0) {
+      const cfoRoots = cfoGroupsForAction(selectionRoots);
+      const workflowRoots = workflowGroupsForAction(selectionRoots);
+      if (cfoRoots.length) openGroupRevision(cfoRoots, 'cfo');
+      else openGroupRevision(workflowRoots, 'workflow');
+      return;
+    }
+    setRevisionDialog({ mode: 'cfo', initialLines: selectedRows });
+  };
+  const toggleRowSelected = (item: ApprovalRegisterRow, checked: boolean) => {
+    if (checked) setSelectedGroups(new Map());
+    setSelected((current) => {
+      const next = new Map(current);
+      if (checked) next.set(item.id, item);
+      else next.delete(item.id);
+      return next;
     });
-    return changed ? next : current;
-  }), []);
-  const hasActiveTableFilters = Boolean(filters.search || filters.status || filters.budgetYear);
+  };
+  const toggleGroupSelected = async (group: ApprovalRegisterGroup, checked: boolean) => {
+    const descendants = collectDescendantGroups(group);
+    setSelectedGroups((current) => {
+      const next = new Map(current);
+      descendants.forEach((entry) => {
+        if (checked && isGroupSelectable(entry)) next.set(entry.id, entry);
+        else next.delete(entry.id);
+      });
+      return next;
+    });
+    if (checked) {
+      setExpanded((current) => {
+        const next = new Set(current);
+        descendants.forEach((entry) => {
+          if (entry.children.length || entry.can_load_rows) next.add(entry.id);
+        });
+        return next;
+      });
+      try {
+        const lines = await loadGroupActionableRows(group);
+        setSelected((current) => {
+          const next = new Map(current);
+          lines.forEach((item) => next.set(item.id, item));
+          return next;
+        });
+      } catch {
+        // selection stays on groups even if row preload fails
+      }
+      return;
+    }
+    try {
+      const lines = await loadGroupActionableRows(group);
+      setSelected((current) => {
+        const next = new Map(current);
+        lines.forEach((item) => next.delete(item.id));
+        return next;
+      });
+    } catch {
+      setSelected(new Map());
+    }
+  };
+  const cfoGroupsForAction = (groups: ApprovalRegisterGroup[]) => groups.filter(groupHasCfoActions);
+  const workflowGroupsForAction = (groups: ApprovalRegisterGroup[]) => groups.filter(groupHasWorkflowActions);
+  const exportRegister = () => { const rows: string[][] = [['Структура', 'Запрошено', 'Согласовано', 'Статус']]; const visit = (groups: ApprovalRegisterGroup[], level = 0) => groups.forEach((group) => { rows.push([`${'  '.repeat(level)}${group.name}`, String(group.aggregates.requested_sum), String(group.aggregates.approved_sum), AGGREGATE_DISPLAY_LABELS[group.aggregates.aggregate_status]]); visit(group.children, level + 1); }); visit(data?.groups || []); const content = rows.map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(';')).join('\n'); const url = URL.createObjectURL(new Blob([`\ufeff${content}`], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = 'реестр-бюджетных-заявок.csv'; link.click(); URL.revokeObjectURL(url); };
+  const registerGroupItems = useCallback((groupId: string, items: ApprovalRegisterRow[]) => {
+    setLoadedItems((current) => {
+      const next = new Map(current);
+      items.forEach((item) => next.set(item.id, { item, groupId }));
+      return next;
+    });
+    setSelected((current) => {
+      let changed = false;
+      const next = new Map(current);
+      const shouldAutoSelect = selectedGroups.size > 0;
+      items.forEach((item) => {
+        if (shouldAutoSelect && isRowActionable(item) && !next.has(item.id)) {
+          next.set(item.id, item);
+          changed = true;
+        } else if (next.has(item.id) && next.get(item.id) !== item) {
+          next.set(item.id, item);
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [selectedGroups]);
+  const hasActiveTableFilters = Boolean(
+    filters.search
+    || filters.status
+    || filters.budgetYear
+    || ANALYTICS_FIELD_KEYS.some((key) => filters[key])
+    || columnControls.hasActiveFilters,
+  );
   const columnTools = (
-    <>
-      <TableColumnTools
-        buttonLabel="Колонки"
-        columns={REGISTRY_COLUMNS}
-        visibility={preferences.visibility}
-        onToggleColumn={toggleColumn}
-        onResetColumns={() => setPreferences({ order: DEFAULT_COLUMN_ORDER, visibility: DEFAULT_COLUMN_VISIBILITY, widths: DEFAULT_COLUMN_WIDTHS })}
-        onResetFilters={() => setFilters(EMPTY_FILTERS)}
-        onResetWidths={() => setPreferences((current) => ({ ...current, widths: DEFAULT_COLUMN_WIDTHS }))}
-        hasActiveFilters={hasActiveTableFilters}
-      />
-      <TableColumnTools
-        columns={REGISTRY_COLUMNS}
-        visibility={preferences.visibility}
-        onToggleColumn={toggleColumn}
-        onResetColumns={() => setPreferences({ order: DEFAULT_COLUMN_ORDER, visibility: DEFAULT_COLUMN_VISIBILITY, widths: DEFAULT_COLUMN_WIDTHS })}
-        onResetFilters={() => setFilters(EMPTY_FILTERS)}
-        onResetWidths={() => setPreferences((current) => ({ ...current, widths: DEFAULT_COLUMN_WIDTHS }))}
-        hasActiveFilters={hasActiveTableFilters}
-      />
-    </>
+    <TableColumnTools
+      buttonLabel="Колонки"
+      columns={REGISTRY_COLUMNS}
+      visibility={preferences.visibility}
+      onToggleColumn={toggleColumn}
+      onResetColumns={() => setPreferences({ order: DEFAULT_COLUMN_ORDER, visibility: DEFAULT_COLUMN_VISIBILITY, widths: DEFAULT_COLUMN_WIDTHS })}
+      onResetFilters={() => {
+        setFilters(EMPTY_FILTERS);
+        columnControls.resetFilters();
+      }}
+      onResetWidths={() => setPreferences((current) => ({ ...current, widths: DEFAULT_COLUMN_WIDTHS }))}
+      hasActiveFilters={hasActiveTableFilters}
+    />
   );
   return <Stack spacing={1.1} className="approval-register-page">
     <Box sx={{ pt: 0.15 }}>
@@ -646,10 +1177,10 @@ export function ApprovalRegister({
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ mt: 0.35, display: 'block', fontSize: 12, lineHeight: 1.35 }}>
         {embedded
-          ? 'Просматривайте строки, принимайте решение по статье или детализации, корректируйте сумму либо отправляйте строку на доработку.'
+          ? 'Отметьте группировку (ЦФО, статью, модуль) — нижестоящие строки выделятся автоматически. Действия — на панели над таблицей или в колонке после «Статус».'
           : inRequestsPage
-            ? 'Проверяйте бюджетные строки по ЦФО, статье и категории или переключайтесь на представление по заявкам.'
-          : 'Агрегированный реестр бюджетных заявок с возможностью детализации и управления.'}
+            ? 'Выделите группировку или строки для массовых действий. При выборе группы дочерние элементы выделяются вместе с ней.'
+            : 'Выделите группировку (ЦФО, статью, модуль) — дочерние строки выделятся автоматически. Действия — на панели над таблицей.'}
       </Typography>
     </Box>
     <RegistryFilterBar
@@ -657,18 +1188,167 @@ export function ApprovalRegister({
       filters={filters}
       onViewChange={setView}
       onChange={setFilters}
-      onReset={() => setFilters(EMPTY_FILTERS)}
+      onReset={() => {
+        setFilters(EMPTY_FILTERS);
+        columnControls.resetFilters();
+      }}
       onExport={exportRegister}
       columnTools={columnTools}
       availableViews={availableViews}
+      analyticsFilterOptions={analyticsFilterOptions}
     />
     {data && <RegistrySummary aggregates={data.aggregates} />}
-    {selectedRows.length > 0 && <Paper variant="outlined" sx={{ px: 1.25, py: 0.75, borderColor: 'primary.main', bgcolor: 'primary.50' }}><Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}><Typography variant="body2" fontWeight={700}>Выбрано: {selectedRows.length} · запрошено: {money(selectedRows.reduce((total, item) => total + item.requested_sum, 0))}</Typography><Box sx={{ flex: 1 }} /><Button size="small" color="success" onClick={() => { setDecisionError(null); setDecisionTarget({ rows: selectedRows, decision: 'approved' }); }}>Согласовать</Button><Button size="small" color="error" onClick={() => { setDecisionError(null); setDecisionTarget({ rows: selectedRows, decision: 'rejected' }); }}>Отклонить</Button><Button size="small" onClick={() => setSelected(new Map())}>Снять выделение</Button></Stack></Paper>}
+    {hasSelection && (
+      <SelectionBar
+        selectionRoots={selectionRoots}
+        selectedRows={selectedRows}
+        onApprove={handleBulkApprove}
+        onReject={handleBulkReject}
+        onClear={clearSelection}
+      />
+    )}
     {error && <Alert severity="error">Не удалось загрузить реестр. Повторите попытку.</Alert>}
-    <TableContainer ref={tableContainerRef} component={Paper} variant="outlined" className="approval-register-table" sx={{ maxHeight: 'calc(100vh - 250px)', minHeight: 420, borderColor: 'rgba(15, 23, 42, 0.08)', borderRadius: 1.5 }}><Table stickyHeader size="small" sx={{ width: tableWidth, minWidth: tableWidth, tableLayout: 'fixed', '& td, & th': { borderRight: '1px solid', borderColor: 'rgba(15, 23, 42, 0.06)', fontSize: 12 } }}><colgroup>{visibleColumns.map((column) => <col key={column.id} style={{ width: preferences.widths[column.id] }} />)}</colgroup><TableHead sx={{ '& .MuiTableCell-root': { bgcolor: '#F8FAFC !important', backgroundImage: 'none', boxShadow: 'inset 0 -1px 0 rgba(15, 23, 42, 0.08)', py: 0.55, px: 0.75, fontSize: 12, fontWeight: 700, color: 'text.secondary' } }}><TableRow>{visibleColumns.map((column) => { const movable = column.id !== 'select' && column.id !== 'structure'; const fixed = column.id === 'select' || column.id === 'structure'; return <TableCell key={column.id} draggable={movable} onDragStart={() => movable && setDraggedColumn(column.id)} onDragEnd={() => setDraggedColumn(null)} onDragOver={(event) => { if (movable && draggedColumn) event.preventDefault(); }} onDrop={() => moveColumn(column.id)} align={['requested', 'approved', 'rejected', 'pending'].includes(column.id) ? 'right' : column.id === 'select' ? 'center' : 'left'} sx={{ width: preferences.widths[column.id], minWidth: preferences.widths[column.id], overflow: 'hidden', position: 'sticky', top: 0, left: column.id === 'structure' ? preferences.widths.select : fixed ? 0 : undefined, zIndex: fixed ? 5 : 4, bgcolor: draggedColumn === column.id ? '#E8EEF8 !important' : '#F8FAFC !important', cursor: movable ? 'grab' : 'default', whiteSpace: 'nowrap' }}><Tooltip title={movable ? 'Перетащите заголовок для изменения порядка' : ''}><Box sx={{ position: 'relative', pr: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{column.id === 'select' ? <Checkbox size="small" checked={selectedRows.length > 0} indeterminate={selectedRows.length > 0} onChange={() => setSelected(new Map())} sx={{ p: 0.35 }} inputProps={{ 'aria-label': 'Снять выделение' }} /> : column.label}<TableColumnResizeHandle onPointerDown={(event) => resizeColumn(column.id, event)} /></Box></Tooltip></TableCell>; })}</TableRow></TableHead><TableBody>{isLoading && !data && <TableRow><TableCell colSpan={visibleColumns.length} align="center" sx={{ py: 4 }}><Typography variant="body2" color="text.secondary" sx={{ fontSize: 13 }}>Загрузка реестра…</Typography></TableCell></TableRow>}    {isFetching && data && <TableRow><TableCell colSpan={visibleColumns.length} sx={{ py: 0.5, bgcolor: '#f8fbff' }}><Typography variant="caption" color="text.secondary">Обновление…</Typography></TableCell></TableRow>}{data && !data.groups.length && <TableRow><TableCell colSpan={visibleColumns.length} align="center" sx={{ py: 4, fontSize: 13 }}>Нет строк по выбранным условиям.</TableCell></TableRow>}{data && <TreeRows groups={data.groups} level={0} expanded={expanded} filters={effectiveFilters} columns={visibleColumns} widths={preferences.widths} selectedIds={new Set(selected.keys())} activeId={activeItem?.id || null} onToggle={toggle} onToggleSelected={(item, checked) => setSelected((current) => { const next = new Map(current); if (checked) next.set(item.id, item); else next.delete(item.id); return next; })} onActive={setActiveItem} onDecision={(target) => { setDecisionError(null); setDecisionTarget(target); }} onOpen={setDetailsItem} onApproveGroup={setGroupToApprove} onItems={updateKnownItems} requestId={requestId} />}</TableBody></Table></TableContainer>
+    <TableContainer ref={tableContainerRef} component={Paper} variant="outlined" className="approval-register-table" sx={{ maxHeight: 'calc(100vh - 250px)', minHeight: 420, borderColor: 'rgba(15, 23, 42, 0.08)', borderRadius: 1.5 }}>
+      <Table stickyHeader size="small" sx={{ width: tableWidth, minWidth: tableWidth, tableLayout: 'fixed', '& td, & th': { borderRight: '1px solid', borderColor: 'rgba(15, 23, 42, 0.06)', fontSize: 12 } }}>
+        <colgroup>{visibleColumns.map((column) => <col key={column.id} style={{ width: preferences.widths[column.id] }} />)}</colgroup>
+        <TableHead sx={{ '& .MuiTableCell-root': { bgcolor: '#F8FAFC !important', backgroundImage: 'none', boxShadow: 'inset 0 -1px 0 rgba(15, 23, 42, 0.08)', py: 0.55, px: 0.75, fontSize: 12, fontWeight: 700, color: 'text.secondary' } }}>
+          <TableRow>
+            {visibleColumns.map((column) => {
+              const movable = column.id !== 'select' && column.id !== 'structure';
+              const fixed = column.id === 'select' || column.id === 'structure';
+              const definition = REGISTRY_TABLE_COLUMN_DEFINITIONS.find((entry) => entry.id === column.id);
+              return (
+                <TableCell
+                  key={column.id}
+                  draggable={movable}
+                  onDragStart={() => movable && setDraggedColumn(column.id)}
+                  onDragEnd={() => setDraggedColumn(null)}
+                  onDragOver={(event) => { if (movable && draggedColumn) event.preventDefault(); }}
+                  onDrop={() => moveColumn(column.id)}
+                  align={['requested', 'approved', 'rejected', 'pending'].includes(column.id) ? 'right' : column.id === 'select' ? 'center' : 'left'}
+                  sx={{
+                    width: preferences.widths[column.id],
+                    minWidth: preferences.widths[column.id],
+                    maxWidth: preferences.widths[column.id],
+                    overflow: 'hidden',
+                    position: 'sticky',
+                    top: 0,
+                    left: column.id === 'structure' ? preferences.widths.select : fixed ? 0 : undefined,
+                    zIndex: fixed ? 5 : 4,
+                    bgcolor: draggedColumn === column.id ? '#E8EEF8 !important' : '#F8FAFC !important',
+                    cursor: movable ? 'grab' : 'default',
+                    whiteSpace: 'nowrap',
+                    verticalAlign: 'top',
+                  }}
+                >
+                  {column.id === 'select' ? (
+                    <Checkbox size="small" checked={hasSelection} onChange={clearSelection} sx={{ p: 0.35 }} inputProps={{ 'aria-label': 'Снять выделение' }} />
+                  ) : (
+                    <TableColumnHeader
+                      label={column.label}
+                      sortable={definition?.sortable !== false}
+                      filterable={definition?.filterable !== false}
+                      sortDirection={columnControls.sort?.column === column.id ? columnControls.sort.direction : null}
+                      onSortAscending={() => columnControls.setSortAscending(column.id)}
+                      onSortDescending={() => columnControls.setSortDescending(column.id)}
+                      onClearSort={() => columnControls.clearSort(column.id)}
+                      filterOptions={columnControls.filterOptions[column.id]}
+                      selectedFilterValues={columnControls.selectedFilterValues[column.id]}
+                      filterSearchValue={columnControls.filterSearchValues[column.id]}
+                      onFilterSearchChange={(value) => columnControls.setFilterSearchValue(column.id, value)}
+                      onToggleFilterValue={(value) => columnControls.toggleFilterOption(column.id, value)}
+                      onSelectAllFilterValues={() => columnControls.setAllFilterOptions(column.id)}
+                      onClearColumnFilter={() => columnControls.clearColumnFilter(column.id)}
+                      onClearVisibleFilterValues={() => columnControls.setVisibleFilterOptions(column.id, false)}
+                      onResize={(event) => resizeColumn(column.id, event)}
+                      onAutoFit={() => autoFitColumn(column.id)}
+                    />
+                  )}
+                </TableCell>
+              );
+            })}
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {isLoading && !data && <TableRow><TableCell colSpan={visibleColumns.length} align="center" sx={{ py: 4 }}><Typography variant="body2" color="text.secondary" sx={{ fontSize: 13 }}>Загрузка реестра…</Typography></TableCell></TableRow>}
+          {isFetching && data && <TableRow><TableCell colSpan={visibleColumns.length} sx={{ py: 0.5, bgcolor: '#f8fbff' }}><Typography variant="caption" color="text.secondary">Обновление…</Typography></TableCell></TableRow>}
+          {data && !data.groups.length && <TableRow><TableCell colSpan={visibleColumns.length} align="center" sx={{ py: 4, fontSize: 13 }}>Нет строк по выбранным условиям.</TableCell></TableRow>}
+          {data && (
+            <TreeRows
+              groups={data.groups}
+              level={0}
+              expanded={expanded}
+              filters={effectiveFilters}
+              columns={visibleColumns}
+              widths={preferences.widths}
+              selectedIds={new Set(selected.keys())}
+              selectedGroupIds={new Set(selectedGroups.keys())}
+              activeId={activeItem?.id || null}
+              onToggle={toggle}
+              onToggleSelected={toggleRowSelected}
+              onToggleGroupSelected={toggleGroupSelected}
+              onActive={setActiveItem}
+              onDecision={(target) => {
+                if (target.decision === 'rejected') {
+                  setRevisionDialog({ mode: 'cfo', initialLines: target.rows });
+                  return;
+                }
+                setDecisionError(null);
+                setDecisionTarget(target);
+              }}
+              onOpen={setDetailsItem}
+              onHistory={openHistory}
+              onApproveGroup={(group) => setGroupsToApprove([group])}
+              onCfoReviewReturn={(group) => openGroupRevision([group], 'cfo')}
+              onWorkflowApprove={(group) => workflowGroupAction.mutate({ groups: [group], action: 'approve' })}
+              onWorkflowReturn={(group) => openGroupRevision([group], 'workflow')}
+              onItems={registerGroupItems}
+              requestId={requestId}
+              user={user}
+              visibleGroupIds={visibleGroupIds}
+              visibleItemIds={visibleItemIds}
+              columnSort={columnControls.sort}
+            />
+          )}
+        </TableBody>
+      </Table>
+    </TableContainer>
     <RegistryFooter totalRows={data?.aggregates.total_rows || 0} />
     <DecisionDialog target={decisionTarget} saving={decide.isPending} error={decisionError} onClose={() => { setDecisionTarget(null); setDecisionError(null); }} onSave={(comment, amount) => decisionTarget && decide.mutate({ target: decisionTarget, comment, amount })} />
-    <ConfirmDialog open={!!groupToApprove} title="Согласовать статью" description={groupToApprove && <Stack spacing={0.5}><Typography>Будут согласованы все доступные для вас строки статьи «{groupToApprove.name}».</Typography><Typography variant="body2" color="text.secondary">Строк в статье: {groupToApprove.aggregates.total_rows} · запрошено: {money(groupToApprove.aggregates.requested_sum)}</Typography>{approveArticle.error && <Alert severity="error">Не удалось согласовать статью. Попробуйте ещё раз.</Alert>}</Stack>} confirmLabel={approveArticle.isPending ? 'Сохраняется…' : 'Согласовать'} confirmColor="success" pending={approveArticle.isPending} onClose={() => setGroupToApprove(null)} onConfirm={() => groupToApprove && approveArticle.mutate(groupToApprove)} />
-    <RegistryDetailsDrawer item={detailsItem} onClose={() => setDetailsItem(null)} />
+    <ConfirmDialog
+      open={groupsToApprove.length > 0}
+      title={groupsToApprove.length === 1 ? `Согласовать ${groupsToApprove[0]?.type === 'cfo' ? 'ЦФО' : 'статью'}` : 'Согласовать выбранные группы'}
+      description={groupsToApprove.length > 0 && (
+        <Stack spacing={0.5}>
+          {groupsToApprove.length === 1 ? (
+            <Typography>Будут согласованы все доступные для вас строки группы «{groupsToApprove[0].name}».</Typography>
+          ) : (
+            <Typography>Будут согласованы все доступные строки в {groupsToApprove.length} выбранных группах.</Typography>
+          )}
+          <Typography variant="body2" color="text.secondary">
+            Строк: {groupsToApprove.reduce((total, group) => total + group.aggregates.total_rows, 0)} · запрошено: {money(groupsToApprove.reduce((total, group) => total + group.aggregates.requested_sum, 0))}
+          </Typography>
+          {approveGroups.error && <Alert severity="error">Не удалось согласовать группу. Попробуйте ещё раз.</Alert>}
+        </Stack>
+      )}
+      confirmLabel={approveGroups.isPending ? 'Сохраняется…' : 'Согласовать'}
+      confirmColor="success"
+      pending={approveGroups.isPending}
+      onClose={() => setGroupsToApprove([])}
+      onConfirm={() => groupsToApprove.length > 0 && approveGroups.mutate(groupsToApprove)}
+    />
+    <ArticleRevisionDialog
+      open={!!revisionDialog}
+      onClose={() => setRevisionDialog(null)}
+      onSuccess={refreshAfterRevision}
+      mode={revisionDialog?.mode || 'cfo'}
+      target={revisionDialog?.target}
+      initialLines={revisionDialog?.initialLines}
+      requestId={requestId}
+      steps={mySteps}
+      user={user}
+    />
+    <RegistryDetailsDrawer item={detailsItem} onClose={() => setDetailsItem(null)} onOpenHistory={openHistory} />
+    <RequestHistoryDrawer target={historyTarget} onClose={() => setHistoryTarget(null)} />
   </Stack>;
 }

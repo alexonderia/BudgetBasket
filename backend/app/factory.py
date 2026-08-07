@@ -75,6 +75,7 @@ def create_app(*, repository: Repository | None = None, settings: Settings | Non
     app.state.request_service = request_service
     app.state.approval_service = approval_service
     app.state.budget_item_service = BudgetItemService(repository, permissions, request_service)
+    app.state.budget_item_service.chat_service = chat_service
     app.state.chat_service = chat_service
     app.state.chat_connections = ChatConnectionManager()
     app.state.file_guard_client = file_guard

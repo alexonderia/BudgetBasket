@@ -1,11 +1,13 @@
 import io
 import zipfile
+import hashlib
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.factory import create_app
+from app.services.file_guard_client import ProcessedFile
 from app.seed import DDS_LICENSE_ID, MODULE_ALPHA_ID, DEPARTMENT_ID
 from tests.in_memory_repository import InMemoryRepository
 
@@ -19,6 +21,18 @@ class AllowingFileGuard:
             reason_code=None,
             message=None,
             warnings=[],
+        )
+
+    async def process(self, upload):
+        await upload.seek(0)
+        content = await upload.read()
+        await upload.seek(0)
+        digest = hashlib.sha256(content).hexdigest()
+        return ProcessedFile(
+            content=content, original_name=upload.filename or "file", output_name=upload.filename or "file",
+            source_mime_type=upload.content_type or "application/octet-stream", output_mime_type=upload.content_type or "application/octet-stream",
+            source_size_bytes=len(content), output_size_bytes=len(content), source_sha256=digest, output_sha256=digest,
+            sanitized=False,
         )
 
 
@@ -239,6 +253,173 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
     ).status_code == 422
 
 
+def test_approval_register_analytics_fields_and_filters(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    tagged = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Tagged line", "sum_plan": 100, "analytics_1": "Проект А"},
+        headers=employee,
+    )
+    plain = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Plain line", "sum_plan": 50},
+        headers=employee,
+    )
+    assert tagged.status_code == plain.status_code == 200
+    assert tagged.json()["analytics_1"] == "Проект А"
+
+    filters = client.get("/approval-register/analytics-filters", headers=employee)
+    assert filters.status_code == 200
+    assert "Проект А" in filters.json()["analytics_1"]
+
+    filtered = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "analytics_1": "Проект А", "page_size": 25},
+        headers=employee,
+    )
+    assert filtered.status_code == 200
+    items = filtered.json()["items"]
+    assert len(items) == 1
+    assert items[0]["name"] == "Tagged line"
+    assert items[0]["analytics_1"] == "Проект А"
+
+
+def test_approval_register_analytics_fields_and_filters(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    tagged = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Tagged line", "sum_plan": 100, "analytics_1": "Проект А"},
+        headers=employee,
+    )
+    plain = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Plain line", "sum_plan": 50},
+        headers=employee,
+    )
+    assert tagged.status_code == plain.status_code == 200
+    assert tagged.json()["analytics_1"] == "Проект А"
+
+    filters = client.get("/approval-register/analytics-filters", headers=employee)
+    assert filters.status_code == 200
+    assert "Проект А" in filters.json()["analytics_1"]
+
+    filtered = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "analytics_1": "Проект А", "page_size": 25},
+        headers=employee,
+    )
+    assert filtered.status_code == 200
+    items = filtered.json()["items"]
+    assert len(items) == 1
+    assert items[0]["name"] == "Tagged line"
+    assert items[0]["analytics_1"] == "Проект А"
+
+
+def test_analytics_can_be_edited_along_approval_route(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    item = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Route line", "sum_plan": 100},
+        headers=employee,
+    ).json()
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    blocked = client.patch(
+        f"/items/{item['id']}",
+        json={"name": "Renamed"},
+        headers=employee,
+    )
+    assert blocked.status_code == 409
+
+    updated = client.patch(
+        f"/items/{item['id']}",
+        json={"analytics_1": "Метка ЦФО", "analytics_2": "Код 42"},
+        headers=employee,
+    )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["analytics_1"] == "Метка ЦФО"
+    assert body["analytics_2"] == "Код 42"
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=employee,
+    ).json()["items"]
+    row = next(entry for entry in rows if entry["id"] == item["id"])
+    assert row["status_context"]["editability"]["can_edit_analytics"] is True
+
+
+def test_group_analytics_applies_to_category_and_article_lines(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    assert client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Line A", "sum_plan": 10},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Line B", "sum_plan": 20},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=employee,
+    ).json()["items"]
+    category_id = rows[0]["category_id"]
+    article_id = rows[0]["article_id"]
+
+    category_result = client.patch(
+        f"/approval-register/groups/category/{category_id}/analytics",
+        json={"analytics_1": "Общий проект"},
+        headers=employee,
+    )
+    assert category_result.status_code == 200
+    assert category_result.json()["updated_count"] == 2
+
+    rows_after = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=employee,
+    ).json()["items"]
+    assert all(row["analytics_1"] == "Общий проект" for row in rows_after)
+
+    article_result = client.patch(
+        f"/approval-register/groups/article/{article_id}/analytics",
+        json={"analytics_2": "Статья X"},
+        headers=employee,
+    )
+    assert article_result.status_code == 200
+    assert article_result.json()["updated_count"] == 2
+
+    register = client.get("/approval-register", params={"view": "cfo"}, headers=employee).json()
+
+    def find_group(groups, group_type, group_value):
+        for group in groups:
+            if group["type"] == group_type and group.get(f"{group_type}_id") == group_value:
+                return group
+            found = find_group(group.get("children", []), group_type, group_value)
+            if found:
+                return found
+        return None
+
+    category_group = find_group(register["groups"], "category", category_id)
+    article_group = find_group(register["groups"], "article", article_id)
+    assert category_group["analytics"]["fields"]["analytics_1"]["value"] == "Общий проект"
+    assert article_group["analytics"]["fields"]["analytics_2"]["value"] == "Статья X"
+
+
 def test_approval_register_can_approve_all_available_article_lines(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
@@ -260,6 +441,16 @@ def test_approval_register_can_approve_all_available_article_lines(tmp_path):
         headers=employee,
     )
     assert result.status_code == 200
+    rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=employee,
+    ).json()["items"]
+    decided = next(item for item in rows if item["status"] == "approved")
+    assert decided["status_context"]["editability"]["mode"] == "readonly"
+    assert decided["status_context"]["last_decision"]["action"] == "cfo_item_decided"
+    assert decided["status_context"]["last_decision"]["by_name"]
+    assert decided["is_cfo_review_actionable"] is False
     assert len(result.json()) >= 2
     assert all(item["status"] == "approved" for item in result.json())
     assert article["aggregates"]["cfo_review_actionable_requests"] >= 1
