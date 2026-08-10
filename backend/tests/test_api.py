@@ -194,6 +194,12 @@ def test_dashboard_table_returns_hierarchical_request_rows(tmp_path):
     assert row["planned"] == 100
 
 
+def _flatten_register_groups(group):
+    yield group
+    for child in group.get("children", []):
+        yield from _flatten_register_groups(child)
+
+
 def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
@@ -219,6 +225,30 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
     assert module["aggregates"]["aggregate_status"] == "on_review"
     assert module["children"] == []
     assert module["can_load_rows"] is True
+
+    register_cfo = client.get("/approval-register", params={"view": "cfo"}, headers=employee)
+    assert register_cfo.status_code == 200
+    article_cfo = next(
+        group
+        for root in register_cfo.json()["groups"]
+        for group in _flatten_register_groups(root)
+        if group["type"] == "article" and group["aggregates"]["total_rows"] >= 26
+    )
+    module_cfo = next(
+        group
+        for root in register_cfo.json()["groups"]
+        for group in _flatten_register_groups(root)
+        if group["type"] == "module" and group["module_id"] == MODULE_ALPHA_ID
+    )
+    assert article_cfo["can_load_rows"] is False
+    assert module_cfo["can_load_rows"] is True
+    article_rows = client.get(
+        "/approval-register/rows",
+        params={"article_id": article_cfo["article_id"], "page": 1, "page_size": 25},
+        headers=employee,
+    )
+    assert article_rows.status_code == 200, article_rows.text
+    assert article_rows.json()["pagination"]["total_items"] >= 26
 
     first = client.get(
         "/approval-register/rows",
@@ -454,6 +484,38 @@ def test_approval_register_can_approve_all_available_article_lines(tmp_path):
     assert len(result.json()) >= 2
     assert all(item["status"] == "approved" for item in result.json())
     assert article["aggregates"]["cfo_review_actionable_requests"] >= 1
+
+
+def test_approval_register_marks_cfo_review_completable_after_all_lines_decided(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    item = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Line", "sum_plan": 100},
+        headers=employee,
+    ).json()
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+    assert client.post(
+        f"/items/{item['id']}/cfo-decision",
+        json={"decision": "approved", "comment": ""},
+        headers=employee,
+    ).status_code == 200
+
+    register = client.get("/approval-register", params={"view": "module"}, headers=employee).json()
+    module_group = next(group for group in register["groups"] if group["type"] == "module")
+    assert module_group["aggregates"]["cfo_review_actionable_requests"] == 0
+    assert module_group["aggregates"]["cfo_review_completable_requests"] == 1
+
+    assert client.post(
+        f"/requests/{request['id']}/complete-cfo-review",
+        headers=employee,
+    ).status_code == 200
+
+    register_after = client.get("/approval-register", params={"view": "module"}, headers=employee).json()
+    module_after = next(group for group in register_after["groups"] if group["type"] == "module")
+    assert module_after["aggregates"]["cfo_review_completable_requests"] == 0
+    assert client.get("/cfo-positions", headers=employee).json()
 
 
 def test_dashboard_article_cfo_returns_selected_article_breakdown(tmp_path):

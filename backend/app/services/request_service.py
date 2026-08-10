@@ -554,6 +554,7 @@ class RequestService:
             rows.append(
                 {
                     "id": position["id"],
+                    "cfo_id": position["cfo_unit_id"],
                     "name": units.get(position["cfo_unit_id"], {}).get("name", "ЦФО"),
                     "kind": "cfo",
                     "planned": planned,
@@ -561,6 +562,26 @@ class RequestService:
                     "items_count": count,
                 }
             )
+        position_ids = {position["id"] for position in positions}
+        requests = {item["id"]: item for item in self.repo.load_all("requests")}
+        scoped_request_ids = {
+            item["request_id"]
+            for item in self.repo.load_all("req_items")
+            if item.get("cfo_position_id") in position_ids
+        }
+        articles = self.dashboard_articles_cfo(user, unit_id, is_income=is_income)
+        by_article = [
+            {
+                "id": article["id"],
+                "article_id": article["id"].partition(":")[2],
+                "name": article["name"],
+                "kind": "dds" if article["id"].startswith("dds:") else "invest",
+                "planned": article["planned"],
+                "approved": article["approved"],
+                "items_count": article["items_count"],
+            }
+            for article in articles
+        ]
         return {
             "scope": {
                 "unit_id": unit_id,
@@ -585,23 +606,23 @@ class RequestService:
                     - sum(item["approved"] for item in rows),
                     0,
                 ),
-                "requests_count": len(
-                    {
-                        item["request_id"]
-                        for item in self.repo.load_all("req_items")
-                        if item.get("cfo_position_id") in {position["id"] for position in positions}
-                    }
+                "requests_count": len(scoped_request_ids),
+                "approved_requests_count": sum(
+                    1 for request_id in scoped_request_ids
+                    if requests.get(request_id, {}).get("status") == "approved"
                 ),
-                "approved_requests_count": 0,
-                "review_requests_count": 0,
+                "review_requests_count": sum(
+                    1 for request_id in scoped_request_ids
+                    if requests.get(request_id, {}).get("status") == "on_review"
+                ),
                 "frozen_requests_count": len({
                     item.get("request_id") for item in self.repo.load_all("req_items")
-                    if item.get("cfo_position_id") in {position["id"] for position in positions} and item.get("frozen")
+                    if item.get("cfo_position_id") in position_ids and item.get("frozen")
                 }),
             },
             "by_unit": rows,
             "by_category": [],
-            "by_article": [],
+            "by_article": by_article,
         }
 
     def dashboard_article_cfo(
@@ -626,6 +647,7 @@ class RequestService:
             result.append(
                 {
                     "id": position["cfo_unit_id"],
+                    "cfo_id": position["cfo_unit_id"],
                     "name": units.get(position["cfo_unit_id"], {}).get("name", "ЦФО"),
                     "planned": planned,
                     "approved": approved,
@@ -665,7 +687,9 @@ class RequestService:
             result.append(
                 {
                     "id": f"{kind}:{article_id}",
+                    "article_id": article_id,
                     "name": catalogs[kind].get(article_id, {}).get("name", article_id),
+                    "kind": kind,
                     "planned": sum(row["planned"] for row in cfo_rows),
                     "approved": sum(row["approved"] for row in cfo_rows),
                     "items_count": sum(row["items_count"] for row in cfo_rows),
@@ -824,14 +848,20 @@ class RequestService:
             if not step:
                 return None
             if step.get("unit_id"):
-                economist_id = self.permissions.cfo_economist_id(step["unit_id"])
+                responsible_id = self.permissions.cfo_responsible_id(step["unit_id"])
                 return {
-                    "by_id": economist_id,
-                    "by_name": self._register_user_display_name(users, profiles, economist_id),
-                    "role_label": "Экономист ЦФО",
+                    "by_id": responsible_id,
+                    "by_name": self._register_user_display_name(users, profiles, responsible_id),
+                    "role_label": "Ответственный ЦФО",
                 }
             assignee_id = step.get("user_id")
             actor = users.get(assignee_id) or {}
+            if actor.get("role") == "economist":
+                return {
+                    "by_id": assignee_id,
+                    "by_name": self._register_user_display_name(users, profiles, assignee_id),
+                    "role_label": "Экономист ЦФО",
+                }
             role_label = "ЗГД" if actor.get("role") == "zgd" else "Согласующий"
             return {
                 "by_id": assignee_id,
@@ -851,9 +881,9 @@ class RequestService:
             entry.get("status") != ItemStatus.deleted
             and not entry.get("fixed")
         )
-        can_decide = bool(
-            entry.get("status") == ItemStatus.on_review
-            and (entry.get("is_cfo_review_actionable") or entry.get("is_approval_actionable"))
+        can_decide = bool(entry.get("is_approval_actionable")) or bool(
+            entry.get("is_cfo_review_actionable")
+            and entry.get("status") == ItemStatus.on_review
         )
         if can_decide:
             return {
@@ -1025,6 +1055,26 @@ class RequestService:
             if user.get("role") == "employee"
             else set()
         )
+        request_pending_items: dict[str, int] = {}
+        request_active_items: dict[str, int] = {}
+        for row in self.repo.load_all("req_items"):
+            if row.get("status") == ItemStatus.deleted:
+                continue
+            request_key = row["request_id"]
+            request_active_items[request_key] = request_active_items.get(request_key, 0) + 1
+            if row.get("status") == ItemStatus.on_review:
+                request_pending_items[request_key] = request_pending_items.get(request_key, 0) + 1
+        completable_cfo_review_requests: set[str] = set()
+        if user.get("role") == "employee" and employee_cfo_ids:
+            for request in requests.values():
+                if request.get("status") != RequestStatus.on_review:
+                    continue
+                cfo_for_request = self.permissions.cfo_for_module(request["unit_id"])
+                if cfo_for_request not in employee_cfo_ids:
+                    continue
+                request_key = request["id"]
+                if request_active_items.get(request_key, 0) and request_pending_items.get(request_key, 0) == 0:
+                    completable_cfo_review_requests.add(request_key)
         catalogs = {
             "dds": {item["id"]: item for item in self.repo.load_all("dds_catalog")},
             "invest": {item["id"]: item for item in self.repo.load_all("invests_catalog")},
@@ -1032,21 +1082,63 @@ class RequestService:
         file_counts: dict[str, int] = {}
         for link in self.repo.load_all("req_item_files"):
             file_counts[link.get("req_item_id")] = file_counts.get(link.get("req_item_id"), 0) + 1
+        economist_decided_by_position: dict[str, set[str]] = {}
+        for row in self.repo.load_all("cfo_position_logs"):
+            log = row.get("log") or {}
+            if log.get("action") != "economist_item_decided":
+                continue
+            item_id = log.get("req_item_id")
+            position_id = row.get("cfo_position_id")
+            if item_id and position_id:
+                economist_decided_by_position.setdefault(position_id, set()).add(item_id)
+        position_items_cache: dict[str, list[dict]] = {}
+
+        def position_items(position_id: str) -> list[dict]:
+            if position_id not in position_items_cache:
+                position_items_cache[position_id] = self._items_for_position(
+                    self.repo, position_id
+                )
+            return position_items_cache[position_id]
 
         def can_act_on_position(position: dict | None, item: dict) -> bool:
-            if not position or item.get("fixed"):
-                return False
-            if item.get("status") != ItemStatus.on_review:
+            if not position or item.get("fixed") or item.get("frozen"):
                 return False
             step = steps.get(cfo_position_current_step_id(self.repo, position))
-            if not step:
+            if not step or step.get("unit_id"):
                 return False
-            if step.get("unit_id"):
+            actor = users.get(step.get("user_id"), {})
+            if actor.get("role") != "economist":
+                return False
+            if user.get("role") != "economist":
+                return False
+            if position.get("cfo_unit_id") not in economist_cfo_ids:
+                return False
+            if step.get("user_id") != user.get("id"):
+                return False
+            return item["id"] not in economist_decided_by_position.get(position["id"], set())
+
+        def can_act_on_position_block(position: dict | None) -> bool:
+            if not position:
+                return False
+            step = steps.get(cfo_position_current_step_id(self.repo, position))
+            if not step or step.get("unit_id"):
+                return False
+            actor = users.get(step.get("user_id"), {})
+            if step.get("user_id") != user.get("id"):
+                return False
+            items = position_items(position["id"])
+            if not items or all(row.get("fixed") for row in items):
+                return False
+            if actor.get("role") == "economist":
                 return (
                     user.get("role") == "economist"
-                    and step["unit_id"] in economist_cfo_ids
+                    and position.get("cfo_unit_id") in economist_cfo_ids
                 )
-            return step.get("user_id") == user.get("id")
+            if actor.get("role") in {"approver", "zgd"}:
+                return user.get("role") == actor.get("role") and all(
+                    row.get("frozen") or row.get("fixed") for row in items
+                )
+            return False
 
         def can_submit_position(position: dict | None) -> bool:
             return bool(
@@ -1063,11 +1155,13 @@ class RequestService:
             step = steps.get(cfo_position_current_step_id(self.repo, position))
             if not step or item.get("fixed"):
                 return None
-            if step.get("unit_id"):
-                return "Проверка экономистом ЦФО"
             actor = users.get(step.get("user_id"), {})
+            if actor.get("role") == "economist":
+                return "Проверка экономистом ЦФО"
             if actor.get("role") == "zgd":
                 return "Финальное согласование ЗГД"
+            if step.get("unit_id"):
+                return "Проверка ответственным ЦФО"
             return "Согласование проверяющим"
 
         needle = (search or "").strip().casefold()
@@ -1122,12 +1216,15 @@ class RequestService:
                     and user.get("role") == "employee"
                     and current_cfo_id in employee_cfo_ids
                 ),
+                "is_cfo_review_completable": request["id"] in completable_cfo_review_requests,
                 "position_id": position.get("id") if position else None,
                 "is_in_approval": bool(position and position_step_id and not item.get("fixed")),
                 "is_approval_actionable": can_act_on_position(position, item),
                 "is_position_submission_actionable": can_submit_position(position),
                 "is_position_actionable": (
-                    can_act_on_position(position, item) or can_submit_position(position)
+                    can_act_on_position(position, item)
+                    or can_submit_position(position)
+                    or can_act_on_position_block(position)
                 ),
                 "approval_stage": approval_stage(position, item),
                 "frozen": bool(item.get("frozen")),
@@ -1228,6 +1325,11 @@ class RequestService:
             for entry in entries
             if entry.get("is_cfo_review_actionable")
         }
+        cfo_review_completable_requests = {
+            entry["request_id"]
+            for entry in entries
+            if entry.get("is_cfo_review_completable")
+        }
         positions_in_approval = {
             entry["position_id"]
             for entry in entries
@@ -1254,6 +1356,7 @@ class RequestService:
             "collecting_requests": len(collecting_requests),
             "cfo_review_requests": len(cfo_review_requests),
             "cfo_review_actionable_requests": len(cfo_review_actionable_requests),
+            "cfo_review_completable_requests": len(cfo_review_completable_requests),
             "in_approval_positions": len(positions_in_approval),
             "actionable_positions": len(actionable_positions),
         }
@@ -1297,13 +1400,17 @@ class RequestService:
             result = []
             for node in sorted(nodes.values(), key=lambda item: (item["name"].casefold(), item["id"])):
                 children = serialize(node["children"])
+                if view == "cfo":
+                    can_load_rows = node["type"] == "module"
+                else:
+                    can_load_rows = not children
                 payload = {
                     "id": node["id"], "type": node["type"], "name": node["name"],
                     "module_id": node["module_id"], "article_id": node["article_id"],
                     "category_id": node["category_id"], "request_ids": sorted(node["request_ids"]),
                     "aggregates": self._register_aggregates(node["entries"]),
                     "children": children,
-                    "can_load_rows": not children,
+                    "can_load_rows": can_load_rows,
                     "label": labels[node["type"]],
                 }
                 if node["type"] in {"article", "category"}:
@@ -1526,9 +1633,9 @@ class RequestService:
     def approval_register_rows(
         self,
         user: dict,
-        module_id: str,
         page: int = 1,
         page_size: int = 50,
+        *,
         request_id: str | None = None,
         **filters,
     ) -> dict:
@@ -1536,16 +1643,26 @@ class RequestService:
             raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
         if page_size not in {25, 50, 100, 200}:
             raise HTTPException(status_code=422, detail="Допустимый размер страницы: 25, 50, 100 или 200")
-        entries = [
-            entry for entry in self._sort_register_entries(self._register_entries(user, **filters))
-            if entry["module_id"] == module_id and (request_id is None or entry["request_id"] == request_id)
-        ]
+        scope_keys = ("module_id", "article_id", "category_id", "cfo_id", "request_id")
+        if request_id:
+            filters = {**filters, "request_id": request_id}
+        if not any(filters.get(key) for key in scope_keys):
+            raise HTTPException(
+                status_code=422,
+                detail="Укажите область строк: module_id, article_id, category_id, cfo_id или request_id",
+            )
+        entries = self._sort_register_entries(self._register_entries(user, **filters))
         total_items = len(entries)
         pagination = self._register_pagination(total_items, page, page_size)
         items = self._slice_register_page(entries, pagination["page"], page_size)
+        group_meta = {
+            key: filters.get(key)
+            for key in ("module_id", "article_id", "category_id", "cfo_id", "request_id")
+            if filters.get(key)
+        }
         return {
             "items": items,
-            "group": {"module_id": module_id, "aggregates": self._register_aggregates(entries)},
+            "group": {**group_meta, "aggregates": self._register_aggregates(entries)},
             "pagination": pagination,
         }
 

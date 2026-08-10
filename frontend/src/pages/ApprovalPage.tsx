@@ -203,6 +203,19 @@ function stepName(step: ApprovalStep) {
   return personName(step.user);
 }
 
+function stepDisplayStatus(step: ApprovalStep): StepStatus {
+  return step.request_status || step.status;
+}
+
+function stepStatusLabel(step: ApprovalStep): string {
+  const status = stepDisplayStatus(step);
+  const base = stepStatusLabels[status];
+  if (status === 'on_approval' && (step.active_positions_count || 0) > 0) {
+    return `${base}: ${step.active_positions_count}`;
+  }
+  return base;
+}
+
 function canDeleteApprovalStep(step: ApprovalStep) {
   if (step.unit_id) return false;
   if (step.is_economist_step) return false;
@@ -1004,11 +1017,12 @@ function ApprovalGraph({
           );
           const contact = step.user?.profile;
           const isContactOpen = openContactStepId === step.id;
-          const statusTone = graphStepStatusTones[step.status];
+          const displayStatus = stepDisplayStatus(step);
+          const statusTone = graphStepStatusTones[displayStatus];
           return (
             <Card
               key={step.id}
-              className={`approval-graph-card ${isLeaf ? 'is-leaf' : 'is-review'} is-status-${step.status} ${isFinal ? 'is-final' : ''} ${isSelected ? 'is-selected' : ''} ${isViewerStep ? 'is-viewer' : ''} ${canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id ? 'is-connect-target' : ''}`}
+              className={`approval-graph-card ${isLeaf ? 'is-leaf' : 'is-review'} is-status-${displayStatus} ${isFinal ? 'is-final' : ''} ${isSelected ? 'is-selected' : ''} ${isViewerStep ? 'is-viewer' : ''} ${canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id ? 'is-connect-target' : ''}`}
               onClick={() => {
                 if (canEdit && pendingConnectionChildId && !isLeaf && pendingConnectionChildId !== step.id) {
                   onConnect(pendingConnectionChildId, step.id);
@@ -1066,7 +1080,7 @@ function ApprovalGraph({
                     className="approval-graph-status"
                     size="small"
                     variant="outlined"
-                    label={stepStatusLabels[step.status]}
+                    label={stepStatusLabel(step)}
                     sx={{
                       height: 'auto',
                       bgcolor: statusTone.background,
@@ -1893,11 +1907,11 @@ function UserApprovalPage({ user }: { user: User }) {
           >
             {steps.map((step) => (
               <MenuItem key={step.id} value={step.id}>
-                {stepName(step)} · {stepStatusLabels[step.status]}
+                {stepName(step)} · {stepStatusLabels[stepDisplayStatus(step)]}
               </MenuItem>
             ))}
           </TextField>
-          {selectedStep && <StepStatusBadge status={selectedStep.status} />}
+          {selectedStep && <StepStatusBadge status={stepDisplayStatus(selectedStep)} />}
           <Box flex={1} />
           <Button
             startIcon={<DownloadIcon />}

@@ -489,7 +489,7 @@ export default function CfoPositionsPage({ user, renderRouteGraph }: { user: Use
                     <TableCell align="right">{money(item.sum_plan)}</TableCell>
                     <TableCell align="right">
                       <Button startIcon={<FactCheckOutlinedIcon />} onClick={() => setRequest(item)}>
-                        Проверить
+                        {item.summary?.in_review_count ? 'Проверить' : 'Завершить проверку'}
                       </Button>
                     </TableCell>
                   </TableRow>

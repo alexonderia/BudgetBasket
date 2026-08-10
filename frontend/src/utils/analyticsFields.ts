@@ -37,13 +37,23 @@ export function canEditItemAnalytics(item: {
 }
 
 export function buildRegisterFilterParams(
-  filters: { search: string; status: string; budgetYear: string } & Record<AnalyticsFieldKey, string>,
+  filters: {
+    search: string;
+    status: string;
+    budgetYear: string;
+    cfoId?: string;
+    articleId?: string;
+    requestStatus?: string;
+  } & Record<AnalyticsFieldKey, string>,
   extras?: Record<string, unknown>,
 ) {
   const params: Record<string, unknown> = {
     status: filters.status || undefined,
     budget_year: filters.budgetYear || undefined,
     search: filters.search || undefined,
+    cfo_id: filters.cfoId || undefined,
+    article_id: filters.articleId || undefined,
+    request_status: filters.requestStatus || undefined,
     ...extras,
   };
   ANALYTICS_FIELD_KEYS.forEach((key) => {

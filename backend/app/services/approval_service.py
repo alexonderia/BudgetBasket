@@ -50,6 +50,25 @@ class ApprovalService:
     def _children(step_id: str, edges: list[dict]) -> list[str]:
         return [row["child_step_id"] for row in edges if row["parent_step_id"] == step_id]
 
+    def _default_return_step_id(self, repo: Repository, step_id: str, position: dict) -> str:
+        """Pick the immediate downstream step for a position (typically its CFO anchor)."""
+        edges = self._edges(repo)
+        children = self._children(step_id, edges)
+        if not children:
+            raise HTTPException(status_code=422, detail="Для текущего шага нет нижнего шага возврата")
+        cfo_unit_id = position.get("cfo_unit_id")
+        if cfo_unit_id:
+            for child_id in children:
+                child = get_required(repo, "steps", child_id)
+                if child.get("unit_id") == cfo_unit_id:
+                    return child_id
+        if len(children) == 1:
+            return children[0]
+        raise HTTPException(
+            status_code=422,
+            detail="Не удалось автоматически определить шаг возврата — укажите шаг явно",
+        )
+
     def _root_ids(self, repo: Repository) -> list[str]:
         steps = self._steps(repo)
         children = {row["child_step_id"] for row in self._edges(repo)}
@@ -398,6 +417,73 @@ class ApprovalService:
             },
         )
 
+    @staticmethod
+    def _collect_upstream_step_ids(step_id: str, edges: list[dict]) -> set[str]:
+        result: set[str] = set()
+        queue = ApprovalService._parents(step_id, edges)
+        while queue:
+            current = queue.pop()
+            if current in result:
+                continue
+            result.add(current)
+            queue.extend(ApprovalService._parents(current, edges))
+        return result
+
+    def _positions_for_step(
+        self,
+        repo: Repository,
+        step: dict,
+        positions: list[dict],
+        edges: list[dict],
+    ) -> list[dict]:
+        if step.get("unit_id"):
+            return [row for row in positions if row.get("cfo_unit_id") == step["unit_id"]]
+        cfo_ids = self._economist_cfo_ids(repo, step)
+        if cfo_ids:
+            return [row for row in positions if row.get("cfo_unit_id") in cfo_ids]
+        return [row for row in positions if self._current_step_id(repo, row) == step["id"]]
+
+    def _step_runtime_status(
+        self,
+        repo: Repository,
+        step: dict,
+        positions: list[dict],
+        edges: list[dict],
+    ) -> str:
+        step_id = step["id"]
+        active = [row for row in positions if self._current_step_id(repo, row) == step_id]
+        if active:
+            if any(row.get("status") == CfoPositionStatus.on_revision for row in active):
+                return StepStatus.on_revision
+            if any(row.get("status") == CfoPositionStatus.on_approval for row in active):
+                return StepStatus.on_approval
+            if all(row.get("status") == CfoPositionStatus.approved for row in active):
+                return StepStatus.approved
+            return StepStatus.on_approval
+
+        scoped = self._positions_for_step(repo, step, positions, edges)
+        if not scoped:
+            return StepStatus.waiting
+
+        upstream = self._collect_upstream_step_ids(step_id, edges)
+        if any(
+            self._current_step_id(repo, row) in upstream
+            for row in scoped
+            if row.get("status") in {CfoPositionStatus.on_approval, CfoPositionStatus.approved}
+        ):
+            return StepStatus.approved
+
+        if all(row.get("status") == CfoPositionStatus.approved for row in scoped):
+            return StepStatus.approved
+
+        if any(row.get("status") == CfoPositionStatus.on_revision for row in scoped):
+            return StepStatus.on_revision
+
+        if any(row.get("status") == CfoPositionStatus.waiting for row in scoped):
+            return StepStatus.waiting
+
+        return StepStatus.waiting
+
     def _public_steps(self, repo: Repository, steps: list[dict]) -> list[dict]:
         edges = self._edges(repo)
         units = {row["id"]: row for row in repo.load_all("units")}
@@ -473,6 +559,7 @@ class ApprovalService:
                     "parent_step_ids": self._parents(step["id"], edges),
                     "child_step_ids": self._children(step["id"], edges),
                     "active_positions_count": len(active),
+                    "request_status": self._step_runtime_status(repo, step, positions, edges),
                 }
             )
         return result
@@ -1369,13 +1456,14 @@ class ApprovalService:
             unknown = selected_item_ids - all_position_item_ids
             if unknown:
                 raise HTTPException(status_code=422, detail="Часть выбранных строк не относится к позициям группы")
+        edges = self._edges(self.repo)
         for position in positions:
             step_id = self._current_step_id(self.repo, position)
             if not step_id:
                 raise HTTPException(status_code=409, detail="Часть позиций ещё не находится на шаге согласования")
             step = get_required(self.repo, "steps", step_id)
             self.permissions.require_step_assignee(user, step)
-            if target_step_id not in self._children(step_id, self._edges(self.repo)):
+            if target_step_id and target_step_id not in self._children(step_id, edges):
                 raise HTTPException(
                     status_code=422,
                     detail="Выбранный шаг не является непосредственным нижним шагом для всех позиций группы",
@@ -1383,6 +1471,7 @@ class ApprovalService:
         results = []
         for position in positions:
             step_id = self._current_step_id(self.repo, position) or ""
+            resolved_target = target_step_id or self._default_return_step_id(self.repo, step_id, position)
             position_items = self._position_items(self.repo, position["id"])
             if selected_item_ids is not None:
                 position_selected_ids = [row["id"] for row in position_items if row["id"] in selected_item_ids]
@@ -1394,7 +1483,7 @@ class ApprovalService:
                         user,
                         step_id,
                         position["id"],
-                        target_step_id,
+                        resolved_target,
                         comment.strip(),
                         item_ids=position_selected_ids,
                         revision_items=position_revision,
@@ -1406,7 +1495,7 @@ class ApprovalService:
                         user,
                         step_id,
                         position["id"],
-                        target_step_id,
+                        resolved_target,
                         comment.strip(),
                     )
                 )
@@ -1521,9 +1610,13 @@ class ApprovalService:
         return result
 
     def return_for_revision(self, user: dict, position_id: str, payload: dict) -> dict:
+        position = get_required(self.repo, "cfo_positions", position_id)
+        step_id = self._current_step_id(self.repo, position) or ""
+        target_step_id = payload.get("target_step_id") or ""
+        if not target_step_id:
+            target_step_id = self._default_return_step_id(self.repo, step_id, position)
         return self.return_position(
-            user, self._current_step_id(self.repo, get_required(self.repo, "cfo_positions", position_id)) or "",
-            position_id, payload["target_step_id"], payload["comment"],
+            user, step_id, position_id, target_step_id, payload["comment"],
             [row["item_id"] for row in payload["items"]], payload["items"],
         )
 

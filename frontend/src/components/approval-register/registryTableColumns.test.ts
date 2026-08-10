@@ -24,6 +24,7 @@ const baseAggregates = {
   collecting_requests: 0,
   cfo_review_requests: 1,
   cfo_review_actionable_requests: 1,
+  cfo_review_completable_requests: 0,
   in_approval_positions: 0,
   actionable_positions: 0,
 };

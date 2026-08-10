@@ -14,7 +14,7 @@ import {
 } from './registryConfig';
 
 describe('registry display helpers', () => {
-  const sampleAggregates = { requested_sum: 100, approved_sum: 50, rejected_sum: 0, pending_sum: 50, difference: -50, total_rows: 2, approved_rows: 1, rejected_rows: 0, pending_rows: 1, requests_count: 1, modules_count: 1, aggregate_status: 'in_progress' as const, collecting_requests: 0, cfo_review_requests: 0, cfo_review_actionable_requests: 0, in_approval_positions: 0, actionable_positions: 0 };
+  const sampleAggregates = { requested_sum: 100, approved_sum: 50, rejected_sum: 0, pending_sum: 50, difference: -50, total_rows: 2, approved_rows: 1, rejected_rows: 0, pending_rows: 1, requests_count: 1, modules_count: 1, aggregate_status: 'in_progress' as const, collecting_requests: 0, cfo_review_requests: 0, cfo_review_actionable_requests: 0, cfo_review_completable_requests: 0, in_approval_positions: 0, actionable_positions: 0 };
   const sampleRow = { id: '1', request_id: 'r', request_status: 'on_review' as const, budget_year: 2025, module_id: 'm', module_name: 'Модуль', cfo_id: 'c', cfo_name: 'ЦФО', category_id: 'cat', category_name: 'Категория', article_id: 'a', article_name: 'Статья', kind: 'dds' as const, name: 'Строка', justification: '', comment: '', files_count: 0, requested_sum: 10, approved_sum: 10, status: 'approved' as const, updated_at: '', is_collecting: false, is_cfo_review: false, is_cfo_review_actionable: false, position_id: null, is_in_approval: false, is_approval_actionable: false, approval_stage: null };
 
   it('shows status-related helpers', () => {
@@ -37,6 +37,7 @@ describe('registry display helpers', () => {
     }).label).toBe('Ожидает предыдущих этапов');
     expect(groupRegistryStatus({ ...sampleAggregates, collecting_requests: 1, requests_count: 1 }).label).toBe('Черновик');
     expect(groupRegistryStatus({ ...sampleAggregates, cfo_review_actionable_requests: 1 }).label).toBe('Ожидает вашего решения');
+    expect(groupRegistryStatus({ ...sampleAggregates, cfo_review_completable_requests: 1 }).label).toBe('Завершите проверку');
   });
 
   it('does not treat already decided lines as actionable', () => {
@@ -75,6 +76,28 @@ describe('registry display helpers', () => {
       },
     };
     expect(isRowActionable(pending)).toBe(true);
+
+    const economistLine = {
+      ...sampleRow,
+      status: 'approved' as const,
+      position_id: 'pos-1',
+      is_in_approval: true,
+      is_approval_actionable: true,
+      approval_stage: 'Проверка экономистом ЦФО',
+      status_context: {
+        editability: {
+          can_decide: true,
+          can_edit_amount: true,
+          can_edit_analytics: true,
+          mode: 'editable' as const,
+          summary: 'Можно изменить',
+          detail: 'Экономист может принять решение',
+        },
+      },
+    };
+    expect(isRowActionable(economistLine)).toBe(true);
+
+    expect(isRowActionable({ ...economistLine, is_cfo_review_actionable: false }, 'approver')).toBe(false);
   });
 
   it('parses amounts with spaces and rejects non-numeric input', () => {

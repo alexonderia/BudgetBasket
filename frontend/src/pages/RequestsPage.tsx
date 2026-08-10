@@ -35,8 +35,8 @@ import Typography from '@mui/material/Typography';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, useMemo, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Fragment, useMemo, useState, useEffect, type ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { ApprovalRegister } from '../components/ApprovalRegister';
@@ -134,11 +134,21 @@ const REQUEST_TABLE_COLUMN_MIN_WIDTHS: Record<RequestTableColumn, number> = {
 
 function RequestsListPage({ user }: { user: User }) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const theme = useTheme();
   const fullScreenDialog = useMediaQuery(theme.breakpoints.down('sm'));
-  const [filters, setFilters] = useState({ status: '', frozen: '' });
+  const [filters, setFilters] = useState({
+    status: searchParams.get('status') || '',
+    frozen: searchParams.get('frozen') || '',
+  });
+  useEffect(() => {
+    setFilters({
+      status: searchParams.get('status') || '',
+      frozen: searchParams.get('frozen') || '',
+    });
+  }, [searchParams]);
   const [expandedZgdDepartments, setExpandedZgdDepartments] = useState<string[]>([]);
   const [expandedZgdCfos, setExpandedZgdCfos] = useState<string[]>([]);
   const [expandedZgdArticles, setExpandedZgdArticles] = useState<string[]>([]);

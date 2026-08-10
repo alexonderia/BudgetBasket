@@ -40,6 +40,7 @@ describe('registry status visuals', () => {
       collecting_requests: 0,
       cfo_review_requests: 0,
       cfo_review_actionable_requests: 1,
+      cfo_review_completable_requests: 0,
       in_approval_positions: 4,
       actionable_positions: 2,
     }, { ...baseStatus, label: 'Ожидает вашего решения' });

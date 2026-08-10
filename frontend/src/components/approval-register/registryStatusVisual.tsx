@@ -219,7 +219,28 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
     };
   }
 
-  if (aggregates.rejected_rows > 0 && aggregates.pending_rows === 0) {
+  if (aggregates.aggregate_status === 'partially_approved') {
+    return {
+      primary: {
+        icon: CheckCircleOutlineIcon,
+        text: 'Частично рассмотрено',
+        variant: 'info',
+        hint,
+      },
+      meta: `${aggregates.approved_rows} согласовано · ${aggregates.rejected_rows} отклонено`,
+      hint,
+    };
+  }
+
+  if (aggregates.aggregate_status === 'rejected') {
+    return {
+      primary: { icon: CancelOutlinedIcon, text: 'Отклонено', variant: 'error', hint },
+      meta: `${aggregates.rejected_rows} ${pluralRows(aggregates.rejected_rows)} отклонено`,
+      hint,
+    };
+  }
+
+  if (aggregates.rejected_rows > 0 && aggregates.pending_rows === 0 && aggregates.approved_rows === 0) {
     return {
       primary: { icon: CancelOutlinedIcon, text: 'Отклонено', variant: 'error', hint },
       meta: `${aggregates.rejected_rows} ${pluralRows(aggregates.rejected_rows)} отклонено`,
@@ -239,6 +260,21 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
     return {
       primary: { icon: EditNoteOutlinedIcon, text: 'Черновик', variant: 'muted', hint },
       meta: meta || status.shortHint,
+      hint,
+    };
+  }
+
+  if (aggregates.cfo_review_completable_requests > 0) {
+    return {
+      primary: {
+        icon: ErrorOutlineIcon,
+        text: aggregates.cfo_review_completable_requests === 1
+          ? 'Завершите проверку'
+          : `Завершите проверку · ${aggregates.cfo_review_completable_requests}`,
+        variant: 'action',
+        hint,
+      },
+      meta: meta || 'Строки проверены, заявки ещё не переданы в маршрут',
       hint,
     };
   }

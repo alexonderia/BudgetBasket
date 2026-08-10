@@ -303,7 +303,7 @@ class RevisionItemIn(StrictModel):
 
 
 class CfoPositionRevisionIn(StrictModel):
-    target_step_id: str
+    target_step_id: str | None = None
     comment: str = Field(min_length=1)
     items: list[RevisionItemIn] = Field(min_length=1)
 

@@ -87,6 +87,7 @@ export function ArticleRevisionDialog({
   const [selected, setSelected] = useState<string[]>([]);
   const [lineValues, setLineValues] = useState<Record<string, LineDraft>>({});
   const canEditLines = canEditRevisionLineDetails(user.role);
+  const workflowLineEdit = mode === 'workflow' && canEditLines;
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['revision-lines', target?.groupType, target?.groupId, mode, requestId],
@@ -112,18 +113,28 @@ export function ArticleRevisionDialog({
     setComment('');
     setTargetStepId(childStepIds[0] || '');
     setSelected(lines.map((line) => line.id));
-    setLineValues({});
-  }, [open, lines, childStepIds]);
+    setLineValues(Object.fromEntries(lines.map((line) => [
+      line.id,
+      {
+        comment: '',
+        suggested_sum_fact: workflowLineEdit
+          ? String(line.approved_sum ?? line.requested_sum ?? '')
+          : '',
+      },
+    ])));
+  }, [open, lines, childStepIds, workflowLineEdit]);
+
+  const buildRevisionItem = (itemId: string) => ({
+    item_id: itemId,
+    comment: canEditLines ? (lineValues[itemId]?.comment?.trim() || '') : '',
+    ...(workflowLineEdit && lineValues[itemId]?.suggested_sum_fact !== ''
+      ? { suggested_sum_fact: Number(lineValues[itemId].suggested_sum_fact) }
+      : {}),
+  });
 
   const submit = useMutation({
     mutationFn: async () => {
-      const items = selected.map((itemId) => ({
-        item_id: itemId,
-        comment: canEditLines ? (lineValues[itemId]?.comment?.trim() || '') : '',
-        ...(mode === 'workflow' && canEditLines && lineValues[itemId]?.suggested_sum_fact
-          ? { suggested_sum_fact: Number(lineValues[itemId].suggested_sum_fact) }
-          : {}),
-      }));
+      const items = selected.map((itemId) => buildRevisionItem(itemId));
       if (mode === 'cfo') {
         if (target) {
           return api.post(`/approval-register/groups/${target.groupType}/${target.groupId}/cfo-revision`, {
@@ -138,17 +149,35 @@ export function ArticleRevisionDialog({
       }
       if (positionId) {
         return api.post(`/cfo-positions/${positionId}/return-for-revision`, {
-          target_step_id: targetStepId,
+          ...(workflowLineEdit ? {} : { target_step_id: targetStepId }),
           comment: comment.trim(),
           items,
         });
+      }
+      if (!target && initialLines?.length) {
+        const selectedLines = initialLines.filter((line) => selected.includes(line.id));
+        const byPosition = selectedLines.reduce((result, line) => {
+          if (!line.position_id) return result;
+          const bucket = result.get(line.position_id) || [];
+          bucket.push(line);
+          result.set(line.position_id, bucket);
+          return result;
+        }, new Map<string, RevisionLine[]>());
+        return Promise.all([...byPosition.entries()].map(([position, positionLines]) => api.post(
+          `/cfo-positions/${position}/return-for-revision`,
+          {
+            ...(workflowLineEdit ? {} : { target_step_id: targetStepId }),
+            comment: comment.trim(),
+            items: positionLines.map((line) => buildRevisionItem(line.id)),
+          },
+        )));
       }
       if (!target) {
         throw new Error('Для возврата на доработку выберите группировку');
       }
       return api.post(`/approval-register/groups/${target.groupType}/${target.groupId}/workflow-action`, {
         action: 'return_for_revision',
-        target_step_id: targetStepId,
+        ...(workflowLineEdit ? {} : { target_step_id: targetStepId }),
         comment: comment.trim(),
         items,
       }, { params: { request_id: requestId } });
@@ -162,10 +191,13 @@ export function ArticleRevisionDialog({
   const blockHint = canEditLines
     ? (mode === 'cfo'
       ? 'Сообщение будет отправлено в чат с модулем. Комментарии к отдельным строкам также попадут в чат.'
-      : 'Сообщение попадёт в чат с экономистом ЦФО. Комментарии к строкам доступны экономисту и ответственному по ЦФО.')
+      : user.role === 'economist'
+        ? 'Сообщение будет отправлено в чат с модулем. Утверждённую сумму можно изменить прямо в таблице и оставить комментарий к каждой строке.'
+        : 'Сообщение попадёт в чат с экономистом ЦФО. Комментарии к строкам доступны экономисту и ответственному по ЦФО.')
     : 'Укажите общее сообщение к блоку. Выбор строк определяет, какие позиции вернуть на доработку; комментарий сохранится в журнале согласования.';
 
-  const tableColSpan = 8 + (mode === 'workflow' && canEditLines ? 1 : 0) + (canEditLines ? 1 : 0);
+  const tableColSpan = 8 + (canEditLines ? 1 : 0);
+  const needsTargetStep = mode === 'workflow' && !workflowLineEdit;
 
   return (
     <Dialog open={open} onClose={submit.isPending ? undefined : onClose} fullWidth maxWidth="lg">
@@ -192,7 +224,7 @@ export function ArticleRevisionDialog({
               onChange={(event) => setComment(event.target.value)}
             />
           </Paper>
-          {mode === 'workflow' && (
+          {needsTargetStep && (
             <TextField
               select
               label="Вернуть на шаг"
@@ -224,9 +256,8 @@ export function ArticleRevisionDialog({
                       <TableCell>Категория</TableCell>
                       <TableCell>Статья</TableCell>
                       <TableCell align="right">Запрошено</TableCell>
-                      <TableCell align="right">Согласовано</TableCell>
+                      <TableCell align="right">{workflowLineEdit ? 'Утверждено' : 'Согласовано'}</TableCell>
                       <TableCell>Статус</TableCell>
-                      {mode === 'workflow' && canEditLines && <TableCell align="right">Корректировка суммы</TableCell>}
                       {canEditLines && <TableCell>Комментарий к строке</TableCell>}
                     </TableRow>
                   </TableHead>
@@ -250,7 +281,27 @@ export function ArticleRevisionDialog({
                           <TableCell><Typography variant="body2" sx={{ fontSize: 13 }}>{line.category_name}</Typography></TableCell>
                           <TableCell><Typography variant="body2" sx={{ fontSize: 13 }}>{line.article_name}</Typography></TableCell>
                           <TableCell align="right">{money(line.requested_sum)}</TableCell>
-                          <TableCell align="right">{money(line.approved_sum)}</TableCell>
+                          <TableCell align="right">
+                            {workflowLineEdit ? (
+                              <TextField
+                                size="small"
+                                type="number"
+                                disabled={!checked}
+                                value={lineValues[line.id]?.suggested_sum_fact ?? ''}
+                                onChange={(event) => setLineValues((current) => ({
+                                  ...current,
+                                  [line.id]: {
+                                    suggested_sum_fact: event.target.value,
+                                    comment: current[line.id]?.comment || '',
+                                  },
+                                }))}
+                                inputProps={{ min: 0, step: 0.01 }}
+                                sx={{ width: 140 }}
+                              />
+                            ) : (
+                              money(line.approved_sum)
+                            )}
+                          </TableCell>
                           <TableCell>
                             <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                               <Chip size="small" variant="outlined" label={STATUS_LABELS[line.status]} sx={{ height: 22, fontSize: 11 }} />
@@ -258,20 +309,6 @@ export function ArticleRevisionDialog({
                               {line.frozen && !line.fixed && <Chip size="small" color="info" label="В блоке" />}
                             </Stack>
                           </TableCell>
-                          {mode === 'workflow' && canEditLines && (
-                            <TableCell align="right">
-                              <TextField
-                                size="small"
-                                type="number"
-                                disabled={!checked}
-                                value={lineValues[line.id]?.suggested_sum_fact || ''}
-                                onChange={(event) => setLineValues((current) => ({
-                                  ...current,
-                                  [line.id]: { ...current[line.id], suggested_sum_fact: event.target.value, comment: current[line.id]?.comment || '' },
-                                }))}
-                              />
-                            </TableCell>
-                          )}
                           {canEditLines && (
                             <TableCell>
                               <TextField
@@ -284,7 +321,7 @@ export function ArticleRevisionDialog({
                                   ...current,
                                   [line.id]: {
                                     comment: event.target.value,
-                                    suggested_sum_fact: current[line.id]?.suggested_sum_fact || '',
+                                    suggested_sum_fact: current[line.id]?.suggested_sum_fact ?? '',
                                   },
                                 }))}
                               />
@@ -316,7 +353,7 @@ export function ArticleRevisionDialog({
             submit.isPending
             || !comment.trim()
             || !selected.length
-            || (mode === 'workflow' && !targetStepId)
+            || (needsTargetStep && !targetStepId)
             || isLoading
           }
           onClick={() => submit.mutate()}

@@ -8,6 +8,9 @@ export type RegistryFilters = {
   search: string;
   status: '' | ItemStatus;
   budgetYear: string;
+  cfoId: string;
+  articleId: string;
+  requestStatus: string;
 } & Record<AnalyticsFieldKey, string>;
 
 export const REGISTRY_VIEW_LABELS: Record<RegistryView, string> = {
@@ -82,21 +85,32 @@ export const AGGREGATE_STATUS_LABELS: Record<RegisterAggregateStatus, string> = 
   no_data: 'Не начато',
 };
 
-export function isRowActionable(item: ApprovalRegisterRow) {
+export function isRowActionable(item: ApprovalRegisterRow, role?: User['role']) {
+  if (role && !canUseLineLevelWorkflowActions(role) && item.is_approval_actionable && !item.is_cfo_review_actionable) {
+    return false;
+  }
   if (item.status_context?.editability) {
     return item.status_context.editability.can_decide;
   }
-  return item.status === 'on_review'
-    && (item.is_cfo_review_actionable || (item.is_approval_actionable && !!item.position_id));
+  if (item.is_approval_actionable && item.position_id) return true;
+  return item.status === 'on_review' && item.is_cfo_review_actionable;
 }
 
 export function isGroupActionable(group: ApprovalRegisterGroup) {
   return (group.type === 'article' || group.type === 'cfo')
-    && (group.aggregates.cfo_review_actionable_requests > 0 || group.aggregates.actionable_positions > 0);
+    && (
+      group.aggregates.cfo_review_actionable_requests > 0
+      || group.aggregates.cfo_review_completable_requests > 0
+      || group.aggregates.actionable_positions > 0
+    );
 }
 
 export function isGroupSelectable(group: ApprovalRegisterGroup) {
   return group.aggregates.cfo_review_actionable_requests > 0 || group.aggregates.actionable_positions > 0;
+}
+
+export function canUseLineLevelWorkflowActions(role: User['role']) {
+  return role === 'economist' || role === 'employee';
 }
 
 export function canEditRevisionLineDetails(role: User['role']) {
@@ -104,15 +118,25 @@ export function canEditRevisionLineDetails(role: User['role']) {
 }
 
 export function canEditApprovedAmount(role: User['role'], item: ApprovalRegisterRow) {
-  if (!canEditRevisionLineDetails(role)) return false;
+  if (role === 'approver' || role === 'zgd') return false;
   if (item.status_context?.editability) {
     return item.status_context.editability.can_edit_amount;
   }
-  return isRowActionable(item);
+  if (role === 'employee') {
+    return item.is_cfo_review_actionable && item.status === 'on_review';
+  }
+  if (role === 'economist') {
+    return item.is_approval_actionable;
+  }
+  return false;
 }
 
 export function groupHasCfoActions(group: ApprovalRegisterGroup) {
   return group.aggregates.cfo_review_actionable_requests > 0;
+}
+
+export function groupHasCfoCompleteActions(group: ApprovalRegisterGroup) {
+  return group.aggregates.cfo_review_completable_requests > 0;
 }
 
 export function groupHasWorkflowActions(group: ApprovalRegisterGroup) {
@@ -344,6 +368,15 @@ export function groupRegistryStatus(aggregates: RegisterAggregates): RegistrySta
       tone: 'default',
       hint: `${aggregates.collecting_requests} из ${aggregates.requests_count} заявок ещё не отправлены`,
       shortHint: `${aggregates.collecting_requests} заявок не отправлено`,
+    };
+  }
+
+  if (aggregates.cfo_review_completable_requests > 0) {
+    return {
+      label: 'Завершите проверку',
+      tone: 'warning',
+      hint: `${aggregates.cfo_review_completable_requests} заявок проверены по строкам, но ещё не переданы в маршрут согласования`,
+      shortHint: 'Нужно завершить проверку',
     };
   }
 

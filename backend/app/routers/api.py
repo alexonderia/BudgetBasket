@@ -499,7 +499,7 @@ def approval_register(
 def approval_register_rows(
     request: Request,
     user: User,
-    module_id: str,
+    module_id: str | None = None,
     request_id: str | None = None,
     page: int = 1,
     page_size: int = 50,
@@ -519,9 +519,14 @@ def approval_register_rows(
 ):
     if page < 1:
         raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
+    if not any([module_id, article_id, category_id, cfo_id, request_id]):
+        raise HTTPException(
+            status_code=422,
+            detail="Укажите область строк: module_id, article_id, category_id, cfo_id или request_id",
+        )
     return request.app.state.request_service.approval_register_rows(
-        user, module_id, page, page_size, request_id=request_id, budget_year=budget_year, cfo_id=cfo_id,
-        category_id=category_id, article_id=article_id, status=status,
+        user, page, page_size, request_id=request_id, budget_year=budget_year, cfo_id=cfo_id,
+        category_id=category_id, article_id=article_id, module_id=module_id, status=status,
         request_status=request_status, search=search, mine_only=mine_only,
         analytics_1=analytics_1,
         analytics_2=analytics_2,
