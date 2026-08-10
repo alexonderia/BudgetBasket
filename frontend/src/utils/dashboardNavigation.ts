@@ -31,14 +31,6 @@ export function buildRegisterHref(user: User, params: RegisterDrillParams): stri
   return `/requests${query ? `?${query}` : ''}`;
 }
 
-export function buildRequestsHref(params: { status?: RequestStatus | ''; frozen?: 'fixed' | 'frozen' | '' } = {}): string {
-  const search = new URLSearchParams();
-  if (params.status) search.set('status', params.status);
-  if (params.frozen) search.set('frozen', params.frozen);
-  const query = search.toString();
-  return `/requests${query ? `?${query}` : ''}`;
-}
-
 export function registerDrillFromSearchParams(searchParams: URLSearchParams): RegisterDrillParams {
   const view = searchParams.get('register_view');
   const knownViews: RegistryView[] = ['cfo', 'module', 'article', 'category', 'request'];

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.factory import create_app
 from app.services.file_guard_client import ProcessedFile
-from app.seed import DDS_LICENSE_ID, MODULE_ALPHA_ID, DEPARTMENT_ID
+from app.seed import DDS_LICENSE_ID, DDS_OPER_ID, MODULE_ALPHA_ID, DEPARTMENT_ID
 from tests.in_memory_repository import InMemoryRepository
 
 
@@ -554,10 +554,14 @@ def test_dashboard_article_cfo_returns_selected_article_breakdown(tmp_path):
     )
     client.post(f"/requests/{request['id']}/complete-cfo-review", headers=employee)
 
-    rows = client.get("/dashboard/article-cfo", params={"article_key": f"dds:{DDS_LICENSE_ID}"}, headers=admin).json()
+    rows = client.get("/dashboard/article-cfo", params={"article_key": f"dds:{DDS_OPER_ID}"}, headers=admin).json()
     assert rows
     assert rows[0]["name"] == "ЦФО цифровых продуктов"
     assert rows[0]["planned"] >= 100
+    # Leaf/category key still resolves for backward-compatible drill links.
+    leaf_rows = client.get("/dashboard/article-cfo", params={"article_key": f"dds:{DDS_LICENSE_ID}"}, headers=admin).json()
+    assert leaf_rows
+    assert leaf_rows[0]["planned"] >= 100
 
 
 def test_dashboard_articles_cfo_returns_all_articles(tmp_path):
@@ -580,9 +584,19 @@ def test_dashboard_articles_cfo_returns_all_articles(tmp_path):
     client.post(f"/requests/{request['id']}/complete-cfo-review", headers=employee)
 
     articles = client.get("/dashboard/articles-cfo", headers=admin).json()
-    article = next(item for item in articles if item["id"] == f"dds:{DDS_LICENSE_ID}")
+    article = next(item for item in articles if item["id"] == f"dds:{DDS_OPER_ID}")
+    assert article["article_id"] == DDS_OPER_ID
+    assert article["name"] == "Операционные расходы"
     assert article["planned"] >= 100
     assert article["cfo"][0]["name"] == "ЦФО цифровых продуктов"
+
+    register = client.get(
+        "/approval-register",
+        params={"view": "article", "article_id": article["article_id"]},
+        headers=admin,
+    )
+    assert register.status_code == 200
+    assert register.json()["aggregates"]["total_rows"] >= 1
 
 
 def test_draft_request_shows_cfo_responsible_contact(tmp_path):

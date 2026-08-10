@@ -21,6 +21,17 @@ class RequestService:
         self.permissions = permissions
         self.notifications = None
 
+    @staticmethod
+    def _catalog_article_id(catalog: dict[str, dict], leaf_id: str | None) -> str | None:
+        """Resolve register-level article id (parent) from a catalog leaf/category id."""
+        if not leaf_id:
+            return None
+        leaf = catalog.get(leaf_id) or {}
+        parent_id = leaf.get("parent_id")
+        if parent_id and parent_id in catalog:
+            return parent_id
+        return leaf_id
+
     def _items(
         self,
         request_id: str,
@@ -634,14 +645,21 @@ class RequestService:
         is_income: bool = False,
     ) -> list[dict]:
         kind, separator, article_id = article_key.partition(":")
-        if not separator:
+        if not separator or kind not in {"dds", "invest"}:
             return []
         result: list[dict] = []
         units = {item["id"]: item for item in self.repo.load_all("units")}
+        catalog = {
+            item["id"]: item
+            for item in self.repo.load_all("dds_catalog" if kind == "dds" else "invests_catalog")
+        }
         for position in self._visible_positions(user, is_income=is_income):
             if unit_id and position.get("cfo_unit_id") != unit_id:
                 continue
-            if position.get(f"{kind}_id") != article_id:
+            leaf_id = position.get(f"{kind}_id")
+            resolved = self._catalog_article_id(catalog, leaf_id)
+            # Accept both article (parent) and category (leaf) keys for drill-down.
+            if leaf_id != article_id and resolved != article_id:
                 continue
             planned, approved, count = self._position_sum(position["id"], is_income=is_income)
             result.append(
@@ -673,7 +691,10 @@ class RequestService:
             if unit_id and position.get("cfo_unit_id") != unit_id:
                 continue
             kind = "dds" if position.get("dds_id") else "invest"
-            article_id = position.get("dds_id") or position.get("invest_id")
+            leaf_id = position.get("dds_id") or position.get("invest_id")
+            article_id = self._catalog_article_id(catalogs[kind], leaf_id)
+            if not article_id:
+                continue
             key = (kind, article_id)
             if key in seen:
                 continue
@@ -1245,7 +1266,8 @@ class RequestService:
                 continue
             if category_id and entry["category_id"] != category_id:
                 continue
-            if article_id and entry["article_id"] != article_id:
+            # Accept parent article id or leaf/category id from older dashboard links.
+            if article_id and entry["article_id"] != article_id and entry["category_id"] != article_id:
                 continue
             if module_id and entry["module_id"] != module_id:
                 continue

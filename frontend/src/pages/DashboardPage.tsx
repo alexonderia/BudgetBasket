@@ -29,7 +29,7 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { ApprovalRegister } from '../components/ApprovalRegister';
 import type { User } from '../types';
-import { buildRegisterHref, buildRequestsHref, parseArticleKey } from '../utils/dashboardNavigation';
+import { buildRegisterHref, parseArticleKey } from '../utils/dashboardNavigation';
 import { money } from '../utils/labels';
 
 type Breakdown = {
@@ -74,6 +74,8 @@ function DashboardDrillLink({ to, title, children }: { to: string; title: string
       <Box
         component={RouterLink}
         to={to}
+        target="_blank"
+        rel="noopener noreferrer"
         sx={{
           display: 'inline-flex',
           alignItems: 'center',
@@ -100,6 +102,8 @@ function DashboardDrillButton({ to, title }: { to: string; title: string }) {
       <IconButton
         component={RouterLink}
         to={to}
+        target="_blank"
+        rel="noopener noreferrer"
         size="small"
         aria-label={title}
         sx={{ color: 'text.secondary', '&:hover': { color: 'primary.main' } }}
@@ -398,11 +402,12 @@ export default function DashboardPage({ user }: { user: User }) {
       ? buildRegisterHref(user, { view: 'cfo', articleId, cfoId })
       : null;
   }, [user]);
-  const requestsApprovedHref = buildRegisterHref(user, { view: 'request', requestStatus: 'approved' });
-  const requestsReviewHref = buildRegisterHref(user, { view: 'request', requestStatus: 'on_review' });
-  const requestsAllHref = buildRegisterHref(user, { view: 'request' });
-  const frozenRequestsHref = buildRequestsHref({ frozen: 'frozen' });
-  const registerHref = buildRegisterHref(user, {});
+  const detailView = user.role === 'economist' || user.role === 'approver' || user.role === 'zgd' ? 'cfo' : 'article';
+  const requestsApprovedHref = buildRegisterHref(user, { view: detailView, requestStatus: 'approved' });
+  const requestsReviewHref = buildRegisterHref(user, { view: detailView, requestStatus: 'on_review' });
+  const requestsAllHref = buildRegisterHref(user, { view: detailView });
+  const frozenRequestsHref = buildRegisterHref(user, { view: detailView });
+  const registerHref = buildRegisterHref(user, { view: detailView });
 
   if (isLoading || !data) {
     return <Skeleton variant="rounded" height={420} sx={{ borderRadius: 4 }} />;
@@ -410,33 +415,35 @@ export default function DashboardPage({ user }: { user: User }) {
 
   return (
     <Stack spacing={2.5} className="dashboard-page">
-      <Card className="dashboard-hero" elevation={0}>
-        <Box>
-          <Typography variant="h5">Сводка объединений</Typography>
-          <Tabs
-            value={mode}
-            onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
-            aria-label="Тип сводки"
-            sx={{ mt: 1 }}
-          >
-            <Tab value="expense" label="Расходы" />
-            <Tab value="income" label="Доходы" />
-          </Tabs>
-        </Box>
-        {view !== 'table' && <TextField select size="small" label="Объединение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
-          <MenuItem value="">Все доступные объединения</MenuItem>
-          {data.scope.available_units.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
-        </TextField>}
-      </Card>
+      {view !== 'table' && (
+        <Card className="dashboard-hero" elevation={0}>
+          <Box>
+            <Typography variant="h5">Сводка объединений</Typography>
+            <Tabs
+              value={mode}
+              onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
+              aria-label="Тип сводки"
+              sx={{ mt: 1 }}
+            >
+              <Tab value="expense" label="Расходы" />
+              <Tab value="income" label="Доходы" />
+            </Tabs>
+          </Box>
+          <TextField select size="small" label="Объединение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
+            <MenuItem value="">Все доступные объединения</MenuItem>
+            {data.scope.available_units.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
+          </TextField>
+        </Card>
+      )}
 
-      {view === 'table' ? <ApprovalRegister user={user} /> : <>
+      {view === 'table' ? <ApprovalRegister user={user} hideHeader /> : <>
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={compactMoney(data.totals.planned)} exactValue={money(data.totals.planned)} hint="Запланированная объединениями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Корректировка" value={`${correction > 0 ? '+' : ''}${compactMoney(correction)}`} exactValue={money(correction)} hint={correctionLabel} icon={<TrendingUpIcon fontSize="small" />} tone="purple" /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Утверждено" value={compactMoney(data.totals.approved)} exactValue={money(data.totals.approved)} hint={`${approvalRate}% от расчета`} icon={<AssignmentTurnedInIcon fontSize="small" />} tone="green" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Зафиксировано" value={compactMoney(data.totals.frozen)} exactValue={money(data.totals.frozen)} hint={<DashboardDrillLink to={frozenRequestsHref} title="Открыть зафиксированные заявки">{`${data.totals.frozen_requests_count} заявок зафиксировано`}</DashboardDrillLink>} icon={<LockOutlinedIcon fontSize="small" />} tone="amber" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Обработано" value={data.totals.approved_requests_count} hint={<DashboardDrillLink to={requestsApprovedHref} title="Открыть утверждённые заявки">{`заявок из ${data.totals.requests_count}`}</DashboardDrillLink>} icon={<FactCheckIcon fontSize="small" />} tone="amber" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Зафиксировано" value={compactMoney(data.totals.frozen)} exactValue={money(data.totals.frozen)} hint={<DashboardDrillLink to={frozenRequestsHref} title="Открыть детализацию реестра">{`${data.totals.frozen_requests_count} заявок зафиксировано`}</DashboardDrillLink>} icon={<LockOutlinedIcon fontSize="small" />} tone="amber" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Обработано" value={data.totals.approved_requests_count} hint={<DashboardDrillLink to={requestsApprovedHref} title="Открыть детализацию утверждённых">{`заявок из ${data.totals.requests_count}`}</DashboardDrillLink>} icon={<FactCheckIcon fontSize="small" />} tone="amber" /></Grid>
       </Grid>
 
       <Grid container spacing={2.5}>
@@ -471,7 +478,7 @@ export default function DashboardPage({ user }: { user: User }) {
           <Card className="surface dashboard-panel dashboard-progress-panel" elevation={0}>
             <Box className="dashboard-panel-heading">
               <Typography variant="h6">Статус согласования</Typography>
-              <Button component={RouterLink} to={registerHref} size="small" endIcon={<ArrowOutwardIcon />} sx={{ textTransform: 'none' }}>
+              <Button component={RouterLink} to={registerHref} target="_blank" rel="noopener noreferrer" size="small" endIcon={<ArrowOutwardIcon />} sx={{ textTransform: 'none' }}>
                 Реестр заявок
               </Button>
             </Box>
@@ -481,13 +488,13 @@ export default function DashboardPage({ user }: { user: User }) {
                 <LinearProgress variant="determinate" value={approvalRate} sx={{ mt: 1, height: 9, borderRadius: 9 }} />
               </Box>
               <Box className="dashboard-status-summary">
-                <DashboardDrillLink to={requestsApprovedHref} title="Открыть утверждённые заявки">
+                <DashboardDrillLink to={requestsApprovedHref} title="Открыть детализацию утверждённых">
                   <Box><Typography variant="h6">{data.totals.approved_requests_count}</Typography><Typography variant="body2" color="text.secondary">утверждено</Typography></Box>
                 </DashboardDrillLink>
-                <DashboardDrillLink to={requestsReviewHref} title="Открыть заявки на проверке">
+                <DashboardDrillLink to={requestsReviewHref} title="Открыть детализацию заявок на проверке">
                   <Box><Typography variant="h6">{data.totals.review_requests_count}</Typography><Typography variant="body2" color="text.secondary">на проверке</Typography></Box>
                 </DashboardDrillLink>
-                <DashboardDrillLink to={requestsAllHref} title="Открыть все заявки">
+                <DashboardDrillLink to={requestsAllHref} title="Открыть детализацию реестра">
                   <Box><Typography variant="h6">{data.totals.requests_count}</Typography><Typography variant="body2" color="text.secondary">всего заявок</Typography></Box>
                 </DashboardDrillLink>
               </Box>

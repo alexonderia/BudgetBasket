@@ -156,8 +156,9 @@ function cfoIdFromGroupId(groupId: string) {
   return segment?.slice(4);
 }
 
-function articleRegisterDetailHref(user: User, group: ApprovalRegisterGroup, view: RegistryView) {
+function articleRegisterDetailHref(user: User, group: ApprovalRegisterGroup) {
   const cfoId = cfoIdFromGroupId(group.id);
+  const view: RegistryView = user.role === 'economist' || user.role === 'approver' || user.role === 'zgd' ? 'cfo' : 'article';
   return buildRegisterHref(user, {
     view,
     articleId: group.article_id,
@@ -165,14 +166,14 @@ function articleRegisterDetailHref(user: User, group: ApprovalRegisterGroup, vie
   });
 }
 
-function groupStructureCaptionExtras(group: ApprovalRegisterGroup, user: User, view: RegistryView) {
+function groupStructureCaptionExtras(group: ApprovalRegisterGroup, user: User) {
   if (group.type === 'article' && group.article_id) {
     return (
       <>
         {' · '}
         <Box
           component="a"
-          href={articleRegisterDetailHref(user, group, view)}
+          href={articleRegisterDetailHref(user, group)}
           target="_blank"
           rel="noopener noreferrer"
           onClick={(event) => event.stopPropagation()}
@@ -532,6 +533,9 @@ function resolveRegisterDrillLabels(
       }
       if (filters.articleId && group.type === 'article' && group.article_id === filters.articleId) {
         articleName = group.name;
+      }
+      if (filters.articleId && group.type === 'category' && group.category_id === filters.articleId) {
+        articleName = articleName || group.name;
       }
       visit(group.children);
     });
@@ -1088,7 +1092,7 @@ function ModuleGroupHeaderRow({
         <Box minWidth={0}>
           <Typography variant="body2" fontWeight={600} noWrap title={module.name} sx={{ fontSize: 13, lineHeight: 1.25 }}>{module.name}</Typography>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>
-            {module.label} · {module.aggregates.total_rows} строк{groupStructureCaptionExtras(module, user, view)}
+            {module.label} · {module.aggregates.total_rows} строк{groupStructureCaptionExtras(module, user)}
           </Typography>
         </Box>
       </Stack>
@@ -1333,7 +1337,7 @@ function TreeRows({
       select: groupSelectable
         ? <Checkbox size="small" checked={selectedGroupIds.has(group.id)} onChange={(_, checked) => onToggleGroupSelected(group, checked)} onClick={(event) => event.stopPropagation()} sx={{ p: 0.35 }} inputProps={{ 'aria-label': `Выбрать ${group.name}` }} />
         : null,
-      structure: <Stack direction="row" alignItems="center" spacing={0.25} sx={{ pl: level * 1.15, minWidth: 0 }}><Box sx={{ width: 22, flex: '0 0 auto' }}>{hasContent && <IconButton size="small" aria-label={isExpanded ? 'Свернуть группу' : 'Раскрыть группу'} onClick={() => onToggle(group)} sx={{ p: 0.25 }}>{isExpanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}</IconButton>}</Box><Box minWidth={0}><Typography variant="body2" fontWeight={level === 0 ? 700 : 600} noWrap title={group.name} sx={{ fontSize: 13, lineHeight: 1.25 }}>{group.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>{group.label} · {group.aggregates.total_rows} строк{groupStructureCaptionExtras(group, user, view)}</Typography></Box></Stack>,
+      structure: <Stack direction="row" alignItems="center" spacing={0.25} sx={{ pl: level * 1.15, minWidth: 0 }}><Box sx={{ width: 22, flex: '0 0 auto' }}>{hasContent && <IconButton size="small" aria-label={isExpanded ? 'Свернуть группу' : 'Раскрыть группу'} onClick={() => onToggle(group)} sx={{ p: 0.25 }}>{isExpanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}</IconButton>}</Box><Box minWidth={0}><Typography variant="body2" fontWeight={level === 0 ? 700 : 600} noWrap title={group.name} sx={{ fontSize: 13, lineHeight: 1.25 }}>{group.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>{group.label} · {group.aggregates.total_rows} строк{groupStructureCaptionExtras(group, user)}</Typography></Box></Stack>,
       requested: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(group.aggregates.requested_sum)}</Typography>,
       approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(group.aggregates.approved_sum)}</Typography>,
       rejected: <Typography variant="body2" sx={{ fontSize: 13, color: group.aggregates.rejected_sum ? 'error.main' : 'inherit' }}>{rejectedMoney(group.aggregates.rejected_sum)}</Typography>,
@@ -1481,11 +1485,13 @@ export function ApprovalRegister({
   requestId,
   embedded = false,
   inRequestsPage = false,
+  hideHeader = false,
 }: {
   user: User;
   requestId?: string;
   embedded?: boolean;
   inRequestsPage?: boolean;
+  hideHeader?: boolean;
 }) {
   const availableViews = useMemo<RegistryView[]>(
     () => ['cfo', 'module', 'article', 'category', 'request'],
@@ -1967,7 +1973,7 @@ export function ApprovalRegister({
     }, { replace: true });
   }, [columnControls, setSearchParams]);
   usePageChromeLeading(useMemo(() => {
-    if (embedded) return null;
+    if (embedded || hideHeader) return null;
     if (inRequestsPage) {
       return (
         <Typography component="h1" className="page-title">
@@ -1980,9 +1986,9 @@ export function ApprovalRegister({
         register &gt; Реестр бюджетных заявок
       </Typography>
     );
-  }, [drillTitle, embedded, inRequestsPage]));
+  }, [drillTitle, embedded, hideHeader, inRequestsPage]));
   usePageChromeActions(useMemo(() => {
-    if (embedded) return null;
+    if (embedded || hideHeader) return null;
     if (inRequestsPage) {
       if (!drillTitle) return null;
       return (
@@ -1998,7 +2004,7 @@ export function ApprovalRegister({
       );
     }
     return pageChromeActions;
-  }, [drillTitle, embedded, inRequestsPage, pageChromeActions, resetRegisterFilters]));
+  }, [drillTitle, embedded, hideHeader, inRequestsPage, pageChromeActions, resetRegisterFilters]));
   const columnTools = (
     <TableColumnTools
       buttonLabel="Колонки"
@@ -2015,7 +2021,7 @@ export function ApprovalRegister({
     />
   );
   return <Stack spacing={1.1} className="approval-register-page">
-    {!inRequestsPage ? (
+    {!inRequestsPage && !hideHeader ? (
       <Box sx={{ pt: 0.15 }}>
         <Typography fontWeight={700} letterSpacing="-0.02em" sx={{ fontSize: { xs: '1.2rem', md: '1.35rem' }, lineHeight: 1.2 }}>
           {embedded ? 'Проверка заявки' : 'Реестр бюджетных заявок'}
