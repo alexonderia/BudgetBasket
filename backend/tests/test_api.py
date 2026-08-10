@@ -234,6 +234,12 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
         for group in _flatten_register_groups(root)
         if group["type"] == "article" and group["aggregates"]["total_rows"] >= 26
     )
+    category_cfo = next(
+        group
+        for root in register_cfo.json()["groups"]
+        for group in _flatten_register_groups(root)
+        if group["type"] == "category" and group["aggregates"]["total_rows"] >= 26
+    )
     module_cfo = next(
         group
         for root in register_cfo.json()["groups"]
@@ -241,7 +247,9 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
         if group["type"] == "module" and group["module_id"] == MODULE_ALPHA_ID
     )
     assert article_cfo["can_load_rows"] is False
-    assert module_cfo["can_load_rows"] is True
+    assert category_cfo["can_load_rows"] is True
+    assert module_cfo["can_load_rows"] is False
+    assert module_cfo["children"] == []
     article_rows = client.get(
         "/approval-register/rows",
         params={"article_id": article_cfo["article_id"], "page": 1, "page_size": 25},
@@ -252,12 +260,22 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
 
     first = client.get(
         "/approval-register/rows",
-        params={"module_id": MODULE_ALPHA_ID, "page": 1, "page_size": 25},
+        params={
+            "category_id": category_cfo["category_id"],
+            "article_id": category_cfo["article_id"],
+            "page": 1,
+            "page_size": 25,
+        },
         headers=employee,
     )
     second = client.get(
         "/approval-register/rows",
-        params={"module_id": MODULE_ALPHA_ID, "page": 2, "page_size": 25},
+        params={
+            "category_id": category_cfo["category_id"],
+            "article_id": category_cfo["article_id"],
+            "page": 2,
+            "page_size": 25,
+        },
         headers=employee,
     )
     assert first.status_code == second.status_code == 200
@@ -267,9 +285,8 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
     category_rows = client.get(
         "/approval-register/rows",
         params={
-            "module_id": MODULE_ALPHA_ID,
-            "article_id": module["article_id"],
-            "category_id": module["category_id"],
+            "category_id": category["category_id"],
+            "article_id": category["article_id"],
             "page_size": 25,
         },
         headers=employee,
@@ -278,7 +295,7 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
     assert category_rows.json()["pagination"]["total_items"] == 26
     assert client.get(
         "/approval-register/rows",
-        params={"module_id": MODULE_ALPHA_ID, "page_size": 30},
+        params={"category_id": category["category_id"], "page_size": 30},
         headers=employee,
     ).status_code == 422
 

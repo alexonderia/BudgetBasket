@@ -1401,7 +1401,7 @@ class RequestService:
             for node in sorted(nodes.values(), key=lambda item: (item["name"].casefold(), item["id"])):
                 children = serialize(node["children"])
                 if view == "cfo":
-                    can_load_rows = node["type"] == "module"
+                    can_load_rows = node["type"] == "category"
                 else:
                     can_load_rows = not children
                 payload = {

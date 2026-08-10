@@ -135,7 +135,7 @@ export function TableColumnResizeHandle({
   onDoubleClick?: () => void;
 }) {
   return (
-    <Tooltip title="Перетащите для изменения ширины; дважды нажмите для подбора по содержимому" placement="top">
+    <Tooltip title="Перетащите для изменения ширины; дважды нажмите для подбора по содержимому" placement="top" enterDelay={500}>
       <Box
         component="span"
         role="separator"
@@ -146,20 +146,26 @@ export function TableColumnResizeHandle({
         sx={{
           position: 'absolute',
           top: 0,
-          right: -4,
-          zIndex: 2,
-          width: 8,
-          height: '100%',
+          bottom: 0,
+          right: 0,
+          zIndex: 6,
+          width: 4,
           cursor: 'col-resize',
           touchAction: 'none',
-          '&:hover::after': {
+          transform: 'translateX(50%)',
+          '&::after': {
             content: '""',
             position: 'absolute',
-            top: 8,
-            bottom: 8,
-            left: 3,
+            top: 0,
+            bottom: 0,
+            left: '50%',
+            transform: 'translateX(-50%)',
             width: 2,
-            borderRadius: 1,
+            borderRadius: 0,
+            bgcolor: 'transparent',
+            transition: 'background-color 120ms ease',
+          },
+          '&:hover::after': {
             bgcolor: 'primary.main',
           },
         }}
@@ -185,8 +191,6 @@ export function TableColumnHeader({
   onClearColumnFilter,
   onClearVisibleFilterValues,
   endAdornment,
-  onResize,
-  onAutoFit,
 }: {
   label: ReactNode;
   sortable?: boolean;
@@ -204,8 +208,6 @@ export function TableColumnHeader({
   onClearColumnFilter?: () => void;
   onClearVisibleFilterValues?: () => void;
   endAdornment?: ReactNode;
-  onResize?: (event: ReactPointerEvent<HTMLSpanElement>) => void;
-  onAutoFit?: () => void;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
@@ -244,51 +246,62 @@ export function TableColumnHeader({
 
   return (
     <>
-      <Box sx={{ position: 'relative', width: '100%', minWidth: 0, pr: endAdornment || onResize ? 1.5 : 0, '&:hover .column-sort-button': { opacity: 1 } }}>
-        <Typography component="span" variant="body2" fontWeight={600} sx={{ display: 'block', minWidth: 0, overflow: 'hidden', pr: hasColumnControls ? 6 : 0, textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {label}
-        </Typography>
-        <Stack
-          direction="row"
-          spacing={0.25}
-          alignItems="center"
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          width: '100%',
+          minWidth: 0,
+          gap: 0.25,
+          pr: endAdornment ? 1.5 : 0,
+        }}
+      >
+        <Typography
+          component="span"
+          variant="body2"
+          fontWeight={600}
           sx={{
-            position: 'absolute',
-            top: '50%',
-            right: onResize ? 4 : 0,
-            transform: 'translateY(-50%)',
-            zIndex: 1,
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            lineHeight: 1.25,
           }}
         >
-          {sortable && (
-            <Tooltip title={columnSorted ? 'Изменить направление сортировки' : 'Сортировать'}>
-              <IconButton
-                className="column-sort-button"
-                size="small"
-                color={columnSorted ? 'primary' : 'default'}
-                onClick={toggleSort}
-                sx={{ opacity: columnSorted ? 1 : 0, transition: 'opacity 120ms ease' }}
-              >
-                <ArrowDownwardIcon
-                  fontSize="inherit"
-                  sx={{
-                    opacity: columnSorted ? 1 : 0.6,
-                    transform: sortDirection === 'asc' ? 'rotate(180deg)' : 'none',
-                  }}
-                />
-              </IconButton>
-            </Tooltip>
-          )}
-          {filterable && (
-            <Tooltip title={menuActive ? filterSummary : 'Фильтр'}>
-              <IconButton size="small" color={menuActive ? 'primary' : 'default'} onClick={openFilterMenu}>
-                {columnFiltered ? <FilterAltOutlinedIcon fontSize="inherit" /> : <ArrowDropDownIcon fontSize="inherit" />}
-              </IconButton>
-            </Tooltip>
-          )}
-        </Stack>
+          {label}
+        </Typography>
+        {hasColumnControls ? (
+          <Stack direction="row" spacing={0.25} alignItems="center" sx={{ flexShrink: 0 }}>
+            {sortable && (
+              <Tooltip title={columnSorted ? 'Изменить направление сортировки' : 'Сортировать'}>
+                <IconButton
+                  className="column-sort-button"
+                  size="small"
+                  color={columnSorted ? 'primary' : 'default'}
+                  onClick={toggleSort}
+                  sx={{ opacity: columnSorted ? 1 : 0.72, p: 0.35 }}
+                >
+                  <ArrowDownwardIcon
+                    fontSize="inherit"
+                    sx={{
+                      opacity: columnSorted ? 1 : 0.6,
+                      transform: sortDirection === 'asc' ? 'rotate(180deg)' : 'none',
+                    }}
+                  />
+                </IconButton>
+              </Tooltip>
+            )}
+            {filterable && (
+              <Tooltip title={menuActive ? filterSummary : 'Фильтр'}>
+                <IconButton size="small" color={menuActive ? 'primary' : 'default'} onClick={openFilterMenu} sx={{ p: 0.35 }}>
+                  {columnFiltered ? <FilterAltOutlinedIcon fontSize="inherit" /> : <ArrowDropDownIcon fontSize="inherit" />}
+                </IconButton>
+              </Tooltip>
+            )}
+          </Stack>
+        ) : null}
         {endAdornment}
-        {onResize && <TableColumnResizeHandle onPointerDown={onResize} onDoubleClick={onAutoFit} />}
       </Box>
       <Popover
         open={!!anchorEl}

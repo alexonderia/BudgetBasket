@@ -60,7 +60,7 @@ import { RequestHistoryDrawer } from '../components/request-history/RequestHisto
 import { FilePreviewDialog } from '../components/FilePreviewDialog';
 import { ChatMessageImages } from '../components/ChatMessageImages';
 import { useAppToast } from '../components/Layout';
-import { TableColumnHeader, TableColumnTools } from '../components/TableColumnControls';
+import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { ItemStatusBadge, RequestStatusBadge } from '../components/StatusBadge';
 import type { ApprovalRegisterRowsResponse, ApprovalStep, BudgetItem, BudgetRequest, CatalogItem, FileAttachment, ItemStatus, Profile, StepLog, StepStatus, Unit, User } from '../types';
 import { CLOSED_REQUEST_STATUSES } from '../types';
@@ -1153,8 +1153,6 @@ function ItemsTable({
       onSelectAllFilterValues={() => setAllItemFilterOptions(columnId)}
       onClearColumnFilter={() => clearItemColumnFilter(columnId)}
       onClearVisibleFilterValues={() => setItemVisibleFilterOptions(columnId, false)}
-      onResize={(event) => resizeColumn(columnId, event)}
-      onAutoFit={() => fitItemColumn(columnId)}
     />
   );
   const renderItemCell = (
@@ -1857,6 +1855,10 @@ function ItemsTable({
                       column.label,
                       ['files', 'actions', 'select'].includes(column.id) ? { sortable: false, filterable: false } : undefined,
                     )}
+                    <TableColumnResizeHandle
+                      onPointerDown={(event) => resizeColumn(column.id, event)}
+                      onDoubleClick={() => fitItemColumn(column.id)}
+                    />
                   </TableCell>
                 );
               })}
