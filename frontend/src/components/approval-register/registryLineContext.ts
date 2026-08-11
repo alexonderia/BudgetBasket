@@ -12,7 +12,12 @@ export function lineStatusFootnote(item?: ApprovalRegisterRow) {
   if (!context) return undefined;
 
   const { editability, last_decision: lastDecision, current_owner: currentOwner } = context;
-  if (editability.mode === 'editable' && editability.can_decide) return undefined;
+  if (item?.is_revision_actionable) return 'Ваше действие: исправить и повторно отправить';
+  if (editability.mode === 'editable' && editability.can_decide) {
+    if (item?.is_cfo_review_actionable || item?.is_cfo_review) return 'Ваше действие: проверить строку';
+    if (item?.is_approval_actionable) return 'Ваше действие: согласовать или отклонить';
+    return 'Требуется ваше решение';
+  }
 
   if (lastDecision?.by_name && (item?.status === 'approved' || item?.status === 'approved_with_changes' || item?.status === 'rejected')) {
     const stage = lastDecision.stage ? ` · ${lastDecision.stage}` : '';
@@ -47,8 +52,12 @@ export function lineStatusTooltipLines(item?: ApprovalRegisterRow) {
     lines.push(`Сейчас ждёт ${currentOwner.role_label}: ${currentOwner.by_name}`);
   }
 
-  if (editability.mode === 'editable') {
-    lines.push('Доступно: согласование, корректировка суммы, возврат на доработку');
+  if (item?.is_revision_actionable) {
+    lines.push('Доступно: исправить строку и повторно отправить её на проверку');
+  } else if (editability.mode === 'editable' && editability.can_decide) {
+    lines.push('Доступно: согласовать, согласовать с корректировкой или отклонить строку');
+  } else if (editability.mode === 'editable') {
+    lines.push('Доступно: изменить данные строки');
   } else if (editability.mode === 'locked') {
     lines.push('Изменения заблокированы');
   } else {

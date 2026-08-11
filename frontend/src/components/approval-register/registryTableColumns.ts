@@ -7,7 +7,6 @@ import {
   groupPreviousStepSummary,
   groupYourStepSummary,
   rowRegistryStatus,
-  rowRejectedAmount,
   type RegistryColumnId,
 } from './registryConfig';
 
@@ -67,13 +66,13 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
   },
   {
     id: 'requested',
-    label: 'Запрошено, ₽',
+    label: 'План, ₽',
     getValue: (row) => money(row.kind === 'group' ? row.group.aggregates.requested_sum : row.item.requested_sum),
     getSortValue: (row) => (row.kind === 'group' ? row.group.aggregates.requested_sum : row.item.requested_sum),
   },
   {
     id: 'approved',
-    label: 'Согласовано, ₽',
+    label: 'Факт, ₽',
     getValue: (row) => {
       if (row.kind === 'group') return money(row.group.aggregates.approved_sum);
       const previous = row.item.status_context?.previous_step;
@@ -89,9 +88,9 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
   },
   {
     id: 'rejected',
-    label: 'Отклонено, ₽',
-    getValue: (row) => money(row.kind === 'group' ? row.group.aggregates.rejected_sum : rowRejectedAmount(row.item)),
-    getSortValue: (row) => (row.kind === 'group' ? row.group.aggregates.rejected_sum : rowRejectedAmount(row.item)),
+    label: 'Корректировка, ₽',
+    getValue: (row) => money(row.kind === 'group' ? row.group.aggregates.difference : row.item.approved_sum - row.item.requested_sum),
+    getSortValue: (row) => (row.kind === 'group' ? row.group.aggregates.difference : row.item.approved_sum - row.item.requested_sum),
   },
   {
     id: 'previous_step',

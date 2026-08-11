@@ -59,7 +59,7 @@ describe('registryLineContext', () => {
     expect(lineStatusTooltipLines(row).some((line) => line.includes('Иванов Иван'))).toBe(true);
   });
 
-  it('shows editable summary when user can decide', () => {
+  it('shows the concrete action when user can decide', () => {
     const row: ApprovalRegisterRow = {
       ...baseRow,
       status: 'on_review',
@@ -74,6 +74,26 @@ describe('registryLineContext', () => {
         },
       },
     };
-    expect(lineStatusFootnote(row)).toBeUndefined();
+    expect(lineStatusFootnote(row)).toBe('Требуется ваше решение');
+    expect(lineStatusTooltipLines(row)).toContain('Доступно: согласовать, согласовать с корректировкой или отклонить строку');
+  });
+
+  it('distinguishes correction from a final decision', () => {
+    const row: ApprovalRegisterRow = {
+      ...baseRow,
+      is_revision_actionable: true,
+      status_context: {
+        editability: {
+          can_decide: false,
+          can_edit_amount: true,
+          can_edit_analytics: true,
+          mode: 'editable',
+          summary: 'На доработке',
+          detail: 'Исправьте возвращённую строку',
+        },
+      },
+    };
+    expect(lineStatusFootnote(row)).toBe('Ваше действие: исправить и повторно отправить');
+    expect(lineStatusTooltipLines(row)).toContain('Доступно: исправить строку и повторно отправить её на проверку');
   });
 });

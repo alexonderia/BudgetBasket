@@ -24,9 +24,9 @@ export const REGISTRY_VIEW_LABELS: Record<RegistryView, string> = {
 export const REGISTRY_COLUMNS: Array<{ id: RegistryColumnId; label: string; width: number; hideable?: boolean }> = [
   { id: 'select', label: '', width: 40, hideable: false },
   { id: 'structure', label: 'Структура', width: 300, hideable: false },
-  { id: 'requested', label: 'Запрошено, ₽', width: 110 },
-  { id: 'approved', label: 'Согласовано, ₽', width: 132 },
-  { id: 'rejected', label: 'Отклонено, ₽', width: 118 },
+  { id: 'requested', label: 'План, ₽', width: 110 },
+  { id: 'approved', label: 'Факт, ₽', width: 132 },
+  { id: 'rejected', label: 'Корректировка, ₽', width: 132 },
   { id: 'your_step', label: 'Ваше решение', width: 168, hideable: true },
   { id: 'previous_step', label: 'Предыдущий шаг', width: 168, hideable: true },
   { id: 'status', label: 'Статус', width: 188 },
@@ -49,7 +49,7 @@ export const DEFAULT_COLUMN_VISIBILITY: Record<RegistryColumnId, boolean> = {
   justification: true,
   comment: true,
   files: true,
-  actions: true,
+  actions: false,
   ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
     result[key] = false;
     return result;
@@ -79,12 +79,12 @@ export function usesWorkflowStepColumns(role?: User['role']) {
 export function defaultRegistryColumnVisibility(role?: User['role']): Record<RegistryColumnId, boolean> {
   const visibility = { ...DEFAULT_COLUMN_VISIBILITY };
   if (usesWorkflowStepColumns(role)) {
-    // Decision columns instead of status/actions; keep line details visible.
-    visibility.status = false;
+    // Status owns the current workflow action for every role.
+    visibility.status = true;
     visibility.previous_step = false;
     visibility.actions = false;
     visibility.rejected = false;
-    visibility.your_step = true;
+    visibility.your_step = false;
     visibility.justification = true;
     visibility.comment = true;
     visibility.files = true;
@@ -92,20 +92,21 @@ export function defaultRegistryColumnVisibility(role?: User['role']): Record<Reg
   return visibility;
 }
 
-/** Keep workflow layout from drifting back to duplicated decision columns via saved prefs. */
+/** Keep the essential workflow layout intact when restoring saved table preferences. */
 export function applyWorkflowColumnVisibility(
   visibility: Record<RegistryColumnId, boolean>,
   role?: User['role'],
 ): Record<RegistryColumnId, boolean> {
-  if (!usesWorkflowStepColumns(role)) return visibility;
-  return {
+  const coreVisibility = {
     ...visibility,
-    your_step: true,
-    actions: false,
+    status: true, // Status is the single place for state, locks and actions.
+    rejected: true, // Internal id; user-facing label is «Корректировка».
     previous_step: false,
-    status: false,
-    rejected: false,
+    your_step: false,
+    actions: false,
   };
+  if (!usesWorkflowStepColumns(role)) return coreVisibility;
+  return coreVisibility;
 }
 
 export function groupPreviousStepSummary(aggregates: RegisterAggregates) {
@@ -223,8 +224,9 @@ export function workflowApproveLabel(role: User['role']) {
 }
 
 export function rowReadiness(item: ApprovalRegisterRow) {
+  if (item.is_revision) return 'Требует доработки';
   if (item.status === 'approved' || item.status === 'approved_with_changes') return 'Рассмотрено';
-  if (item.status === 'rejected') return 'Требует доработки';
+  if (item.status === 'rejected') return 'Отклонено';
   if (item.is_cfo_review_actionable || item.is_approval_actionable) return 'Ожидает решения';
   if (item.is_collecting) return 'Сбор данных';
   if (item.is_cfo_review) return 'Проверка ЦФО';
@@ -272,6 +274,49 @@ export type RegistryStatusDisplay = {
 };
 
 export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisplay {
+  if (item.fixed) {
+    return {
+      label: 'Зафиксировано',
+      tone: 'default',
+      hint: 'Строка зафиксирована после финального согласования',
+      shortHint: 'Изменения недоступны',
+    };
+  }
+  const wasReviewedAfterRevision = Boolean(
+    item.is_revision
+    && item.status_context
+    && !item.status_context?.editability?.can_decide
+    && (item.status === 'approved' || item.status === 'approved_with_changes' || item.status === 'rejected'),
+  );
+  if (wasReviewedAfterRevision) {
+    const approved = item.status === 'approved' || item.status === 'approved_with_changes';
+    return {
+      label: approved ? 'Согласовано после доработки' : 'Отклонено после доработки',
+      tone: approved ? 'success' : 'error',
+      hint: approved
+        ? 'Повторное решение по строке сохранено. Завершите проверку позиции, когда рассмотрите остальные строки.'
+        : 'Повторное отрицательное решение по строке сохранено.',
+      shortHint: approved ? 'Решение повторно принято' : 'Решение повторно отклонено',
+    };
+  }
+  if (item.status_context?.editability?.can_decide) {
+    return {
+      label: 'Ожидает вашего решения',
+      tone: 'warning',
+      hint: 'Именно вы можете принять решение по строке на текущем этапе',
+      shortHint: 'Можно принять решение',
+    };
+  }
+  if (item.is_revision) {
+    return {
+      label: 'На доработке',
+      tone: 'warning',
+      hint: item.is_revision_actionable
+        ? 'Исправьте строку и повторно отправьте заявку'
+        : 'Строка возвращена нижестоящему участнику на доработку',
+      shortHint: 'Требуются исправления',
+    };
+  }
   if (item.status === 'approved') {
     return {
       label: 'Утверждено',
@@ -292,8 +337,8 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
     return {
       label: 'Отклонено',
       tone: 'error',
-      hint: item.frozen ? 'Строка возвращена на доработку и заморожена' : 'Строка отклонена и ожидает исправлений',
-      shortHint: 'На доработке',
+      hint: 'Строка не принята для выделения бюджета',
+      shortHint: 'Отрицательное решение',
     };
   }
 
@@ -340,22 +385,6 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
   }
 
   if (item.is_in_approval) {
-    if (item.fixed) {
-      return {
-        label: 'Зафиксировано',
-        tone: 'success',
-        hint: 'Строка зафиксирована после финального согласования',
-        shortHint: 'Зафиксировано',
-      };
-    }
-    if (item.frozen) {
-      return {
-        label: 'На доработке',
-        tone: 'warning',
-        hint: 'Строка возвращена на доработку и заморожена до исправлений',
-        shortHint: 'Ожидает исправлений',
-      };
-    }
     if (item.is_approval_actionable) {
       const stage = item.approval_stage || 'согласование';
       return {
@@ -401,6 +430,32 @@ export function groupRegistryStatus(aggregates: RegisterAggregates): RegistrySta
     };
   }
 
+  if (aggregates.cfo_review_actionable_requests > 0 || aggregates.actionable_positions > 0) {
+    const actionable = aggregates.cfo_review_actionable_requests + aggregates.actionable_positions;
+    return {
+      label: 'Ожидает вашего решения',
+      tone: 'warning',
+      hint: `${actionable} объектов ждут вашего решения`,
+      shortHint: 'Можно принять решение',
+    };
+  }
+  if (aggregates.cfo_review_completable_requests > 0) {
+    return {
+      label: 'Завершите проверку',
+      tone: 'warning',
+      hint: `${aggregates.cfo_review_completable_requests} заявок проверены по строкам, но ещё не переданы в маршрут согласования`,
+      shortHint: 'Нужно завершить проверку',
+    };
+  }
+  if ((aggregates.revision_rows || 0) > 0) {
+    return {
+      label: 'На доработке',
+      tone: 'warning',
+      hint: `${aggregates.revision_rows} строк возвращено на доработку`,
+      shortHint: 'Требуются исправления',
+    };
+  }
+
   if (aggregates.aggregate_status === 'approved') {
     return {
       label: 'Всё согласовано',
@@ -441,15 +496,6 @@ export function groupRegistryStatus(aggregates: RegisterAggregates): RegistrySta
       tone: 'default',
       hint: `${aggregates.collecting_requests} из ${aggregates.requests_count} заявок ещё не отправлены`,
       shortHint: `${aggregates.collecting_requests} заявок не отправлено`,
-    };
-  }
-
-  if (aggregates.cfo_review_completable_requests > 0) {
-    return {
-      label: 'Завершите проверку',
-      tone: 'warning',
-      hint: `${aggregates.cfo_review_completable_requests} заявок проверены по строкам, но ещё не переданы в маршрут согласования`,
-      shortHint: 'Нужно завершить проверку',
     };
   }
 

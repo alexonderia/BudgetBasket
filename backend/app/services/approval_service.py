@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -11,10 +12,12 @@ from app.services.budget_item_service import BudgetItemService
 from app.services.budget_totals import sync_annual_budgets
 from app.services.common import (
     cfo_position_current_step_id,
+    derived_request_status,
     get_required,
     now_iso,
     public_user,
     request_author_id,
+    request_cfo_review_completed,
 )
 from app.services.permission_service import PermissionService
 
@@ -229,21 +232,6 @@ class ApprovalService:
                         event_id=self._event_id(), source="system", cfo_unit_id=cfo["id"],
                         parent_step_id=economist_step["id"], child_step_id=cfo_step["id"],
                     )
-                for position in repo.load_all("cfo_positions"):
-                    if self._current_step_id(repo, position) != cfo_step["id"]:
-                        continue
-                    before = dict(position)
-                    after = repo.update(
-                        "cfo_positions",
-                        position["id"],
-                        {"current_step_id": economist_step["id"]},
-                    )
-                    self._position_log(
-                        repo, actor, after, "position_moved_to_economist_step",
-                        before=before, after=after, step_id=economist_step["id"],
-                        current_step_id=economist_step["id"], source="system",
-                    )
-
             shared_ids = {step["id"] for step in economist_steps.values()}
             for step in list(existing):
                 if (
@@ -441,7 +429,16 @@ class ApprovalService:
         cfo_ids = self._economist_cfo_ids(repo, step)
         if cfo_ids:
             return [row for row in positions if row.get("cfo_unit_id") in cfo_ids]
-        return [row for row in positions if self._current_step_id(repo, row) == step["id"]]
+        historical_ids = {
+            row.get("cfo_position_id")
+            for row in repo.load_all("cfo_position_logs")
+            if row.get("step_id") == step["id"]
+            or (row.get("log") or {}).get("step_id") == step["id"]
+        }
+        return [
+            row for row in positions
+            if self._current_step_id(repo, row) == step["id"] or row["id"] in historical_ids
+        ]
 
     def _step_runtime_status(
         self,
@@ -465,6 +462,9 @@ class ApprovalService:
         if not scoped:
             return StepStatus.waiting
 
+        if all(self._all_items_fixed(self._position_items(repo, row["id"])) for row in scoped):
+            return StepStatus.closed
+
         upstream = self._collect_upstream_step_ids(step_id, edges)
         if any(
             self._current_step_id(repo, row) in upstream
@@ -483,6 +483,56 @@ class ApprovalService:
             return StepStatus.waiting
 
         return StepStatus.waiting
+
+    def _sync_step_statuses(self, repo: Repository) -> None:
+        steps = list(repo.load_all("steps"))
+        positions = list(repo.load_all("cfo_positions"))
+        edges = self._edges(repo)
+        for step in steps:
+            status = self._step_runtime_status(repo, step, positions, edges)
+            if step.get("status") != status:
+                repo.update("steps", step["id"], {"status": status})
+
+    def _sync_request_statuses(
+        self,
+        repo: Repository,
+        user: dict,
+        request_ids: set[str],
+        *,
+        event_id: str,
+        action: str,
+    ) -> None:
+        for request_id in sorted(request_ids):
+            request = get_required(repo, "requests", request_id)
+            if request.get("status") in {RequestStatus.draft, RequestStatus.cancelled}:
+                continue
+            items = [
+                row for row in repo.load_all("req_items")
+                if row.get("request_id") == request_id
+            ]
+            status = derived_request_status(items)
+            if request.get("status") == status:
+                continue
+            updated = repo.update("requests", request_id, {"status": status})
+            repo.create(
+                "req_logs",
+                {
+                    "req_id": request_id,
+                    "user_id": user["id"],
+                    "log": {
+                        "event_id": event_id,
+                        "action": action,
+                        "stage": "final_approval",
+                        "entity": "request",
+                        "entity_id": request_id,
+                        "request_id": request_id,
+                        "changes": {
+                            "status": {"from": request.get("status"), "to": updated.get("status")}
+                        },
+                        "comment": None,
+                    },
+                },
+            )
 
     def _public_steps(self, repo: Repository, steps: list[dict]) -> list[dict]:
         edges = self._edges(repo)
@@ -623,15 +673,13 @@ class ApprovalService:
                 step["id"]
                 for step in all_steps
                 if step.get("unit_id") in cfo_ids
-                or set(step.get("cfo_unit_ids") or []) & cfo_ids
             }
         elif user.get("role") == "economist":
             cfo_ids = self.permissions.economist_cfo_ids(user["id"])
             relevant = {
                 step["id"]
                 for step in all_steps
-                if step.get("unit_id") in cfo_ids
-                or set(step.get("cfo_unit_ids") or []) & cfo_ids
+                if step.get("unit_id") in cfo_ids or step.get("user_id") == user["id"]
             }
         elif user.get("role") in {"approver", "zgd"}:
             relevant = {step["id"] for step in all_steps if step.get("user_id") == user["id"]}
@@ -640,15 +688,19 @@ class ApprovalService:
         if not relevant:
             return []
         by_id = {step["id"]: step for step in all_steps}
+        # Edges point from the next approval stage (parent) to the previous one
+        # (child).  Follow only parents from a viewer's entry step: this keeps
+        # the route progressing towards final approval without pulling sibling
+        # CFO branches back in through a shared economist or reviewer.
         pending = list(relevant)
         while pending:
             step = by_id.get(pending.pop())
             if not step:
                 continue
-            for related_id in [*step.get("parent_step_ids", []), *step.get("child_step_ids", [])]:
-                if related_id not in relevant:
-                    relevant.add(related_id)
-                    pending.append(related_id)
+            for parent_id in step.get("parent_step_ids", []):
+                if parent_id not in relevant:
+                    relevant.add(parent_id)
+                    pending.append(parent_id)
         result = [step for step in all_steps if step["id"] in relevant]
         if user.get("role") == "employee" and not directly_responsible_cfo_ids:
             result = [
@@ -1037,9 +1089,20 @@ class ApprovalService:
         if user_id and self.notifications:
             self.notifications.create(user_id, notification_type, payload, repo=repo)
 
-    def submit_to_economist(self, user: dict, position_id: str, comment: str = "") -> dict:
-        self.sync_automatic_steps(user)
-        with self.repo.transaction() as repo:
+    def submit_to_economist(
+        self,
+        user: dict,
+        position_id: str,
+        comment: str = "",
+        *,
+        repo: Repository | None = None,
+    ) -> dict:
+        if repo is None:
+            self.sync_automatic_steps(user)
+        result_repo = repo
+        transaction = nullcontext(repo) if repo is not None else self.repo.transaction()
+        with transaction as storage:
+            repo = storage
             position = repo.lock_by_id("cfo_positions", position_id)
             if not position:
                 raise HTTPException(status_code=404, detail="Позиция не найдена")
@@ -1050,8 +1113,36 @@ class ApprovalService:
                 raise HTTPException(status_code=403, detail="Позиция относится к другому ЦФО")
             if self._all_items_fixed(self._position_items(repo, position_id)):
                 raise HTTPException(status_code=409, detail="Все строки позиции окончательно зафиксированы")
-            if position.get("status") not in {CfoPositionStatus.waiting, CfoPositionStatus.on_revision}:
+            position_items = self._position_items(repo, position_id)
+            if not any(row.get("status") != ItemStatus.rejected for row in position_items):
+                raise HTTPException(status_code=409, detail="В позиции нет строк для согласования")
+            if position.get("status") not in {
+                CfoPositionStatus.waiting,
+                CfoPositionStatus.on_review,
+                CfoPositionStatus.on_revision,
+            }:
                 raise HTTPException(status_code=409, detail="Позицию нельзя передать на этом этапе")
+            cfo_modules = self.permissions.modules_for_cfos({position["cfo_unit_id"]})
+            incomplete_request_ids = []
+            for request in repo.load_all("requests"):
+                if (
+                    request.get("unit_id") not in cfo_modules
+                    or int(request.get("budget_year") or 0) != int(position.get("budget_year") or 0)
+                ):
+                    continue
+                if request.get("status") == RequestStatus.draft or (
+                    request.get("status") == RequestStatus.on_review
+                    and not request_cfo_review_completed(repo, request["id"])
+                ):
+                    incomplete_request_ids.append(request["id"])
+            if incomplete_request_ids:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Не все заявки ЦФО готовы к передаче экономисту",
+                        "request_ids": sorted(incomplete_request_ids),
+                    },
+                )
             economist_step = self._economist_step_for_cfo(repo, position["cfo_unit_id"])
             before = dict(position)
             after = repo.update(
@@ -1071,6 +1162,7 @@ class ApprovalService:
                 repo, user, economist_step, "position_received", event_id=event_id,
                 comment=comment, cfo_position_id=position_id,
             )
+            self._sync_step_statuses(repo)
             if self.chat_service:
                 self.chat_service.system_message_for_position(
                     after,
@@ -1082,14 +1174,17 @@ class ApprovalService:
                 repo, economist_id, "cfo_position.assigned",
                 {"cfo_position_id": position_id, "reload_required": True},
             )
-        result = self.public_position(after)
+        result = self.public_position(after, repo=result_repo)
         result["notification_user_ids"] = [economist_id] if economist_id else []
         return result
 
-    def _require_economist_work(self, user: dict, position: dict) -> dict:
+    def _require_economist_work(
+        self, user: dict, position: dict, *, repo: Repository | None = None
+    ) -> dict:
+        storage = repo or self.repo
         self.permissions.require_economist_position_access(user, position)
-        step = get_required(self.repo, "steps", self._current_step_id(self.repo, position))
-        if self._economist_cfo_id(self.repo, step) != position["cfo_unit_id"]:
+        step = get_required(storage, "steps", self._current_step_id(storage, position))
+        if self._economist_cfo_id(storage, step) != position["cfo_unit_id"]:
             raise HTTPException(status_code=409, detail="Позиция не находится на шаге экономиста")
         return step
 
@@ -1151,7 +1246,7 @@ class ApprovalService:
             position = repo.lock_by_id("cfo_positions", position_id)
             if not position:
                 raise HTTPException(status_code=404, detail="Позиция не найдена")
-            self._require_economist_work(user, position)
+            self._require_economist_work(user, position, repo=repo)
             after = self._decide_item_economist(
                 repo, user, position, item_id, payload
             )
@@ -1162,7 +1257,7 @@ class ApprovalService:
             position = repo.lock_by_id("cfo_positions", position_id)
             if not position:
                 raise HTTPException(status_code=404, detail="Позиция не найдена")
-            self._require_economist_work(user, position)
+            self._require_economist_work(user, position, repo=repo)
             return [
                 self._decide_item_economist(
                     repo,
@@ -1185,12 +1280,22 @@ class ApprovalService:
             and (row.get("log") or {}).get("action") == "economist_item_decided"
         }
 
-    def complete_economist_review(self, user: dict, position_id: str, comment: str = "") -> dict:
-        with self.repo.transaction() as repo:
+    def complete_economist_review(
+        self,
+        user: dict,
+        position_id: str,
+        comment: str = "",
+        *,
+        repo: Repository | None = None,
+    ) -> dict:
+        result_repo = repo
+        transaction = nullcontext(repo) if repo is not None else self.repo.transaction()
+        with transaction as storage:
+            repo = storage
             position = repo.lock_by_id("cfo_positions", position_id)
             if not position:
                 raise HTTPException(status_code=404, detail="Позиция не найдена")
-            self._require_economist_work(user, position)
+            self._require_economist_work(user, position, repo=repo)
             items = self._position_items(repo, position_id)
             decided = self._economist_decided_item_ids(repo, position_id)
             pending = [
@@ -1217,16 +1322,26 @@ class ApprovalService:
                     "Экономист завершил проверку позиции ЦФО.",
                     repo=repo,
                 )
-        return self.public_position(after)
+            self._sync_step_statuses(repo)
+        return self.public_position(after, repo=result_repo)
 
     def freeze_position(
-        self, user: dict, position_id: str, comment: str = "", item_ids: list[str] | None = None
+        self,
+        user: dict,
+        position_id: str,
+        comment: str = "",
+        item_ids: list[str] | None = None,
+        *,
+        repo: Repository | None = None,
     ) -> dict:
-        with self.repo.transaction() as repo:
+        result_repo = repo
+        transaction = nullcontext(repo) if repo is not None else self.repo.transaction()
+        with transaction as storage:
+            repo = storage
             position = repo.lock_by_id("cfo_positions", position_id)
             if not position:
                 raise HTTPException(status_code=404, detail="Позиция не найдена")
-            leaf = self._require_economist_work(user, position)
+            leaf = self._require_economist_work(user, position, repo=repo)
             if position.get("status") != CfoPositionStatus.approved:
                 raise HTTPException(status_code=409, detail="Сначала завершите проверку строк")
             parents = self._parents(leaf["id"], self._edges(repo))
@@ -1259,7 +1374,8 @@ class ApprovalService:
             if forwarded:
                 self._step_log(repo, user, next_step, "position_received", event_id=event_id, comment=comment, cfo_position_id=position_id)
                 self._notify(repo, next_step.get("user_id"), "cfo_position.assigned", {"cfo_position_id": position_id, "step_id": next_step["id"]})
-        result = self.public_position(after)
+            self._sync_step_statuses(repo)
+        result = self.public_position(after, repo=result_repo)
         result["notification_user_ids"] = [next_step["user_id"]] if forwarded and next_step.get("user_id") else []
         return result
 
@@ -1288,6 +1404,7 @@ class ApprovalService:
                 before=before, after=after, comment=comment,
                 current_step_id=self._current_step_id(repo, position), item_ids=sorted(selected_ids),
             )
+            self._sync_step_statuses(repo)
         return self.public_position(after)
 
     def list_step_positions(self, user: dict, step_id: str) -> list[dict]:
@@ -1313,9 +1430,19 @@ class ApprovalService:
         }
 
     def approve_position_at_step(
-        self, user: dict, step_id: str, position_id: str, comment: str = "", item_ids: list[str] | None = None
+        self,
+        user: dict,
+        step_id: str,
+        position_id: str,
+        comment: str = "",
+        item_ids: list[str] | None = None,
+        *,
+        repo: Repository | None = None,
     ) -> dict:
-        with self.repo.transaction() as repo:
+        result_repo = repo
+        transaction = nullcontext(repo) if repo is not None else self.repo.transaction()
+        with transaction as storage:
+            repo = storage
             step = get_required(repo, "steps", step_id)
             self.permissions.require_step_assignee(user, step)
             if step.get("unit_id") or self._economist_cfo_id(repo, step):
@@ -1354,7 +1481,7 @@ class ApprovalService:
                 action = "position_approved_at_step"
             after = repo.update("cfo_positions", position_id, patch) if patch else position
             if actor.get("role") == "zgd":
-                sync_annual_budgets(repo)
+                request_ids = {row["request_id"] for row in fixed_items}
             event_id = self._event_id()
             self._position_log(
                 repo, user, after, action, before=before, after=after,
@@ -1366,24 +1493,37 @@ class ApprovalService:
                 repo, user, step, action, event_id=event_id, comment=comment,
                 cfo_position_id=position_id,
             )
+            if actor.get("role") == "zgd":
+                self._sync_request_statuses(
+                    repo,
+                    user,
+                    request_ids,
+                    event_id=event_id,
+                    action="request_finalized_by_zgd",
+                )
+                sync_annual_budgets(repo)
+            self._sync_step_statuses(repo)
             notify_id = next_step.get("user_id") if next_step else None
             self._notify(
                 repo, notify_id, "cfo_position.assigned",
                 {"cfo_position_id": position_id, "step_id": next_step["id"] if next_step else None},
             )
-        result = self.public_position(after)
+        result = self.public_position(after, repo=result_repo)
         result["notification_user_ids"] = [notify_id] if notify_id else []
         return result
 
     def approve_step(self, user: dict, step_id: str, position_ids: list[str]) -> dict:
         available = self.list_step_positions(user, step_id)
         selected = position_ids or [row["id"] for row in available]
-        return {
-            "positions": [
-                self.approve_position_at_step(user, step_id, position_id)
-                for position_id in selected
-            ]
-        }
+        with self.repo.transaction() as repo:
+            return {
+                "positions": [
+                    self.approve_position_at_step(
+                        user, step_id, position_id, repo=repo
+                    )
+                    for position_id in selected
+                ]
+            }
 
     def approve_positions_from_register(self, user: dict, position_ids: list[str], comment: str = "") -> dict:
         """Approve a whole article/CFO group at the actor's current route step.
@@ -1393,26 +1533,47 @@ class ApprovalService:
         this here, instead of a line-level bulk decision, preserves the common
         route of every article position.
         """
-        if not position_ids:
-            raise HTTPException(status_code=422, detail="Выберите хотя бы одну позицию")
         if user.get("role") == "employee":
             return self.submit_positions_from_register(user, position_ids, comment)
-        positions = [get_required(self.repo, "cfo_positions", position_id) for position_id in position_ids]
-        step_ids = {self._current_step_id(self.repo, position) for position in positions}
+        with self.repo.transaction() as repo:
+            return self._approve_positions_from_register(
+                repo, user, position_ids, comment
+            )
+
+    def _approve_positions_from_register(
+        self,
+        repo: Repository,
+        user: dict,
+        position_ids: list[str],
+        comment: str,
+    ) -> dict:
+        if not position_ids:
+            raise HTTPException(status_code=422, detail="Выберите хотя бы одну позицию")
+        position_ids = sorted(set(position_ids))
+        positions = [get_required(repo, "cfo_positions", position_id) for position_id in position_ids]
+        step_ids = {self._current_step_id(repo, position) for position in positions}
         if None in step_ids:
             raise HTTPException(status_code=409, detail="Часть позиций ещё не передана на согласование")
         results: list[dict] = []
         for position in positions:
-            step_id = self._current_step_id(self.repo, position)
-            step = get_required(self.repo, "steps", step_id)
-            if step.get("unit_id") or self._economist_cfo_id(self.repo, step):
+            step_id = self._current_step_id(repo, position)
+            step = get_required(repo, "steps", step_id)
+            if step.get("unit_id") or self._economist_cfo_id(repo, step):
                 self.permissions.require_step_assignee(user, step)
-                current = get_required(self.repo, "cfo_positions", position["id"])
+                current = get_required(repo, "cfo_positions", position["id"])
                 if current.get("status") == CfoPositionStatus.on_approval:
-                    self.complete_economist_review(user, current["id"], comment)
-                results.append(self.freeze_position(user, position["id"], comment))
+                    self.complete_economist_review(
+                        user, current["id"], comment, repo=repo
+                    )
+                results.append(
+                    self.freeze_position(user, position["id"], comment, repo=repo)
+                )
             else:
-                results.append(self.approve_position_at_step(user, step_id, position["id"], comment))
+                results.append(
+                    self.approve_position_at_step(
+                        user, step_id, position["id"], comment, repo=repo
+                    )
+                )
         return {
             "positions": results,
             "notification_user_ids": sorted({
@@ -1421,9 +1582,26 @@ class ApprovalService:
         }
 
     def submit_positions_from_register(self, user: dict, position_ids: list[str], comment: str = "") -> dict:
+        self.sync_automatic_steps(user)
+        with self.repo.transaction() as repo:
+            return self._submit_positions_from_register(
+                repo, user, position_ids, comment
+            )
+
+    def _submit_positions_from_register(
+        self,
+        repo: Repository,
+        user: dict,
+        position_ids: list[str],
+        comment: str,
+    ) -> dict:
         if not position_ids:
             raise HTTPException(status_code=422, detail="Выберите хотя бы одну позицию")
-        results = [self.submit_to_economist(user, position_id, comment) for position_id in position_ids]
+        position_ids = sorted(set(position_ids))
+        results = [
+            self.submit_to_economist(user, position_id, comment, repo=repo)
+            for position_id in position_ids
+        ]
         return {
             "positions": results,
             "notification_user_ids": sorted({
@@ -1440,28 +1618,48 @@ class ApprovalService:
         revision_items: list[dict] | None = None,
     ) -> dict:
         """Return register article/CFO positions to one lower step."""
+        with self.repo.transaction() as repo:
+            return self._return_positions_from_register(
+                repo,
+                user,
+                position_ids,
+                target_step_id,
+                comment,
+                revision_items,
+            )
+
+    def _return_positions_from_register(
+        self,
+        repo: Repository,
+        user: dict,
+        position_ids: list[str],
+        target_step_id: str,
+        comment: str,
+        revision_items: list[dict] | None,
+    ) -> dict:
         if not position_ids:
             raise HTTPException(status_code=422, detail="Выберите хотя бы одну позицию")
+        position_ids = sorted(set(position_ids))
         if not comment.strip():
             raise HTTPException(status_code=422, detail="Укажите комментарий к доработке")
-        positions = [get_required(self.repo, "cfo_positions", position_id) for position_id in position_ids]
+        positions = [get_required(repo, "cfo_positions", position_id) for position_id in position_ids]
         revision_by_item = {row["item_id"]: row for row in (revision_items or [])}
         selected_item_ids = set(revision_by_item) if revision_by_item else None
         if selected_item_ids is not None:
             all_position_item_ids = set()
             for position in positions:
                 all_position_item_ids.update(
-                    row["id"] for row in self._position_items(self.repo, position["id"])
+                    row["id"] for row in self._position_items(repo, position["id"])
                 )
             unknown = selected_item_ids - all_position_item_ids
             if unknown:
                 raise HTTPException(status_code=422, detail="Часть выбранных строк не относится к позициям группы")
-        edges = self._edges(self.repo)
+        edges = self._edges(repo)
         for position in positions:
-            step_id = self._current_step_id(self.repo, position)
+            step_id = self._current_step_id(repo, position)
             if not step_id:
                 raise HTTPException(status_code=409, detail="Часть позиций ещё не находится на шаге согласования")
-            step = get_required(self.repo, "steps", step_id)
+            step = get_required(repo, "steps", step_id)
             self.permissions.require_step_assignee(user, step)
             if target_step_id and target_step_id not in self._children(step_id, edges):
                 raise HTTPException(
@@ -1470,9 +1668,9 @@ class ApprovalService:
                 )
         results = []
         for position in positions:
-            step_id = self._current_step_id(self.repo, position) or ""
-            resolved_target = target_step_id or self._default_return_step_id(self.repo, step_id, position)
-            position_items = self._position_items(self.repo, position["id"])
+            step_id = self._current_step_id(repo, position) or ""
+            resolved_target = target_step_id or self._default_return_step_id(repo, step_id, position)
+            position_items = self._position_items(repo, position["id"])
             if selected_item_ids is not None:
                 position_selected_ids = [row["id"] for row in position_items if row["id"] in selected_item_ids]
                 if not position_selected_ids:
@@ -1487,6 +1685,7 @@ class ApprovalService:
                         comment.strip(),
                         item_ids=position_selected_ids,
                         revision_items=position_revision,
+                        repo=repo,
                     )
                 )
             else:
@@ -1497,6 +1696,7 @@ class ApprovalService:
                         position["id"],
                         resolved_target,
                         comment.strip(),
+                        repo=repo,
                     )
                 )
         if selected_item_ids is not None and not results:
@@ -1520,8 +1720,13 @@ class ApprovalService:
         comment: str,
         item_ids: list[str] | None = None,
         revision_items: list[dict] | None = None,
+        *,
+        repo: Repository | None = None,
     ) -> dict:
-        with self.repo.transaction() as repo:
+        result_repo = repo
+        transaction = nullcontext(repo) if repo is not None else self.repo.transaction()
+        with transaction as storage:
+            repo = storage
             step = get_required(repo, "steps", step_id)
             self.permissions.require_step_assignee(user, step)
             position = repo.lock_by_id("cfo_positions", position_id)
@@ -1531,6 +1736,9 @@ class ApprovalService:
             if target_step_id not in children:
                 raise HTTPException(status_code=422, detail="Возврат возможен на непосредственный дочерний шаг")
             target = get_required(repo, "steps", target_step_id)
+            target_can_edit_budget = bool(target.get("unit_id")) or bool(
+                self._economist_cfo_id(repo, target)
+            )
             items = self._position_items(repo, position_id)
             selected_ids = set(item_ids or [row["id"] for row in items if not row.get("fixed")])
             selected = [row for row in items if row["id"] in selected_ids]
@@ -1544,7 +1752,7 @@ class ApprovalService:
             for item in selected:
                 revision = revision_by_item.get(item["id"], {})
                 before_item = dict(item)
-                patch = {"frozen": False}
+                patch = {"frozen": False} if target_can_edit_budget else {}
                 if can_edit_lines and revision.get("suggested_sum_fact") is not None:
                     patch["sum_fact"] = revision["suggested_sum_fact"]
                     patch["status"] = ItemStatus.approved_with_changes
@@ -1592,6 +1800,7 @@ class ApprovalService:
                 repo, user, step, "position_returned", event_id=event_id,
                 comment=comment, cfo_position_id=position_id, target_step_id=target_step_id,
             )
+            self._sync_step_statuses(repo)
             chat_message = None
             if self.chat_service and user.get("role") == "economist":
                 chat_message = self.chat_service.comment_for_position(user, after, comment, repo=repo)
@@ -1604,7 +1813,7 @@ class ApprovalService:
                 repo, notify_id, "cfo_position.returned",
                 {"cfo_position_id": position_id, "step_id": target_step_id, "comment": comment},
             )
-        result = self.public_position(after)
+        result = self.public_position(after, repo=result_repo)
         result["notification_user_ids"] = [notify_id] if notify_id else []
         result["chat_messages"] = [message for message in ([chat_message] if chat_message else []) + line_chat_messages if message]
         return result
@@ -1623,44 +1832,11 @@ class ApprovalService:
     def reopen_fixed_items(
         self, user: dict, position_id: str, target_step_id: str, comment: str, item_ids: list[str]
     ) -> dict:
-        """Only ZGD may reopen final lines; the article then resumes its common route."""
-        if user.get("role") != "zgd":
-            raise HTTPException(status_code=403, detail="Открыть финально зафиксированные строки может только ЗГД")
-        with self.repo.transaction() as repo:
-            position = repo.lock_by_id("cfo_positions", position_id)
-            if not position:
-                raise HTTPException(status_code=404, detail="Позиция ЦФО не найдена")
-            zgd_step = next(
-                (step for step in repo.load_all("steps") if step.get("user_id") == user["id"]), None
-            )
-            if not zgd_step or target_step_id not in self._children(zgd_step["id"], self._edges(repo)):
-                raise HTTPException(status_code=422, detail="Вернуть можно только на непосредственный нижний шаг ЗГД")
-            items = self._position_items(repo, position_id)
-            selected = [row for row in items if row["id"] in set(item_ids)]
-            if not selected or len(selected) != len(set(item_ids)) or any(not row.get("fixed") for row in selected):
-                raise HTTPException(status_code=422, detail="Выберите финально зафиксированные строки позиции")
-            for item in selected:
-                repo.update("req_items", item["id"], {"fixed": False, "frozen": False})
-            before = dict(position)
-            after = repo.update("cfo_positions", position_id, {
-                "status": CfoPositionStatus.on_revision, "current_step_id": target_step_id,
-            })
-            self._position_log(
-                repo, user, after, "fixed_items_reopened", before=before, after=after, comment=comment,
-                step_id=zgd_step["id"], current_step_id=target_step_id,
-                target_step_id=target_step_id, item_ids=sorted(item_ids),
-            )
-            self._step_log(
-                repo, user, zgd_step, "fixed_items_reopened", event_id=self._event_id(), comment=comment,
-                cfo_position_id=position_id, target_step_id=target_step_id, item_ids=sorted(item_ids),
-            )
-            target = get_required(repo, "steps", target_step_id)
-            notify_id = self.permissions.cfo_economist_id(target["unit_id"]) if target.get("unit_id") else target.get("user_id")
-            self._notify(repo, notify_id, "cfo_position.returned", {"cfo_position_id": position_id, "step_id": target_step_id, "comment": comment})
-            sync_annual_budgets(repo)
-        result = self.public_position(after)
-        result["notification_user_ids"] = [notify_id] if notify_id else []
-        return result
+        """Final ZGD fixation is irreversible through application write APIs."""
+        raise HTTPException(
+            status_code=409,
+            detail="Зафиксированный ЗГД бюджет нельзя повторно открыть",
+        )
 
     def position_logs(self, user: dict, position_id: str) -> list[dict]:
         position = get_required(self.repo, "cfo_positions", position_id)

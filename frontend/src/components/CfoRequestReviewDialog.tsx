@@ -1,5 +1,6 @@
 import {
   Alert,
+  AlertTitle,
   Button,
   Checkbox,
   CircularProgress,
@@ -53,11 +54,13 @@ function errorText(error: unknown) {
 function DecisionDialog({
   open,
   title,
+  allowChanges,
   onClose,
   onSubmit,
 }: {
   open: boolean;
   title: string;
+  allowChanges: boolean;
   onClose: () => void;
   onSubmit: (decision: ItemStatus, comment: string, sumFact?: number) => void;
 }) {
@@ -69,7 +72,7 @@ function DecisionDialog({
     <DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
       <FormControl fullWidth><InputLabel>Решение</InputLabel><Select value={decision} label="Решение" onChange={(event) => setDecision(event.target.value as ItemStatus)}>
         <MenuItem value="approved">Одобрить</MenuItem>
-        <MenuItem value="approved_with_changes">Одобрить с изменениями</MenuItem>
+        {allowChanges && <MenuItem value="approved_with_changes">Одобрить с изменениями</MenuItem>}
         <MenuItem value="rejected">Отклонить</MenuItem>
       </Select></FormControl>
       {decision === 'approved_with_changes' && <TextField label="Новая согласованная сумма" type="number" value={sumFact} onChange={(event) => setSumFact(event.target.value)} />}
@@ -123,12 +126,20 @@ export function CfoRequestReviewDialog({
       <DialogTitle>Проверка заявки {request?.id.slice(0, 8)} · {request?.budget_year}</DialogTitle>
       <DialogContent>
         {(decide.error || complete.error) && <Alert severity="error" sx={{ mb: 2 }}>{errorText(decide.error || complete.error)}</Alert>}
+        {!isLoading && (
+          <Alert severity={pending > 0 ? 'warning' : 'success'} sx={{ mb: 2 }}>
+            <AlertTitle>{pending > 0 ? 'Требуется ваше решение' : 'Все строки рассмотрены'}</AlertTitle>
+            {pending > 0
+              ? `Примите решение по ${pending} ${pending === 1 ? 'строке' : 'строкам'}. После этого завершите проверку заявки.`
+              : 'Нажмите «Завершить проверку», чтобы передать согласованные строки в маршрут и закрыть проверку заявки.'}
+          </Alert>
+        )}
         {isLoading ? <CircularProgress /> : <TableContainer component={Paper} variant="outlined"><Table size="small"><TableHead><TableRow><TableCell padding="checkbox" /><TableCell>Строка</TableCell><TableCell align="right">План</TableCell><TableCell align="right">Решение</TableCell><TableCell>Статус</TableCell><TableCell>Комментарий</TableCell></TableRow></TableHead><TableBody>
           {active.map((item) => <TableRow key={item.id}><TableCell padding="checkbox"><Checkbox checked={targetIds.includes(item.id)} onChange={(_, checked) => setTargetIds((current) => checked ? [...current, item.id] : current.filter((id) => id !== item.id))} /></TableCell><TableCell>{item.name}</TableCell><TableCell align="right">{money(item.sum_plan)}</TableCell><TableCell align="right">{money(item.sum_fact)}</TableCell><TableCell>{itemStatus[item.status]}</TableCell><TableCell>{item.comment || '—'}</TableCell></TableRow>)}
         </TableBody></Table></TableContainer>}
       </DialogContent>
       <DialogActions><Typography variant="body2" color="text.secondary" sx={{ mr: 'auto' }}>Без решения: {pending}</Typography><Button onClick={onClose}>Закрыть</Button><Button disabled={!targetIds.length} onClick={() => setDecisionOpen(true)}>Решение по выбранным</Button><Button variant="contained" disabled={!active.length || pending > 0 || complete.isPending} onClick={() => complete.mutate()}>Завершить проверку</Button></DialogActions>
     </Dialog>
-    <DecisionDialog open={decisionOpen} title={`Решение по строкам: ${targetIds.length}`} onClose={() => setDecisionOpen(false)} onSubmit={(decision, comment, sumFact) => decide.mutate({ decision, comment, sumFact })} />
+    <DecisionDialog open={decisionOpen} title={`Решение по строкам: ${targetIds.length}`} allowChanges={targetIds.length === 1} onClose={() => setDecisionOpen(false)} onSubmit={(decision, comment, sumFact) => decide.mutate({ decision, comment, sumFact })} />
   </>;
 }

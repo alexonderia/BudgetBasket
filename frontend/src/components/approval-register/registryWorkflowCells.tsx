@@ -28,7 +28,7 @@ function compactStatus(status: ItemStatus | null | undefined, waiting: boolean):
     return { label: 'Утверждено с изменениями', tone: 'success', hint: 'Согласовано с корректировкой' };
   }
   if (status === 'rejected') {
-    return { label: 'Отклонено', tone: 'error', hint: 'На доработке' };
+    return { label: 'Отклонено', tone: 'error', hint: 'Бюджет не выделен' };
   }
   return { label: 'Ожидает вашего решения', tone: 'warning', hint: 'Ожидает решения' };
 }

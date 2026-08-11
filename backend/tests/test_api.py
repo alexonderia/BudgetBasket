@@ -493,13 +493,14 @@ def test_approval_register_can_approve_all_available_article_lines(tmp_path):
         params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
         headers=employee,
     ).json()["items"]
-    decided = next(item for item in rows if item["status"] == "approved")
+    decided = next(item for item in rows if item["name"] == "Article line 0")
+    assert decided["status"] == "on_review"
     assert decided["status_context"]["editability"]["mode"] == "readonly"
     assert decided["status_context"]["last_decision"]["action"] == "cfo_item_decided"
     assert decided["status_context"]["last_decision"]["by_name"]
     assert decided["is_cfo_review_actionable"] is False
     assert len(result.json()) >= 2
-    assert all(item["status"] == "approved" for item in result.json())
+    assert all(item["status"] == "on_review" for item in result.json())
     assert article["aggregates"]["cfo_review_actionable_requests"] >= 1
 
 

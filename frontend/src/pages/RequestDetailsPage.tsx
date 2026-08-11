@@ -21,6 +21,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import Alert from '@mui/material/Alert';
+import AlertTitle from '@mui/material/AlertTitle';
 import Checkbox from '@mui/material/Checkbox';
 import Accordion from '@mui/material/Accordion';
 import AccordionDetails from '@mui/material/AccordionDetails';
@@ -73,6 +74,7 @@ import { ANALYTICS_FIELD_KEYS, ANALYTICS_FIELD_LABELS, analyticsFieldValue, canE
 import { EditableAnalyticsCell } from '../components/EditableAnalyticsCell';
 import { InlineEditMoneyCell, InlineEditTextCell } from '../components/inlineEdit';
 import { getApiErrorMessage } from '../utils/apiErrors';
+import { requestWorkflowRequirement, stepAssignee, workflowPersonName, workflowStageLabel } from '../utils/workflowPresentation';
 
 const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx,.zip';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
@@ -916,7 +918,9 @@ function ItemsTable({
   const [selectedItems, setSelectedItems] = useState<Map<string, BudgetItem>>(new Map());
   const [bulkDecision, setBulkDecision] = useState<{ items: BudgetItem[]; decision: BulkItemDecision } | null>(null);
   const [bulkDecisionComment, setBulkDecisionComment] = useState('');
-  const canEmployeeChange = user.role === 'employee' && request.status === 'draft' && !request.frozen;
+  const canEmployeeChange = user.role === 'employee'
+    && (request.status === 'draft' || Boolean(request.available_actions?.includes('edit_revision')))
+    && !request.frozen;
   const disabledForEmployee = !canEmployeeChange;
   const employeeCanEdit = canEmployeeChange;
   // Downstream decisions are made from the CFO-position workspace.
@@ -2367,7 +2371,12 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       onClearVisibleFilterValues={() => setRequestDeletePreviewVisibleFilterOptions(columnId, false)}
     />
   );
-  const canSubmit = user.role === 'employee' && request && request.status === 'draft' && !request.frozen && !itemsPending && allItems.length > 0;
+  const canSubmit = user.role === 'employee'
+    && request
+    && (request.status === 'draft' || request.available_actions?.includes('submit'))
+    && !request.frozen
+    && !itemsPending
+    && allItems.length > 0;
   const canCancel = user.role === 'employee' && request && request.status === 'draft' && !request.frozen;
   const canFinalize = false;
   const canApproveAllItems = false;
@@ -2402,6 +2411,30 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   if (request.id !== id) {
     return <Typography>Загрузка заявки...</Typography>;
   }
+
+  const activeRouteStep = resolvedApprovalRoute.length
+    ? resolvedApprovalRoute[approvalRouteActiveIndex(resolvedApprovalRoute)]?.step
+    : null;
+  const requestRequirement = request.status === 'draft' && user.role !== 'employee'
+    ? 'Заявка находится в черновике сотрудника и ещё не отправлена на проверку.'
+    : request.available_actions?.includes('edit_revision') && user.role !== 'employee'
+      ? 'Заявка возвращена на доработку. Ожидаются исправления и повторная отправка сотрудником.'
+      : requestWorkflowRequirement(request, activeRouteStep);
+  const activeRouteOwner = activeRouteStep ? stepAssignee(activeRouteStep) : null;
+  const requestGuidanceSeverity = request.status === 'approved'
+    ? 'success'
+    : request.status === 'rejected'
+      ? 'error'
+      : request.status === 'draft' || request.available_actions?.includes('edit_revision')
+        ? 'warning'
+        : 'info';
+  const userMustAct = Boolean(
+    (user.role === 'employee' && (
+      request.available_actions?.includes('submit')
+      || request.available_actions?.includes('edit_revision')
+    ))
+    || (activeRouteOwner?.id && activeRouteOwner.id === user.id && ['on_approval', 'on_revision'].includes(activeRouteStep?.request_status || activeRouteStep?.status || '')),
+  );
 
   return (
     <Stack spacing={3}>
@@ -2514,6 +2547,15 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                   </Stack>
                 </Stack>
               </Stack>
+              <Alert severity={requestGuidanceSeverity} variant={userMustAct ? 'filled' : 'outlined'}>
+                <AlertTitle>{userMustAct ? 'Требуется ваше действие' : requestStatusLabels[request.status]}</AlertTitle>
+                {requestRequirement}
+                {activeRouteStep && request.status === 'on_review' && !request.available_actions?.includes('edit_revision') && (
+                  <Typography variant="caption" component="div" sx={{ mt: 0.5, opacity: 0.9 }}>
+                    Текущий этап: {workflowStageLabel(activeRouteStep)} · Исполнитель: {workflowPersonName(activeRouteOwner)}
+                  </Typography>
+                )}
+              </Alert>
               {request.frozen && (
                 <Alert severity="warning" variant="outlined">
                   {request.fixed

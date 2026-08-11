@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   AGGREGATE_DISPLAY_LABELS,
   DEFAULT_COLUMN_VISIBILITY,
+  REGISTRY_COLUMNS,
+  applyWorkflowColumnVisibility,
   groupReadiness,
   groupReadinessPercent,
   groupRegistryStatus,
@@ -38,6 +40,27 @@ describe('registry display helpers', () => {
     expect(groupRegistryStatus({ ...sampleAggregates, collecting_requests: 1, requests_count: 1 }).label).toBe('Черновик');
     expect(groupRegistryStatus({ ...sampleAggregates, cfo_review_actionable_requests: 1 }).label).toBe('Ожидает вашего решения');
     expect(groupRegistryStatus({ ...sampleAggregates, cfo_review_completable_requests: 1 }).label).toBe('Завершите проверку');
+    expect(groupRegistryStatus({ ...sampleAggregates, aggregate_status: 'rejected', rejected_rows: 2, pending_rows: 0, cfo_review_completable_requests: 1, revision_rows: 1 }).label).toBe('Завершите проверку');
+    expect(groupRegistryStatus({ ...sampleAggregates, aggregate_status: 'approved', revision_rows: 1 }).label).toBe('На доработке');
+  });
+
+  it('keeps rejection distinct from revision', () => {
+    expect(rowRegistryStatus({ ...sampleRow, status: 'rejected' }).label).toBe('Отклонено');
+    expect(rowRegistryStatus({ ...sampleRow, is_revision: true, is_revision_actionable: false }).label).toBe('На доработке');
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      is_revision: true,
+      status_context: {
+        editability: {
+          can_decide: false,
+          can_edit_amount: false,
+          can_edit_analytics: false,
+          mode: 'readonly',
+          summary: 'Решение принято',
+          detail: 'Повторное решение сохранено',
+        },
+      },
+    }).label).toBe('Согласовано после доработки');
   });
 
   it('does not treat already decided lines as actionable', () => {
@@ -111,5 +134,15 @@ describe('registry display helpers', () => {
     expect(ids.slice(0, 4)).toEqual(['select', 'structure', 'status', 'requested']);
     expect(ids).not.toContain('comment');
     expect(ids).not.toContain('readiness');
+  });
+
+  it('keeps the required financial columns and one status/action column for every role', () => {
+    expect(REGISTRY_COLUMNS.filter((column) => ['structure', 'requested', 'approved', 'rejected', 'status'].includes(column.id)).map((column) => column.label))
+      .toEqual(['Структура', 'План, ₽', 'Факт, ₽', 'Корректировка, ₽', 'Статус']);
+
+    const visibility = applyWorkflowColumnVisibility({ ...DEFAULT_COLUMN_VISIBILITY, status: false, your_step: true, actions: true }, 'economist');
+    expect(visibility.status).toBe(true);
+    expect(visibility.your_step).toBe(false);
+    expect(visibility.actions).toBe(false);
   });
 });

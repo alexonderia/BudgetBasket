@@ -1,4 +1,7 @@
-import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
+import Chip from '@mui/material/Chip';
+import Stack from '@mui/material/Stack';
+import Typography from '@mui/material/Typography';
 import type { ApprovalRegisterRow, RegisterAggregates, RegisterStepDecisionDisplay } from '../../types';
 import type { RegistryStatusDisplay } from './registryConfig';
 import { InlineEditSelectCell } from '../inlineEdit';
@@ -10,17 +13,43 @@ import {
 import { WorkflowStepCell } from './registryWorkflowStepVisual';
 
 export type RegistryRowDecision = 'approved' | 'approved_with_changes' | 'rejected';
+type RegistryStatusAction = '' | RegistryRowDecision;
 
-const STATUS_EDIT_OPTIONS: Array<{ value: RegistryRowDecision; label: string }> = [
-  { value: 'approved', label: 'Согласовано' },
-  { value: 'approved_with_changes', label: 'Согласовано с корректировкой' },
-  { value: 'rejected', label: 'На доработку' },
+const STATUS_EDIT_OPTIONS: Array<{ value: RegistryStatusAction; label: string }> = [
+  { value: '', label: 'Выберите действие' },
+  { value: 'approved', label: 'Согласовать' },
+  { value: 'rejected', label: 'Отклонить' },
 ];
 
-function rowDecisionValue(item: ApprovalRegisterRow): RegistryRowDecision {
-  if (item.status === 'rejected') return 'rejected';
-  if (item.status === 'approved_with_changes') return 'approved_with_changes';
-  return 'approved';
+function statusActionHint(item: ApprovalRegisterRow, active: boolean) {
+  if (item.fixed) return 'Действия недоступны';
+  if (item.is_revision_actionable) return 'Действие: исправить и повторно отправить';
+  if (active) return 'Действие: согласовать или отклонить';
+  return null;
+}
+
+function StatusWithLifecycle({
+  item,
+  active,
+  children,
+}: {
+  item: ApprovalRegisterRow;
+  active: boolean;
+  children: ReactNode;
+}) {
+  const actionHint = statusActionHint(item, active);
+  return (
+    <Stack spacing={0.35} sx={{ minWidth: 0 }}>
+      {children}
+      {(item.frozen || item.fixed) && (
+        <Stack direction="row" spacing={0.35} flexWrap="wrap" useFlexGap>
+          {item.frozen && <Chip size="small" color="info" label="Заморожено" sx={{ height: 19, fontSize: 10 }} />}
+          {item.fixed && <Chip size="small" color="success" label="Зафиксировано" sx={{ height: 19, fontSize: 10 }} />}
+        </Stack>
+      )}
+      {actionHint && <Typography variant="caption" color={active ? 'warning.dark' : 'text.secondary'} sx={{ fontSize: 10, lineHeight: 1.2 }}>{actionHint}</Typography>}
+    </Stack>
+  );
 }
 
 export function RegistryStatusCell({ status, item }: { status: RegistryStatusDisplay; item?: ApprovalRegisterRow }) {
@@ -63,24 +92,27 @@ export function EditableRegistryStatusCell({
     : rowStatusPresentation(status, item);
 
   if (!active) {
-    return <StatusVisualCell presentation={presentation} />;
+    return <StatusWithLifecycle item={item} active={false}><StatusVisualCell presentation={presentation} /></StatusWithLifecycle>;
   }
 
   return (
-    <InlineEditSelectCell
-      value={rowDecisionValue(item)}
-      editable
-      options={STATUS_EDIT_OPTIONS}
-      display={<StatusVisualCell presentation={presentation} />}
-      ariaLabel="Статус строки"
-      title="Нажмите, чтобы изменить статус"
-      onCommit={(decision) => {
-        if (decision === 'rejected' || decision === 'approved_with_changes') {
-          onDecision(decision);
-          return;
-        }
-        onCommit(decision);
-      }}
-    />
+    <StatusWithLifecycle item={item} active>
+      <InlineEditSelectCell
+        value=""
+        editable
+        options={STATUS_EDIT_OPTIONS}
+        display={<StatusVisualCell presentation={presentation} />}
+        ariaLabel="Статус и действие по строке"
+        title="Выберите доступное действие по строке"
+        onCommit={(decision) => {
+          if (!decision) return;
+          if (decision === 'rejected') {
+            onDecision(decision);
+            return;
+          }
+          onCommit(decision);
+        }}
+      />
+    </StatusWithLifecycle>
   );
 }

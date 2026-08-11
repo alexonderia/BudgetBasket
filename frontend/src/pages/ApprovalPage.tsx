@@ -56,6 +56,7 @@ import CfoPositionsPage from './CfoPositionsPage';
 import { money, requestStatusLabels, roleLabels, stepStatusLabels } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
 import { downloadAuthorized } from '../utils/download';
+import { stepViewerRequirement } from '../utils/workflowPresentation';
 
 type EdgeDeletePreviewNode = {
   id: string;
@@ -515,12 +516,16 @@ function ApprovalGraph({
     const moduleCardWidth = 210;
     const moduleCardHeight = 102;
     const nodeHeightFor = (step: ApprovalStep) => {
-      if (step.unit_id) return leafNodeHeight;
+      const isViewerStep = Boolean(viewerUserId) && (
+        step.unit_id ? step.responsible?.id === viewerUserId : step.user?.id === viewerUserId
+      );
+      const viewerMessageHeight = isViewerStep ? 28 : 0;
+      if (step.unit_id) return leafNodeHeight + viewerMessageHeight;
       const contactsExpanded = openContactStepId === step.id;
-      if (step.is_economist_step) return contactsExpanded ? 220 : 186;
-      return step.user?.role === 'zgd'
+      if (step.is_economist_step) return (contactsExpanded ? 220 : 186) + viewerMessageHeight;
+      return (step.user?.role === 'zgd'
         ? (contactsExpanded ? 192 : 160)
-        : (contactsExpanded ? 208 : 160);
+        : (contactsExpanded ? 208 : 160)) + viewerMessageHeight;
     };
     const nodeHeights = new Map(steps.map((step) => [step.id, nodeHeightFor(step)]));
     const horizontalGap = 112;
@@ -697,7 +702,7 @@ function ApprovalGraph({
       width: zgdX + nodeWidth + 112,
       height: maxY + 96,
     };
-  }, [steps, openContactStepId, cfoOrder]);
+  }, [steps, openContactStepId, cfoOrder, viewerUserId]);
 
   useEffect(() => {
     const viewport = graphViewportRef.current;
@@ -1019,6 +1024,7 @@ function ApprovalGraph({
           const isContactOpen = openContactStepId === step.id;
           const displayStatus = stepDisplayStatus(step);
           const statusTone = graphStepStatusTones[displayStatus];
+          const viewerRequirement = viewerUserId ? stepViewerRequirement(step, viewerUserId) : null;
           return (
             <Card
               key={step.id}
@@ -1090,6 +1096,15 @@ function ApprovalGraph({
                       '& .MuiChip-label': { display: 'block', py: 0.45, whiteSpace: 'normal', lineHeight: 1.2 },
                     }}
                   />
+                  {viewerRequirement && (
+                    <Typography
+                      variant="caption"
+                      fontWeight={700}
+                      sx={{ color: displayStatus === 'on_approval' || displayStatus === 'on_revision' ? 'warning.dark' : 'text.secondary' }}
+                    >
+                      {viewerRequirement}
+                    </Typography>
+                  )}
                 </Stack>
                 {isLeaf ? (
                   <>

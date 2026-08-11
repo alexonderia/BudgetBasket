@@ -61,6 +61,8 @@ export const STATUS_LEGEND_SPECS: StatusVisualSpec[] = [
   { icon: CheckCircleOutlineIcon, text: 'Согласовано', variant: 'success', hint: '' },
   { icon: CancelOutlinedIcon, text: 'Отклонено', variant: 'error', hint: '' },
   { icon: ErrorOutlineIcon, text: 'Ваше решение', variant: 'action', hint: '' },
+  { icon: RestartAltOutlinedIcon, text: 'На доработке', variant: 'revision', hint: '' },
+  { icon: ScheduleOutlinedIcon, text: 'Ожидание', variant: 'neutral', hint: '' },
   { icon: EditNoteOutlinedIcon, text: 'Черновик', variant: 'muted', hint: '' },
 ];
 
@@ -87,7 +89,7 @@ function groupMetaParts(aggregates: RegisterAggregates, options?: { excludeActio
     parts.push(`${actionable} требуют решения`);
   }
   if (aggregates.rejected_rows > 0) {
-    parts.push(`${aggregates.rejected_rows} на доработке`);
+    parts.push(`${aggregates.rejected_rows} отклонено`);
   }
   const waiting = Math.max(aggregates.pending_rows - actionable, 0);
   if (waiting > 0) {
@@ -133,12 +135,12 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
     case 'Отклонено':
       return withContext({
         primary: {
-          icon: item?.frozen ? RestartAltOutlinedIcon : CancelOutlinedIcon,
-          text: item?.frozen ? 'На доработке' : 'Отклонено',
-          variant: item?.frozen ? 'revision' : 'error',
+          icon: CancelOutlinedIcon,
+          text: 'Отклонено',
+          variant: 'error',
           hint,
         },
-        meta: item?.frozen ? 'Ожидает исправлений' : 'Требуется исправление',
+        meta: 'Бюджет по строке не выделен',
         hint,
       });
     case 'Черновик':
@@ -224,6 +226,29 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
     };
   }
 
+  if (aggregates.cfo_review_completable_requests > 0) {
+    return {
+      primary: {
+        icon: ErrorOutlineIcon,
+        text: aggregates.cfo_review_completable_requests === 1
+          ? 'Завершите проверку'
+          : `Завершите проверку · ${aggregates.cfo_review_completable_requests}`,
+        variant: 'action',
+        hint,
+      },
+      meta: meta || 'Строки проверены, заявки ещё не переданы в маршрут',
+      hint,
+    };
+  }
+
+  if ((aggregates.revision_rows || 0) > 0) {
+    return {
+      primary: { icon: RestartAltOutlinedIcon, text: 'На доработке', variant: 'revision', hint },
+      meta: `${aggregates.revision_rows} ${pluralRows(aggregates.revision_rows || 0)} возвращено`,
+      hint,
+    };
+  }
+
   if (aggregates.aggregate_status === 'approved') {
     return {
       primary: { icon: CheckCircleOutlineIcon, text: 'Согласовано', variant: 'success', hint },
@@ -273,21 +298,6 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
     return {
       primary: { icon: EditNoteOutlinedIcon, text: 'Черновик', variant: 'muted', hint },
       meta: meta || status.shortHint,
-      hint,
-    };
-  }
-
-  if (aggregates.cfo_review_completable_requests > 0) {
-    return {
-      primary: {
-        icon: ErrorOutlineIcon,
-        text: aggregates.cfo_review_completable_requests === 1
-          ? 'Завершите проверку'
-          : `Завершите проверку · ${aggregates.cfo_review_completable_requests}`,
-        variant: 'action',
-        hint,
-      },
-      meta: meta || 'Строки проверены, заявки ещё не переданы в маршрут',
       hint,
     };
   }

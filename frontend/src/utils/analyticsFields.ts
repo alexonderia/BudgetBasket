@@ -27,13 +27,14 @@ export function analyticsFieldValue(item: Partial<Record<AnalyticsFieldKey, stri
 
 export function canEditItemAnalytics(item: {
   status?: string;
+  frozen?: boolean;
   fixed?: boolean;
   status_context?: { editability?: { can_edit_analytics?: boolean } };
 }): boolean {
   if (item.status_context?.editability) {
     return item.status_context.editability.can_edit_analytics ?? false;
   }
-  return item.status !== 'deleted' && !item.fixed;
+  return item.status !== 'deleted' && !item.frozen && !item.fixed;
 }
 
 export function buildRegisterFilterParams(

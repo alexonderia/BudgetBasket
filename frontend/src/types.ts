@@ -114,6 +114,7 @@ export interface RegisterAggregates {
   total_rows: number;
   approved_rows: number;
   rejected_rows: number;
+  revision_rows?: number;
   pending_rows: number;
   requests_count: number;
   modules_count: number;
@@ -224,6 +225,8 @@ export interface ApprovalRegisterRow {
   is_cfo_review: boolean;
   is_cfo_review_actionable: boolean;
   is_cfo_review_completable?: boolean;
+  is_revision?: boolean;
+  is_revision_actionable?: boolean;
   position_id: string | null;
   is_in_approval: boolean;
   is_approval_actionable: boolean;

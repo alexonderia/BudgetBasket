@@ -8,7 +8,13 @@ from fastapi.encoders import jsonable_encoder
 
 from app.models import APPROVED_ITEM_STATUSES, ItemStatus, RequestStatus
 from app.repositories.base import Repository
-from app.services.common import cfo_position_current_step_id, get_required, request_author_id
+from app.services.common import (
+    cfo_position_current_step_id,
+    get_required,
+    request_author_id,
+    request_cfo_review_completed,
+    request_returned_item_ids,
+)
 from app.services.permission_service import PermissionService
 
 
@@ -142,7 +148,10 @@ class RequestService:
         elif request.get("status") == RequestStatus.cancelled:
             actions.append("restore")
         elif request.get("status") == RequestStatus.on_review:
-            actions.append("complete_cfo_review")
+            if self.returned_item_ids(request["id"]):
+                actions.extend(["edit_revision", "submit"])
+            elif not self.cfo_review_completed(request["id"]):
+                actions.append("complete_cfo_review")
         return {
             **request,
             "sum": summary["planned_sum"],
@@ -214,6 +223,48 @@ class RequestService:
             if row.get("cfo_position_id") == position_id and row.get("status") != ItemStatus.deleted
         ]
 
+    def cfo_review_completed(self, request_id: str, *, repo: Repository | None = None) -> bool:
+        return request_cfo_review_completed(repo or self.repo, request_id)
+
+    def returned_item_ids(self, request_id: str, *, repo: Repository | None = None) -> set[str]:
+        return request_returned_item_ids(repo or self.repo, request_id)
+
+    def _latest_cfo_decisions(
+        self,
+        request_id: str,
+        *,
+        repo: Repository | None = None,
+    ) -> dict[str, str]:
+        storage = repo or self.repo
+        decisions: dict[str, str] = {}
+        rows = sorted(
+            (
+                row for row in storage.load_all("req_logs")
+                if row.get("req_id") == request_id
+            ),
+            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        )
+        for row in rows:
+            log = row.get("log") or {}
+            if log.get("action") == "cfo_items_returned_for_revision":
+                for item_id in log.get("item_ids") or []:
+                    decisions.pop(str(item_id), None)
+                continue
+            if log.get("action") != "cfo_item_decided":
+                continue
+            item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
+            decision = log.get("decision")
+            if not decision:
+                decision = ((log.get("changes") or {}).get("status") or {}).get("to")
+            if not item_id or decision not in {
+                ItemStatus.approved,
+                ItemStatus.approved_with_changes,
+                ItemStatus.rejected,
+            }:
+                continue
+            decisions[str(item_id)] = str(decision)
+        return decisions
+
     def create_request(self, user: dict, payload: dict) -> dict:
         unit_id = payload["unit_id"]
         self.permissions.require_employee_unit_access(user, unit_id)
@@ -260,7 +311,14 @@ class RequestService:
 
     def submit(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
-        self.permissions.require_employee_edit_request(user, request)
+        is_revision = (
+            request.get("status") == RequestStatus.on_review
+            and bool(self.returned_item_ids(request_id))
+        )
+        if is_revision:
+            self.permissions.require_employee_unit_access(user, request["unit_id"])
+        else:
+            self.permissions.require_employee_edit_request(user, request)
         items = self._items(request_id)
         if not items:
             raise HTTPException(status_code=400, detail="Нельзя отправить заявку без строк")
@@ -270,23 +328,137 @@ class RequestService:
         responsible_id = self.permissions.cfo_responsible_id(cfo_id)
         if not responsible_id:
             raise HTTPException(status_code=409, detail="Для ЦФО не назначен ответственный")
+        approval_service = getattr(self, "approval_service", None)
+        if approval_service:
+            approval_service.sync_automatic_steps(user)
         event_id = str(uuid4())
         with self.repo.transaction() as repo:
             locked = repo.lock_by_id("requests", request_id)
-            if not locked or locked.get("status") != RequestStatus.draft:
+            returned_ids = self.returned_item_ids(request_id, repo=repo)
+            revision_submit = bool(
+                locked
+                and locked.get("status") == RequestStatus.on_review
+                and returned_ids
+            )
+            if not locked or (
+                locked.get("status") != RequestStatus.draft and not revision_submit
+            ):
                 raise HTTPException(status_code=409, detail="Заявка уже была отправлена")
-            updated = repo.update("requests", request_id, {"status": RequestStatus.on_review})
+
+            cfo_step = next(
+                (step for step in repo.load_all("steps") if step.get("unit_id") == cfo_id),
+                None,
+            )
+            if not cfo_step:
+                raise HTTPException(status_code=409, detail="Для ЦФО не настроен нижний шаг маршрута")
+
+            positions = repo.load_all("cfo_positions")
+            by_key: dict[tuple, dict] = {}
+            for position in positions:
+                key = self._position_key(repo, position["cfo_unit_id"], position, position)
+                if key in by_key and by_key[key]["id"] != position["id"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="В базе обнаружены дублирующие позиции одной статьи ЦФО",
+                    )
+                by_key[key] = position
+
+            affected_positions: set[str] = set()
+            link_items = [
+                item for item in self._items(request_id, repo=repo)
+                if not revision_submit or item["id"] in returned_ids
+            ]
+            for item in link_items:
+                if item.get("fixed") or item.get("frozen"):
+                    raise HTTPException(status_code=409, detail="Закрытую строку нельзя отправить повторно")
+                key = self._position_key(repo, cfo_id, locked, item)
+                position = by_key.get(key)
+                if position:
+                    position_items = self._items_for_position(repo, position["id"])
+                    current_step_id = cfo_position_current_step_id(repo, position)
+                    if any(row.get("frozen") or row.get("fixed") for row in position_items):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Нельзя дополнить замороженную или зафиксированную позицию",
+                        )
+                    if current_step_id not in {None, cfo_step["id"]}:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Позиция уже передана выше и не принимает поздние строки",
+                        )
+                    position = repo.update(
+                        "cfo_positions",
+                        position["id"],
+                        {"status": "on_review", "current_step_id": cfo_step["id"]},
+                    )
+                else:
+                    position = repo.create(
+                        "cfo_positions",
+                        {
+                            "budget_year": locked["budget_year"],
+                            "cfo_unit_id": cfo_id,
+                            "dds_id": key[2],
+                            "invest_id": key[3],
+                            "status": "on_review",
+                            "current_step_id": cfo_step["id"],
+                        },
+                    )
+                    by_key[key] = position
+                before_item = dict(item)
+                linked = (
+                    repo.update("req_items", item["id"], {"cfo_position_id": position["id"]})
+                    if item.get("cfo_position_id") != position["id"]
+                    else item
+                )
+                repo.create(
+                    "cfo_position_logs",
+                    {
+                        "cfo_position_id": position["id"],
+                        "user_id": user["id"],
+                        "step_id": cfo_step["id"],
+                        "log": jsonable_encoder(
+                            {
+                                "event_id": event_id,
+                                "action": "position_item_linked" if not revision_submit else "position_item_resubmitted",
+                                "stage": "cfo_review",
+                                "entity": "req_item",
+                                "entity_id": item["id"],
+                                "request_id": request_id,
+                                "req_item_id": item["id"],
+                                "cfo_position_id": position["id"],
+                                "step_id": cfo_step["id"],
+                                "changes": {
+                                    "cfo_position_id": {
+                                        "from": before_item.get("cfo_position_id"),
+                                        "to": linked.get("cfo_position_id"),
+                                    }
+                                },
+                                "comment": None,
+                            }
+                        ),
+                    },
+                )
+                affected_positions.add(position["id"])
+
+            updated = (
+                locked
+                if revision_submit
+                else repo.update("requests", request_id, {"status": RequestStatus.on_review})
+            )
             self.log(
                 user,
                 request_id,
-                "request_submitted_to_cfo",
+                "request_revision_resubmitted_to_cfo" if revision_submit else "request_submitted_to_cfo",
                 before=locked,
                 after=updated,
                 event_id=event_id,
                 stage="cfo_review",
                 cfo_unit_id=cfo_id,
+                cfo_position_ids=sorted(affected_positions),
+                item_ids=sorted(returned_ids) if revision_submit else [row["id"] for row in items],
                 repo=repo,
             )
+            repo.update("steps", cfo_step["id"], {"status": "on_approval"})
             if getattr(self, "chat_service", None):
                 self.chat_service.system_message_for_request(
                     updated,
@@ -302,6 +474,7 @@ class RequestService:
                 )
         result = self.public_request(updated)
         result["notification_user_ids"] = [responsible_id]
+        result["affected_cfo_position_ids"] = sorted(affected_positions)
         return result
 
     def cancel(self, user: dict, request_id: str) -> dict:
@@ -320,13 +493,20 @@ class RequestService:
         self.log(user, request_id, "request_restored", before=request, after=updated)
         return self.public_request(updated)
 
-    @staticmethod
-    def _position_key(cfo_id: str, request: dict, item: dict) -> tuple:
+    def _position_key(self, repo: Repository, cfo_id: str, request: dict, item: dict) -> tuple:
+        dds_id = self._catalog_article_id(
+            {row["id"]: row for row in repo.load_all("dds_catalog")},
+            item.get("dds_id"),
+        )
+        invest_id = self._catalog_article_id(
+            {row["id"]: row for row in repo.load_all("invests_catalog")},
+            item.get("invest_id"),
+        )
         return (
             int(request["budget_year"]),
             cfo_id,
-            item.get("dds_id"),
-            item.get("invest_id"),
+            dds_id,
+            invest_id,
         )
 
     def complete_cfo_review(self, user: dict, request_id: str) -> dict:
@@ -337,98 +517,34 @@ class RequestService:
             self.permissions.require_cfo_request_access(user, request)
             if request.get("status") != RequestStatus.on_review:
                 raise HTTPException(status_code=409, detail="Заявка не находится на проверке ЦФО")
+            if self.cfo_review_completed(request_id, repo=repo):
+                raise HTTPException(status_code=409, detail="Проверка ЦФО уже завершена")
+            if self.returned_item_ids(request_id, repo=repo):
+                raise HTTPException(status_code=409, detail="Заявка находится на доработке у модуля")
             items = self._items(request_id, repo=repo)
             if not items:
                 raise HTTPException(status_code=409, detail="У заявки нет активных строк")
-            pending = [item["id"] for item in items if item.get("status") == ItemStatus.on_review]
+            decisions = self._latest_cfo_decisions(request_id, repo=repo)
+            pending = [item["id"] for item in items if item["id"] not in decisions]
             if pending:
                 raise HTTPException(
                     status_code=409,
                     detail={"message": "Не все строки рассмотрены", "item_ids": pending},
                 )
-            accepted = [item for item in items if item.get("status") in APPROVED_ITEM_STATUSES]
+            accepted = [
+                item for item in items
+                if decisions.get(item["id"]) in APPROVED_ITEM_STATUSES
+            ]
             cfo_id = self.permissions.cfo_for_module(request["unit_id"])
             if not cfo_id:
                 raise HTTPException(status_code=409, detail="Для модуля не определен ЦФО")
             event_id = str(uuid4())
-            positions = repo.load_all("cfo_positions")
-            by_key = {
-                (
-                    int(item["budget_year"]),
-                    item["cfo_unit_id"],
-                    item.get("dds_id"),
-                    item.get("invest_id"),
-                ): item
-                for item in positions
-            }
-            affected: list[str] = []
-            late_position_ids: list[str] = []
-            for item in accepted:
-                key = self._position_key(cfo_id, request, item)
-                position = by_key.get(key)
-                position_items = self._items_for_position(repo, position["id"]) if position else []
-                if position and any(row.get("frozen") or row.get("fixed") for row in position_items):
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Нельзя дополнить замороженную или зафиксированную позицию",
-                    )
-                if not position:
-                    position = repo.create(
-                        "cfo_positions",
-                        {
-                            "budget_year": request["budget_year"],
-                            "cfo_unit_id": cfo_id,
-                            "dds_id": item.get("dds_id"),
-                            "invest_id": item.get("invest_id"),
-                            "status": "waiting",
-                            "current_step_id": None,
-                        },
-                    )
-                    by_key[key] = position
-                elif cfo_position_current_step_id(repo, position) and not all(row.get("frozen") for row in position_items):
-                    late_position_ids.append(position["id"])
-                    if position.get("status") == "approved":
-                        position = repo.update(
-                            "cfo_positions",
-                            position["id"],
-                            {"status": "on_approval"},
-                        )
-                        by_key[key] = position
-                linked = repo.update(
-                    "req_items",
-                    item["id"],
-                    {"cfo_position_id": position["id"]},
-                )
-                repo.create(
-                    "cfo_position_logs",
-                    {
-                        "cfo_position_id": position["id"],
-                        "user_id": user["id"],
-                        "step_id": cfo_position_current_step_id(repo, position),
-                        "log": jsonable_encoder(
-                            {
-                                "event_id": event_id,
-                                "action": "position_item_linked",
-                                "stage": "cfo_review",
-                                "entity": "req_item",
-                                "entity_id": item["id"],
-                                "request_id": request_id,
-                                "req_item_id": item["id"],
-                                "cfo_position_id": position["id"],
-                                "step_id": cfo_position_current_step_id(repo, position),
-                                "changes": {
-                                    "cfo_position_id": {
-                                        "from": item.get("cfo_position_id"),
-                                        "to": linked.get("cfo_position_id"),
-                                    }
-                                },
-                                "comment": None,
-                            }
-                        ),
-                    },
-                )
-                affected.append(position["id"])
-            next_status = RequestStatus.approved if accepted else RequestStatus.rejected
+            affected = sorted({
+                item["cfo_position_id"] for item in items if item.get("cfo_position_id")
+            })
+            if len(affected) == 0:
+                raise HTTPException(status_code=409, detail="Строки заявки не связаны с позициями ЦФО")
+            next_status = RequestStatus.rejected if not accepted else RequestStatus.on_review
             updated = repo.update(
                 "requests",
                 request_id,
@@ -445,10 +561,11 @@ class RequestService:
                 event_id=event_id,
                 stage="cfo_review",
                 cfo_unit_id=cfo_id,
-                cfo_position_ids=sorted(set(affected)),
+                cfo_position_ids=affected,
                 accepted_item_ids=[item["id"] for item in accepted],
                 rejected_item_ids=[
-                    item["id"] for item in items if item.get("status") == ItemStatus.rejected
+                    item["id"] for item in items
+                    if decisions.get(item["id"]) == ItemStatus.rejected
                 ],
                 repo=repo,
             )
@@ -460,32 +577,12 @@ class RequestService:
                     {"request_id": request_id, "status": str(next_status)},
                     repo=repo,
                 )
-                economist_id = self.permissions.cfo_economist_id(cfo_id)
-                if economist_id:
-                    for position_id in sorted(set(late_position_ids)):
-                        self.notifications.create(
-                            economist_id,
-                            "cfo_position.items_changed",
-                            {
-                                "cfo_position_id": position_id,
-                                "request_id": request_id,
-                                "reload_required": True,
-                            },
-                            repo=repo,
-                        )
         return {
             **self.public_request(updated),
-            "affected_cfo_position_ids": sorted(set(affected)),
+            "affected_cfo_position_ids": affected,
             "notification_user_ids": [
                 user_id
-                for user_id in {
-                    author_id,
-                    *(
-                        [self.permissions.cfo_economist_id(cfo_id)]
-                        if late_position_ids and self.permissions.cfo_economist_id(cfo_id)
-                        else []
-                    ),
-                }
+                for user_id in {author_id}
                 if user_id
             ],
         }
@@ -543,12 +640,20 @@ class RequestService:
             item
             for item in self.repo.load_all("req_items")
             if item.get("cfo_position_id") == position_id
-            and item.get("status") in APPROVED_ITEM_STATUSES
+            and item.get("status") != ItemStatus.deleted
             and (is_income is None or bool(item.get("is_income", False)) == is_income)
         ]
         return (
-            sum(float(item.get("sum_plan") or 0) for item in items),
-            sum(float(item.get("sum_fact") or 0) for item in items),
+            sum(
+                float(item.get("sum_plan") or 0)
+                for item in items
+                if item.get("status") != ItemStatus.rejected
+            ),
+            sum(
+                float(item.get("sum_fact") or 0)
+                for item in items
+                if item.get("status") in APPROVED_ITEM_STATUSES
+            ),
             len(items),
         )
 
@@ -653,13 +758,14 @@ class RequestService:
             item["id"]: item
             for item in self.repo.load_all("dds_catalog" if kind == "dds" else "invests_catalog")
         }
+        requested_article_id = self._catalog_article_id(catalog, article_id)
         for position in self._visible_positions(user, is_income=is_income):
             if unit_id and position.get("cfo_unit_id") != unit_id:
                 continue
             leaf_id = position.get(f"{kind}_id")
             resolved = self._catalog_article_id(catalog, leaf_id)
             # Accept both article (parent) and category (leaf) keys for drill-down.
-            if leaf_id != article_id and resolved != article_id:
+            if leaf_id != article_id and resolved != requested_article_id:
                 continue
             planned, approved, count = self._position_sum(position["id"], is_income=is_income)
             result.append(
@@ -972,7 +1078,7 @@ class RequestService:
             tone = "success"
             resolved_amount = amount
         elif status == ItemStatus.rejected:
-            label = "На доработке"
+            label = "Отклонено"
             tone = "error"
             resolved_amount = 0.0 if amount is None else amount
         elif status == ItemStatus.on_review:
@@ -1245,6 +1351,8 @@ class RequestService:
     ) -> dict | None:
         if entry.get("fixed"):
             return None
+        if entry.get("is_revision"):
+            return None
         if entry.get("is_cfo_review") and entry.get("status") == ItemStatus.on_review:
             responsible_id = self.permissions.cfo_responsible_id(cfo_id) if cfo_id else None
             return {
@@ -1288,7 +1396,13 @@ class RequestService:
     ) -> dict:
         can_edit_analytics = (
             entry.get("status") != ItemStatus.deleted
+            and not entry.get("frozen")
             and not entry.get("fixed")
+            and (
+                bool(entry.get("is_revision_actionable"))
+                or bool(entry.get("is_cfo_review_actionable"))
+                or bool(entry.get("is_approval_actionable"))
+            )
         )
         can_decide = bool(entry.get("is_approval_actionable")) or bool(
             entry.get("is_cfo_review_actionable")
@@ -1315,14 +1429,27 @@ class RequestService:
                 "summary": "Зафиксировано",
                 "detail": detail,
             }
-        if entry.get("frozen") and entry.get("status") == ItemStatus.rejected:
+        if entry.get("frozen"):
             return {
                 "can_decide": False,
                 "can_edit_amount": False,
-                "can_edit_analytics": can_edit_analytics,
-                "mode": "readonly",
-                "summary": "На доработке у автора",
-                "detail": "Строка возвращена на доработку и заморожена до исправлений автором заявки. Поля аналитики можно заполнять",
+                "can_edit_analytics": False,
+                "mode": "locked",
+                "summary": "Заморожено",
+                "detail": "Строка заморожена. Для изменения требуется явная разморозка.",
+            }
+        if entry.get("is_revision"):
+            can_edit = bool(entry.get("is_revision_actionable"))
+            return {
+                "can_decide": False,
+                "can_edit_amount": can_edit,
+                "can_edit_analytics": can_edit,
+                "mode": "editable" if can_edit else "readonly",
+                "summary": "На доработке",
+                "detail": (
+                    "Исправьте возвращённую строку и повторно отправьте заявку"
+                    if can_edit else "Строка возвращена ответственному модуля на доработку"
+                ),
             }
         if entry.get("status") in APPROVED_ITEM_STATUSES or entry.get("status") == ItemStatus.rejected:
             parts: list[str] = []
@@ -1480,17 +1607,27 @@ class RequestService:
         )
         request_pending_items: dict[str, int] = {}
         request_active_items: dict[str, int] = {}
+        cfo_decisions_by_request: dict[str, dict[str, str]] = {}
+        returned_by_request: dict[str, set[str]] = {}
+        cfo_completed_requests: set[str] = set()
+        for request_key in requests:
+            cfo_decisions_by_request[request_key] = self._latest_cfo_decisions(request_key)
+            returned_by_request[request_key] = self.returned_item_ids(request_key)
+            if self.cfo_review_completed(request_key):
+                cfo_completed_requests.add(request_key)
         for row in self.repo.load_all("req_items"):
             if row.get("status") == ItemStatus.deleted:
                 continue
             request_key = row["request_id"]
             request_active_items[request_key] = request_active_items.get(request_key, 0) + 1
-            if row.get("status") == ItemStatus.on_review:
+            if row["id"] not in cfo_decisions_by_request.get(request_key, {}):
                 request_pending_items[request_key] = request_pending_items.get(request_key, 0) + 1
         completable_cfo_review_requests: set[str] = set()
         if user.get("role") == "employee" and employee_cfo_ids:
             for request in requests.values():
                 if request.get("status") != RequestStatus.on_review:
+                    continue
+                if request["id"] in cfo_completed_requests or returned_by_request.get(request["id"]):
                     continue
                 cfo_for_request = self.permissions.cfo_for_module(request["unit_id"])
                 if cfo_for_request not in employee_cfo_ids:
@@ -1569,7 +1706,7 @@ class RequestService:
                 and not all(row.get("fixed") for row in self._items_for_position(self.repo, position["id"]))
                 and user.get("role") == "employee"
                 and position.get("cfo_unit_id") in employee_cfo_ids
-                and position.get("status") in {"waiting", "on_revision"}
+                and position.get("status") in {"waiting", "on_review", "on_revision"}
             )
 
         def approval_stage(position: dict | None, item: dict) -> str | None:
@@ -1607,7 +1744,16 @@ class RequestService:
             position_step_id = (
                 cfo_position_current_step_id(self.repo, position) if position else None
             )
-            is_cfo_review = request.get("status") == RequestStatus.on_review
+            returned_item_ids = returned_by_request.get(request["id"], set())
+            is_revision = (
+                item["id"] in returned_item_ids
+                or bool(position and position.get("status") == "on_revision")
+            )
+            is_cfo_review = (
+                request.get("status") == RequestStatus.on_review
+                and request["id"] not in cfo_completed_requests
+                and not returned_item_ids
+            )
             entry = {
                 "id": item["id"],
                 "request_id": request["id"],
@@ -1635,9 +1781,17 @@ class RequestService:
                 "is_cfo_review": is_cfo_review,
                 "is_cfo_review_actionable": (
                     is_cfo_review
-                    and item.get("status") == ItemStatus.on_review
+                    and item["id"] not in cfo_decisions_by_request.get(request["id"], {})
                     and user.get("role") == "employee"
                     and current_cfo_id in employee_cfo_ids
+                ),
+                "is_revision": is_revision,
+                "is_revision_actionable": (
+                    is_revision
+                    and user.get("role") == "employee"
+                    and request["unit_id"] in self.permissions.employee_module_ids(user["id"])
+                    and not item.get("frozen")
+                    and not item.get("fixed")
                 ),
                 "is_cfo_review_completable": request["id"] in completable_cfo_review_requests,
                 "position_id": position.get("id") if position else None,
@@ -1718,6 +1872,7 @@ class RequestService:
     def _register_aggregates(entries: list[dict]) -> dict:
         approved = sum(entry["status"] in {ItemStatus.approved, ItemStatus.approved_with_changes} for entry in entries)
         rejected = sum(entry["status"] == ItemStatus.rejected for entry in entries)
+        revision = sum(bool(entry.get("is_revision")) for entry in entries)
         pending = len(entries) - approved - rejected
         if not entries:
             aggregate_status = "no_data"
@@ -1776,6 +1931,7 @@ class RequestService:
             "total_rows": len(entries),
             "approved_rows": approved,
             "rejected_rows": rejected,
+            "revision_rows": revision,
             "pending_rows": pending,
             "requests_count": len({entry["request_id"] for entry in entries}),
             "modules_count": len({entry["module_id"] for entry in entries}),
@@ -1917,6 +2073,45 @@ class RequestService:
             raise HTTPException(status_code=409, detail="В выбранной группе нет строк, доступных для решения")
         return item_ids
 
+    def approval_register_group_cfo_revision_item_ids(
+        self,
+        user: dict,
+        group_type: str,
+        group_id: str,
+        **filters,
+    ) -> list[str]:
+        """Return visible lines that may be selected for a CFO review return.
+
+        A return may intentionally invalidate a decision already made in the
+        current, not-yet-completed CFO cycle, so this scope is wider than the
+        set of undecided/actionable lines used by bulk decisions.
+        """
+        field_by_group_type = {
+            "cfo": "cfo_id",
+            "article": "article_id",
+            "category": "category_id",
+            "module": "module_id",
+            "request": "request_id",
+        }
+        field = field_by_group_type.get(group_type)
+        if not field:
+            raise HTTPException(status_code=422, detail="Неизвестный уровень реестра")
+        item_ids = [
+            entry["id"]
+            for entry in self._register_entries(user, **filters)
+            if entry[field] == group_id
+            and entry.get("is_cfo_review")
+            and not entry.get("frozen")
+            and not entry.get("fixed")
+            and entry.get("status") != ItemStatus.deleted
+        ]
+        if not item_ids:
+            raise HTTPException(
+                status_code=409,
+                detail="В выбранной группе нет строк, доступных для возврата на доработку",
+            )
+        return item_ids
+
     def approval_register_group_position_ids(
         self,
         user: dict,
@@ -1999,7 +2194,10 @@ class RequestService:
         ]
         cfo_lines = [
             entry for entry in entries
-            if entry.get("is_cfo_review_actionable") and entry.get("status") == ItemStatus.on_review
+            if entry.get("is_cfo_review")
+            and not entry.get("frozen")
+            and not entry.get("fixed")
+            and entry.get("status") != ItemStatus.deleted
         ]
         workflow_lines = [
             entry for entry in entries

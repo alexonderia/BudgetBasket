@@ -75,7 +75,6 @@ import {
   REGISTRY_VIEW_LABELS,
   orderedRegistryColumns,
   rowRegistryStatus,
-  rowRejectedAmount,
   STATUS_LABELS,
   toMoneyInput,
   usesWorkflowStepColumns,
@@ -96,7 +95,7 @@ import {
 } from './approval-register/registryTableColumns';
 import { useTableColumnControls, type TableSortState } from '../utils/tableColumns';
 import { RegistryGroupStatusCell, EditableRegistryStatusCell, type RegistryRowDecision } from './approval-register/RegistryStatusCell';
-import { RegistryPreviousStepCell, RegistryYourDecisionCell } from './approval-register/registryWorkflowCells';
+import { RegistryYourDecisionCell } from './approval-register/registryWorkflowCells';
 import { STATUS_LEGEND_SPECS, StatusVisualBadge } from './approval-register/registryStatusVisual';
 import { RequestHistoryDrawer, type RequestHistoryTarget } from './request-history/RequestHistoryDrawer';
 import { RequestHistoryPanel } from './request-history/RequestHistoryPanel';
@@ -143,17 +142,6 @@ type DecisionTarget = {
   allowAmountEdit?: boolean;
 };
 
-function revisionModeForRows(rows: ApprovalRegisterRow[]) {
-  return rows.some((row) => row.is_approval_actionable) ? 'workflow' : 'cfo';
-}
-
-function openRowRevisionDialog(
-  rows: ApprovalRegisterRow[],
-  setRevisionDialog: (value: { mode: 'cfo' | 'workflow'; initialLines: ApprovalRegisterRow[]; target?: RevisionTarget }) => void,
-) {
-  const mode = revisionModeForRows(rows);
-  setRevisionDialog({ mode, initialLines: rows });
-}
 function groupEntityId(group: ApprovalRegisterGroup) {
   const segment = group.id.split('/').at(-1) || '';
   const prefix = `${group.type}:`;
@@ -650,18 +638,24 @@ function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionT
     setAmount(initialAmount === undefined ? '' : toMoneyInput(initialAmount));
   }, [target]);
   if (!target) return null;
-  const requiresComment = target.decision === 'rejected';
+  const requiresComment = target.decision === 'rejected' || target.decision === 'approved_with_changes';
   const showAmount = target.decision === 'approved_with_changes' || (target.allowAmountEdit && target.decision === 'approved' && target.rows.length === 1);
   const adjustedAmount = showAmount ? parseMoneyInput(amount) : undefined;
   const title = target.decision === 'rejected'
-    ? 'Отправить на доработку'
+    ? (target.rows.length === 1 ? 'Отклонить строку' : 'Отклонить строки')
     : target.decision === 'approved_with_changes'
-      ? 'Согласовать с корректировкой'
+      ? 'Согласовать строку'
       : target.allowAmountEdit
         ? 'Согласовать строку'
         : 'Согласовать строки';
   return <Dialog open onClose={saving ? undefined : onClose} fullWidth maxWidth="xs"><DialogTitle>{title}</DialogTitle><DialogContent><Stack spacing={1.5} sx={{ pt: 1 }}>
     <Typography variant="body2" color="text.secondary">Будет обработано строк: {target.rows.length} · запрошено: {money(target.rows.reduce((total, row) => total + row.requested_sum, 0))}</Typography>
+    {target.decision === 'rejected' && (
+      <Alert severity="error" variant="outlined">Отклонение — финальное отрицательное решение по выбранным строкам. Для возврата с возможностью исправления используйте действие группы «На доработку».</Alert>
+    )}
+    {target.decision === 'approved_with_changes' && (
+      <Alert severity="info" variant="outlined">Факт отличается от плана, поэтому система оформит согласование с корректировкой автоматически. Укажите причину изменения.</Alert>
+    )}
     {showAmount && (
       <TextField
         autoFocus
@@ -689,9 +683,20 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
       {item.status_context && (
         <Box sx={{ p: 1.25, borderRadius: 1, border: '1px solid', borderColor: 'divider', bgcolor: item.status_context.editability.mode === 'editable' ? 'warning.50' : 'grey.50' }}>
           <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
-            {item.status_context.editability.mode === 'editable' ? 'Можно изменить' : item.status_context.editability.mode === 'locked' ? 'Изменения заблокированы' : 'Только просмотр'}
+            {item.is_revision_actionable
+              ? 'Требуется исправить строку'
+              : item.status_context.editability.can_decide
+                ? 'Требуется ваше решение'
+                : item.status_context.editability.mode === 'editable'
+                  ? 'Можно изменить данные'
+                  : item.status_context.editability.mode === 'locked'
+                    ? 'Изменения заблокированы'
+                    : 'От вас действий не требуется'}
           </Typography>
           <Typography variant="body2" color="text.secondary">{item.status_context.editability.detail}</Typography>
+          {item.approval_stage && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>Текущий этап: {item.approval_stage}</Typography>
+          )}
           {item.status_context.last_decision?.by_name && (
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>
               Последнее решение: {item.status_context.last_decision.action_label} · {item.status_context.last_decision.by_name}
@@ -783,7 +788,7 @@ function RowActions({ item, user, onDecision, onOpen, onHistory }: { item: Appro
     <Stack direction="row" spacing={0} justifyContent="flex-end" sx={{ '& .MuiIconButton-root': { p: 0.35 } }}>
       {actionable && <>
         <Tooltip title="Согласовать"><IconButton size="small" color="success" onClick={(event) => { event.stopPropagation(); approve(); }}><CheckCircleOutlineIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
-        <Tooltip title="Отправить на доработку"><IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); reject(); }}><CancelOutlinedIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
+        <Tooltip title="Отклонить строку окончательно"><IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); reject(); }}><CancelOutlinedIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
         <IconButton size="small" onClick={(event) => { event.stopPropagation(); setAnchor(event.currentTarget); }} aria-label="Дополнительные действия"><MoreVertIcon sx={{ fontSize: 17 }} /></IconButton>
         <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
           <MenuItem dense onClick={() => { setAnchor(null); onDecision({ rows: [item], decision: 'approved_with_changes', amount: item.approved_sum || item.requested_sum }); }}>Согласовать с корректировкой</MenuItem>
@@ -859,8 +864,8 @@ function GroupActions({
           </Tooltip>
           {showReject && (
             <Tooltip title={rejectTitle}>
-              <IconButton size="small" color="error" onClick={primaryReject}>
-                <CancelOutlinedIcon sx={{ fontSize: 17 }} />
+              <IconButton size="small" color="warning" onClick={primaryReject}>
+                <RestartAltIcon sx={{ fontSize: 17 }} />
               </IconButton>
             </Tooltip>
           )}
@@ -875,8 +880,8 @@ function GroupActions({
           </Tooltip>
           {showReject && (
             <Tooltip title={rejectTitle}>
-              <IconButton size="small" color="error" onClick={primaryReject}>
-                <CancelOutlinedIcon sx={{ fontSize: 17 }} />
+              <IconButton size="small" color="warning" onClick={primaryReject}>
+                <RestartAltIcon sx={{ fontSize: 17 }} />
               </IconButton>
             </Tooltip>
           )}
@@ -986,7 +991,9 @@ function SelectionBar({
         <Box sx={{ flex: 1 }} />
         <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
           <Button size="small" color="success" variant="contained" onClick={onApprove}>Согласовать</Button>
-          <Button size="small" color="warning" variant="outlined" onClick={onReject}>На доработку</Button>
+          <Button size="small" color={isGroupSelection ? 'warning' : 'error'} variant="outlined" onClick={onReject}>
+            {isGroupSelection ? 'Вернуть на доработку' : 'Отклонить выбранные строки'}
+          </Button>
           <Button size="small" color="inherit" onClick={onClear}>Снять выделение</Button>
         </Stack>
       </Stack>
@@ -1001,17 +1008,21 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, onSel
   const statusEditable = actionEnabled;
   const rowStatus = rowRegistryStatus(item);
   const commitAmount = (amount: number) => {
-    if (amountEditable && item.is_approval_actionable) {
-      onSaveRowDecision(
-        item,
-        amount === item.requested_sum ? 'approved' : 'approved_with_changes',
-        amount,
-      );
+    if (amount !== item.requested_sum) {
+      onDecision({ rows: [item], decision: 'approved_with_changes', amount });
       return;
     }
-    onDecision({ rows: [item], decision: amount === item.requested_sum ? 'approved' : 'approved_with_changes', amount });
+    if (statusEditable && (item.is_approval_actionable || item.is_cfo_review_actionable)) {
+      onSaveRowDecision(item, 'approved', amount);
+      return;
+    }
+    onDecision({ rows: [item], decision: 'approved', amount });
   };
   const commitDecision = (decision: RegistryRowDecision, amount: number) => {
+    if (decision === 'approved' && amount !== item.requested_sum) {
+      onDecision({ rows: [item], decision: 'approved_with_changes', amount });
+      return;
+    }
     if (statusEditable && (item.is_approval_actionable || item.is_cfo_review_actionable)) {
       onSaveRowDecision(item, decision, amount);
       return;
@@ -1077,20 +1088,19 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, onSel
       </Box>
     ),
     requested: <Typography variant="body2" sx={cellTextSx}>{money(item.requested_sum)}</Typography>,
-    approved: workflowColumns ? (
-      <RegistryPreviousStepCell display={item.status_context?.previous_step} />
-    ) : (
+    approved: (
       <InlineEditMoneyCell
         value={item.approved_sum}
         editable={amountEditable}
         formatValue={money}
         parseValue={parseMoneyInput}
         validate={(amount) => amount >= 0}
-        ariaLabel="Согласованная сумма"
+        ariaLabel="Фактическая сумма"
+        title={amountEditable ? 'Изменить факт в рамках вашего шага' : 'Факт можно изменить только на назначенном вам шаге'}
         onCommit={commitAmount}
       />
     ),
-    rejected: <Typography variant="body2" sx={{ ...cellTextSx, color: rowRejectedAmount(item) ? 'error.main' : 'inherit' }}>{rejectedMoney(rowRejectedAmount(item))}</Typography>,
+    rejected: <Typography variant="body2" sx={{ ...cellTextSx, color: item.approved_sum - item.requested_sum ? 'warning.dark' : 'text.secondary' }}>{money(item.approved_sum - item.requested_sum)}</Typography>,
     your_step: workflowColumns ? (
       <RegistryYourDecisionCell
         item={item}
@@ -1105,7 +1115,7 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, onSel
         status={rowStatus}
         item={item}
         active={statusEditable}
-        onCommit={(decision) => commitDecision(decision, item.approved_sum || item.requested_sum)}
+        onCommit={(decision) => commitDecision(decision, item.status === 'on_review' ? item.requested_sum : item.approved_sum)}
         onDecision={openStatusDecision}
       />
     ),
@@ -1295,8 +1305,8 @@ function ModuleGroupHeaderRow({
       </Stack>
     ),
     requested: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(module.aggregates.requested_sum)}</Typography>,
-    approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{usesWorkflowStepColumns(user.role) ? groupPreviousStepSummary(module.aggregates) : money(module.aggregates.approved_sum)}</Typography>,
-    rejected: <Typography variant="body2" sx={{ fontSize: 13, color: module.aggregates.rejected_sum ? 'error.main' : 'inherit' }}>{rejectedMoney(module.aggregates.rejected_sum)}</Typography>,
+    approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(module.aggregates.approved_sum)}</Typography>,
+    rejected: <Typography variant="body2" sx={{ fontSize: 13, color: module.aggregates.difference ? 'warning.dark' : 'text.secondary' }}>{money(module.aggregates.difference)}</Typography>,
     your_step: usesWorkflowStepColumns(user.role) ? <Typography variant="body2" sx={{ fontSize: 13 }}>{groupYourStepSummary(module.aggregates)}</Typography> : null,
     status: <RegistryGroupStatusCell status={groupRegistryStatus(module.aggregates)} aggregates={module.aggregates} />,
     justification: '—',
@@ -1537,26 +1547,29 @@ function TreeRows({
         : null,
       structure: <Stack direction="row" alignItems="center" spacing={0.25} sx={{ pl: level * 1.15, minWidth: 0 }}><Box sx={{ width: 22, flex: '0 0 auto' }}>{hasContent && <IconButton size="small" aria-label={isExpanded ? 'Свернуть группу' : 'Раскрыть группу'} onClick={() => onToggle(group)} sx={{ p: 0.25 }}>{isExpanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}</IconButton>}</Box><Box minWidth={0}><Typography variant="body2" fontWeight={level === 0 ? 700 : 600} noWrap title={group.name} sx={{ fontSize: 13, lineHeight: 1.25 }}>{group.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>{group.label} · {group.aggregates.total_rows} строк{groupStructureCaptionExtras(group, user)}</Typography></Box></Stack>,
       requested: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(group.aggregates.requested_sum)}</Typography>,
-      approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{usesWorkflowStepColumns(user.role) ? groupPreviousStepSummary(group.aggregates) : money(group.aggregates.approved_sum)}</Typography>,
-      rejected: <Typography variant="body2" sx={{ fontSize: 13, color: group.aggregates.rejected_sum ? 'error.main' : 'inherit' }}>{rejectedMoney(group.aggregates.rejected_sum)}</Typography>,
-      your_step: usesWorkflowStepColumns(user.role) ? (
-        <GroupYourDecisionCell
-          group={group}
-          user={user}
-          onApproveCfo={onApproveGroup}
-          onReturnCfo={onCfoReviewReturn}
-          onCompleteCfoReview={onCompleteCfoReview}
-          onWorkflowApprove={onWorkflowApprove}
-          onWorkflowReturn={onWorkflowReturn}
-        />
-      ) : null,
-      status: <RegistryGroupStatusCell status={groupRegistryStatus(group.aggregates)} aggregates={group.aggregates} />,
+      approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(group.aggregates.approved_sum)}</Typography>,
+      rejected: <Typography variant="body2" sx={{ fontSize: 13, color: group.aggregates.difference ? 'warning.dark' : 'text.secondary' }}>{money(group.aggregates.difference)}</Typography>,
+      your_step: null,
+      status: (
+        <Stack spacing={0.5} alignItems="flex-start">
+          <RegistryGroupStatusCell status={groupRegistryStatus(group.aggregates)} aggregates={group.aggregates} />
+          {isGroupActionable(group) && (
+            <GroupActions
+              group={group}
+              user={user}
+              onApproveCfo={onApproveGroup}
+              onReturnCfo={onCfoReviewReturn}
+              onCompleteCfoReview={onCompleteCfoReview}
+              onWorkflowApprove={onWorkflowApprove}
+              onWorkflowReturn={onWorkflowReturn}
+            />
+          )}
+        </Stack>
+      ),
       justification: '—',
       comment: '—',
       files: '—',
-      actions: isGroupActionable(group) && groupSelectable && !usesWorkflowStepColumns(user.role)
-        ? <GroupActions group={group} user={user} onApproveCfo={onApproveGroup} onReturnCfo={onCfoReviewReturn} onCompleteCfoReview={onCompleteCfoReview} onWorkflowApprove={onWorkflowApprove} onWorkflowReturn={onWorkflowReturn} />
-        : null,
+      actions: null,
       ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
         if ((group.type === 'article' || group.type === 'category') && group.analytics) {
           result[key] = (
@@ -1856,6 +1869,10 @@ export function ApprovalRegister({
     ),
     onSuccess: (response, variables) => {
       updateRegisterCache(queryClient, variables.row, response.data as BudgetItem);
+      // The register's actionability and revision state are derived from
+      // workflow logs, so a plain item response is not enough to refresh them.
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
     },
     onError: (error) => toast(getApiErrorMessage(error, 'Не удалось сохранить решение по строке'), 'error'),
   });
@@ -2083,13 +2100,7 @@ export function ApprovalRegister({
       else openGroupRevision(workflowRoots, 'workflow');
       return;
     }
-    const workflowRows = actionableRows.filter((row) => row.is_approval_actionable);
-    const cfoRows = actionableRows.filter((row) => row.is_cfo_review_actionable);
-    if (workflowRows.length && !cfoRows.length) {
-      setDecisionTarget({ rows: workflowRows, decision: 'rejected' });
-      return;
-    }
-    openRowRevisionDialog(cfoRows.length ? cfoRows : actionableRows, setRevisionDialog);
+    if (actionableRows.length > 0) setDecisionTarget({ rows: actionableRows, decision: 'rejected' });
   };
   const toggleRowSelected = (item: ApprovalRegisterRow, checked: boolean) => {
     if (checked) setSelectedGroups(new Map());
@@ -2244,6 +2255,9 @@ export function ApprovalRegister({
             ? 'Отметьте группировку (ЦФО, статью, модуль) — нижестоящие строки выделятся автоматически. Действия — на панели над таблицей или в колонке после «Статус».'
             : 'Выделите группировку (ЦФО, статью, модуль) — дочерние строки выделятся автоматически. Действия — на панели над таблицей.'}
         </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.35, display: 'block', fontSize: 12, lineHeight: 1.35 }}>
+          «Отклонить» завершает рассмотрение строк отрицательно. «Вернуть на доработку» сохраняет их в процессе и запускает повторное прохождение маршрута.
+        </Typography>
       </Box>
     ) : null}
     <RegistryFilterBar
@@ -2366,16 +2380,6 @@ export function ApprovalRegister({
               onToggleGroupSelected={toggleGroupSelected}
               onActive={setActiveItem}
               onDecision={(target) => {
-                if (target.decision === 'rejected') {
-                  const workflowRows = target.rows.filter((row) => row.is_approval_actionable);
-                  const cfoRows = target.rows.filter((row) => row.is_cfo_review_actionable);
-                  if (workflowRows.length && !cfoRows.length) {
-                    setDecisionTarget({ ...target, rows: workflowRows });
-                    return;
-                  }
-                  openRowRevisionDialog(cfoRows.length ? cfoRows : target.rows, setRevisionDialog);
-                  return;
-                }
                 setDecisionTarget(target);
               }}
               onSaveRowDecision={handleSaveRowDecision}

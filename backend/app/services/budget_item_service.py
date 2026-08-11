@@ -204,15 +204,44 @@ class BudgetItemService:
         return after
 
     def _patch_item_analytics(self, user: dict, item: dict, request: dict, patch: dict) -> dict:
-        self.permissions.require_view_request(user, request)
-        if item.get("fixed"):
-            raise HTTPException(status_code=409, detail="Зафиксированную строку нельзя изменить")
+        self._require_analytics_edit_access(user, item, request)
         normalized = {
             field: str(patch[field]).strip()
             for field in patch
             if field in ANALYTICS_FIELDS
         }
         return self._apply_item_update(user, item, request, normalized)
+
+    def _require_analytics_edit_access(self, user: dict, item: dict, request: dict) -> None:
+        if item.get("fixed"):
+            raise HTTPException(status_code=409, detail="Зафиксированную строку нельзя изменить")
+        if item.get("frozen"):
+            raise HTTPException(status_code=409, detail="Сначала разморозьте строку")
+        if item.get("status") == ItemStatus.deleted:
+            raise HTTPException(status_code=409, detail="Удалённую строку нельзя изменить")
+        if request.get("status") == RequestStatus.draft:
+            self.permissions.require_employee_edit_request(user, request)
+            return
+        if (
+            request.get("status") == RequestStatus.on_review
+            and item["id"] in self.requests.returned_item_ids(request["id"])
+        ):
+            self.permissions.require_employee_unit_access(user, request["unit_id"])
+            return
+        position = (
+            self.repo.get_by_id("cfo_positions", item.get("cfo_position_id"))
+            if item.get("cfo_position_id")
+            else None
+        )
+        if not self.requests.cfo_review_completed(request["id"]):
+            self.permissions.require_cfo_request_access(user, request)
+            return
+        if position and user.get("role") == "economist":
+            self.permissions.require_economist_position_access(user, position)
+            step = self.repo.get_by_id("steps", position.get("current_step_id"))
+            if step and step.get("user_id") == user.get("id"):
+                return
+        raise HTTPException(status_code=403, detail="Строка недоступна для редактирования аналитики")
 
     def apply_analytics_bulk(self, user: dict, item_ids: list[str], patch: dict) -> dict:
         normalized = {
@@ -227,9 +256,7 @@ class BudgetItemService:
             for item_id in item_ids:
                 item = get_required(repo, "req_items", item_id)
                 request = get_required(repo, "requests", item["request_id"])
-                if item.get("status") == ItemStatus.deleted or item.get("fixed"):
-                    continue
-                self.permissions.require_view_request(user, request)
+                self._require_analytics_edit_access(user, item, request)
                 effective = {
                     key: value for key, value in normalized.items()
                     if item.get(key) != value
@@ -255,7 +282,21 @@ class BudgetItemService:
             raise HTTPException(status_code=400, detail="Удалённую строку нельзя изменить")
         if patch and set(patch) <= set(ANALYTICS_FIELDS):
             return self._patch_item_analytics(user, item, request, patch)
-        self.permissions.require_employee_edit_request(user, request)
+        is_returned_revision = (
+            request.get("status") == RequestStatus.on_review
+            and item_id in self.requests.returned_item_ids(request["id"])
+        )
+        if is_returned_revision:
+            self.permissions.require_employee_unit_access(user, request["unit_id"])
+            if item.get("fixed") or item.get("frozen"):
+                raise HTTPException(status_code=409, detail="Закрытую строку нельзя изменить")
+            if {"dds_id", "invest_id", "is_income"} & set(patch):
+                raise HTTPException(
+                    status_code=409,
+                    detail="При доработке нельзя менять тип или статью строки",
+                )
+        else:
+            self.permissions.require_employee_edit_request(user, request)
         normalized = self._employee_patch(patch)
         if "dds_id" in normalized or "invest_id" in normalized:
             kind, article_id = self._validate_article(request, {**item, **normalized})
@@ -319,15 +360,28 @@ class BudgetItemService:
         self.permissions.require_cfo_request_access(user, request)
         if request.get("status") != RequestStatus.on_review:
             raise HTTPException(status_code=409, detail="Заявка не находится на проверке ЦФО")
+        if self.requests.cfo_review_completed(request["id"], repo=repo):
+            raise HTTPException(status_code=409, detail="Проверка заявки ЦФО уже завершена")
+        if self.requests.returned_item_ids(request["id"], repo=repo):
+            raise HTTPException(status_code=409, detail="Заявка находится на доработке у модуля")
+        if item["id"] in self.requests._latest_cfo_decisions(request["id"], repo=repo):
+            raise HTTPException(status_code=409, detail="Решение по строке уже принято")
         if item.get("status") == ItemStatus.deleted:
             raise HTTPException(status_code=409, detail="Удалённая строка не рассматривается")
+        if item.get("frozen") or item.get("fixed"):
+            raise HTTPException(status_code=409, detail="Закрытая строка не рассматривается")
         before = dict(item)
-        after = repo.update("req_items", item["id"], self.normalize_decision(item, payload))
+        normalized = self.normalize_decision(item, payload)
+        if payload["decision"] in {ItemStatus.approved, ItemStatus.approved_with_changes}:
+            # CFO approval is an intermediate review result.  The line gets its
+            # accepted domain status only after the economist's decision.
+            normalized["status"] = ItemStatus.on_review
+        after = repo.update("req_items", item["id"], normalized)
         self.requests.recalculate_total(request["id"], repo=repo)
         self.requests.log(
             user, request["id"], "cfo_item_decided", stage="cfo_review",
             entity="req_item", entity_id=item["id"], before=before, after=after,
-            comment=payload.get("comment"), repo=repo,
+            comment=payload.get("comment"), decision=str(payload["decision"]), repo=repo,
         )
         if self.chat_service and (payload.get("comment") or "").strip() and not payload.get("skip_chat"):
             message = self.chat_service.comment_for_request(
@@ -360,7 +414,11 @@ class BudgetItemService:
         payload: dict,
         **filters,
     ) -> dict:
-        allowed_ids = set(self.requests.approval_register_group_item_ids(user, group_type, group_id, **filters))
+        allowed_ids = set(
+            self.requests.approval_register_group_cfo_revision_item_ids(
+                user, group_type, group_id, **filters
+            )
+        )
         selected = payload.get("items") or []
         if not selected:
             raise HTTPException(status_code=422, detail="Выберите хотя бы одну строку")
@@ -372,35 +430,87 @@ class BudgetItemService:
             raise HTTPException(status_code=422, detail="Укажите комментарий к доработке")
         chat_messages: list[dict] = []
         with self.repo.transaction() as repo:
-            requests_by_id = {row["id"]: row for row in repo.load_all("requests")}
-            if self.chat_service and user.get("role") == "employee":
-                affected_request_ids = {
-                    get_required(repo, "req_items", row["item_id"])["request_id"]
-                    for row in selected
-                }
-                for request_id in sorted(affected_request_ids):
-                    request = requests_by_id.get(request_id)
-                    if request:
-                        chat_messages.append(
-                            self.chat_service.comment_for_request(user, request, block_comment, repo=repo)
-                        )
-            results = []
+            results: list[dict] = []
+            by_request: dict[str, list[str]] = {}
+            affected_positions: set[str] = set()
             for row in selected:
                 item = get_required(repo, "req_items", row["item_id"])
+                request = get_required(repo, "requests", item["request_id"])
+                self.permissions.require_cfo_request_access(user, request)
+                if request.get("status") != RequestStatus.on_review:
+                    raise HTTPException(status_code=409, detail="Заявка не находится на проверке ЦФО")
+                if self.requests.cfo_review_completed(request["id"], repo=repo):
+                    raise HTTPException(status_code=409, detail="Проверка заявки ЦФО уже завершена")
+                if item.get("fixed") or item.get("frozen") or item.get("status") == ItemStatus.deleted:
+                    raise HTTPException(status_code=409, detail="Закрытую строку нельзя вернуть на доработку")
                 line_comment = (row.get("comment") or "").strip() or block_comment
-                line_specific = bool((row.get("comment") or "").strip())
-                result = self._decide_cfo(
-                    repo,
+                before = dict(item)
+                result = repo.update("req_items", item["id"], {"status": ItemStatus.on_review, "comment": line_comment})
+                self.requests.log(
                     user,
-                    item,
-                    {
-                        "decision": ItemStatus.rejected,
-                        "comment": line_comment,
-                        "skip_chat": not line_specific,
-                    },
+                    request["id"],
+                    "cfo_item_returned_for_revision",
+                    stage="cfo_review",
+                    entity="req_item",
+                    entity_id=item["id"],
+                    before=before,
+                    after=result,
+                    comment=line_comment,
+                    repo=repo,
                 )
+                by_request.setdefault(request["id"], []).append(item["id"])
+                if item.get("cfo_position_id"):
+                    position = get_required(repo, "cfo_positions", item["cfo_position_id"])
+                    affected_positions.add(position["id"])
+                    repo.update(
+                        "cfo_positions",
+                        position["id"],
+                        {"status": "on_revision"},
+                    )
+                    repo.create(
+                        "cfo_position_logs",
+                        {
+                            "cfo_position_id": position["id"],
+                            "user_id": user["id"],
+                            "step_id": position.get("current_step_id"),
+                            "log": {
+                                "action": "item_returned_to_module",
+                                "stage": "cfo_review",
+                                "entity": "req_item",
+                                "entity_id": item["id"],
+                                "request_id": request["id"],
+                                "req_item_id": item["id"],
+                                "comment": line_comment,
+                            },
+                        },
+                    )
                 results.append(self._public_item(result, self._month_plans_for_item(result)))
-        return {"items": results, "chat_messages": chat_messages}
+            for request_id, item_ids in by_request.items():
+                request = get_required(repo, "requests", request_id)
+                self.requests.log(
+                    user,
+                    request_id,
+                    "cfo_items_returned_for_revision",
+                    stage="cfo_review",
+                    before=request,
+                    after=request,
+                    comment=block_comment,
+                    item_ids=sorted(item_ids),
+                    cfo_position_ids=sorted(affected_positions),
+                    repo=repo,
+                )
+                if self.chat_service:
+                    chat_messages.append(
+                        self.chat_service.comment_for_request(user, request, block_comment, repo=repo)
+                    )
+        return {
+            "items": results,
+            "chat_messages": chat_messages,
+            "affected_item_ids": sorted(
+                item_id for item_ids in by_request.values() for item_id in item_ids
+            ),
+            "affected_cfo_position_ids": sorted(affected_positions),
+        }
 
     def delete_item(self, user: dict, item_id: str) -> dict:
         item = get_required(self.repo, "req_items", item_id)
