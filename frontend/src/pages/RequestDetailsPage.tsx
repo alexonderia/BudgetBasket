@@ -5,7 +5,6 @@ import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
-import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -50,7 +49,7 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
@@ -72,6 +71,8 @@ import { normalizePositiveAmount } from '../utils/validation';
 import { AUTH_TOKEN_KEY } from '../utils/session';
 import { ANALYTICS_FIELD_KEYS, ANALYTICS_FIELD_LABELS, analyticsFieldValue, canEditItemAnalytics, type AnalyticsFieldKey } from '../utils/analyticsFields';
 import { EditableAnalyticsCell } from '../components/EditableAnalyticsCell';
+import { InlineEditMoneyCell, InlineEditTextCell } from '../components/inlineEdit';
+import { getApiErrorMessage } from '../utils/apiErrors';
 
 const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx,.zip';
 const MAX_UPLOAD_SIZE_BYTES = 25 * 1024 * 1024;
@@ -364,48 +365,6 @@ type RequestChat = {
   participants: { user_id: string; last_read_message_id: string | null }[];
   messages: ChatMessage[];
 };
-type DraftChangeHandler = (itemId: string, patch: Partial<BudgetItem>) => void;
-
-const ItemTextEditor = memo(function ItemTextEditor({
-  field,
-  itemId,
-  multiline = false,
-  onDraftChange,
-  required = false,
-  value,
-}: {
-  field: 'name' | 'justification' | AnalyticsFieldKey;
-  itemId: string;
-  multiline?: boolean;
-  onDraftChange: DraftChangeHandler;
-  required?: boolean;
-  value: string;
-}) {
-  return (
-    <TextField
-      size="small"
-      required={required}
-      multiline={multiline}
-      minRows={multiline ? 2 : undefined}
-      value={value}
-      onChange={(event) => onDraftChange(itemId, { [field]: event.target.value })}
-      sx={{
-        width: '100%',
-        minWidth: 0,
-        '& .MuiOutlinedInput-root': {
-          borderRadius: 1,
-          bgcolor: 'common.white',
-          fontSize: 13,
-          '& fieldset': { borderColor: 'divider' },
-          '&:hover fieldset': { borderColor: 'text.secondary' },
-          '&.Mui-focused fieldset': { borderColor: 'primary.main', borderWidth: 1 },
-        },
-        '& .MuiInputBase-input': { py: multiline ? 0.6 : 0.75, px: 1 },
-      }}
-    />
-  );
-});
-
 function RedistributionDialog({
   item,
   kind,
@@ -947,7 +906,6 @@ function ItemsTable({
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const [drafts, setDrafts] = useState<Record<string, Partial<BudgetItem>>>({});
-  const [isEditMode, setIsEditMode] = useState(false);
   const [stagedFilesByItem, setStagedFilesByItem] = useState<Record<string, File[]>>({});
   const [pendingDeletedFileIdsByItem, setPendingDeletedFileIdsByItem] = useState<Record<string, number[]>>({});
   const [autoFitSnapshots, setAutoFitSnapshots] = useState<Record<string, { month_plans: BudgetItem['month_plans']; sum_fact: number | null | undefined }>>({});
@@ -965,12 +923,6 @@ function ItemsTable({
   const canEconomist = false;
   const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
-  const updateEmployeeDraft = useCallback<DraftChangeHandler>((itemId, patch) => {
-    setDrafts((current) => ({
-      ...current,
-      [itemId]: { ...current[itemId], ...patch },
-    }));
-  }, []);
   const updateEconomistMonthPlans = useCallback((itemId: string, month_plans: BudgetItem['month_plans']) => {
     const total = monthPlansTotal(month_plans.map((plan) => String(plan.sum_plan)));
     setDrafts((current) => ({
@@ -1155,6 +1107,13 @@ function ItemsTable({
       onClearVisibleFilterValues={() => setItemVisibleFilterOptions(columnId, false)}
     />
   );
+
+  const patchItemField = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Partial<BudgetItem> }) => api.patch(`/items/${id}`, body),
+    onSuccess: () => refresh(),
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось сохранить строку'), 'error'),
+  });
+
   const renderItemCell = (
     columnId: ItemTableColumn,
     item: BudgetItem,
@@ -1192,67 +1151,56 @@ function ItemsTable({
       case 'structure':
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2, pl: 2.5 })}>
-            {isEditingItem && !isDeleted ? (
-              <Box>
-                <ItemTextEditor
-                  field="name"
-                  itemId={item.id}
-                  required
-                  value={local.name ?? item.name}
-                  onDraftChange={updateEmployeeDraft}
+            <Box sx={{ minWidth: 0 }}>
+              {employeeCanEdit && !isDeleted ? (
+                <InlineEditTextCell
+                  value={item.name}
+                  editable
+                  ariaLabel="Название строки"
+                  title="Нажмите, чтобы изменить название строки"
+                  onCommit={(name) => patchItemField.mutate({ id: item.id, body: { name } })}
                 />
-              </Box>
-            ) : (
-              <Box sx={{ minWidth: 0 }}>
+              ) : (
                 <Typography variant="body2" title={item.name || '—'} sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {item.name || '—'}
                 </Typography>
-                {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" sx={{ mt: 0.25, height: 20, fontSize: 10 }} />}
-              </Box>
-            )}
+              )}
+              {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" sx={{ mt: 0.25, height: 20, fontSize: 10 }} />}
+            </Box>
           </TableCell>
         );
       case 'justification':
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
-            {isEditingItem && !isDeleted ? (
-              <ItemTextEditor
-                field="justification"
-                itemId={item.id}
+            {employeeCanEdit && !isDeleted ? (
+              <InlineEditTextCell
+                value={item.justification}
+                editable
                 multiline
-                value={local.justification ?? item.justification}
-                onDraftChange={updateEmployeeDraft}
+                ariaLabel="Обоснование"
+                title="Нажмите, чтобы изменить обоснование"
+                onCommit={(justification) => patchItemField.mutate({ id: item.id, body: { justification } })}
               />
-            ) : item.justification || '—'}
+            ) : (item.justification || '—')}
           </TableCell>
         );
       case 'requested':
         return (
           <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2 })}>
-            {isEditingItem && !isDeleted ? (
-              item.is_income ? (
-                <IncomeMonthPlanEditor
-                  plans={local.month_plans ?? item.month_plans}
-                  disabled={saveAllEmployeeItemChanges.isPending}
-                  onChange={(month_plans) => updateEmployeeDraft(item.id, { month_plans })}
-                />
-              ) : <TextField
-                  size="small"
-                  type="number"
-                  value={local.sum_plan ?? item.sum_plan}
-                  onChange={(event) => updateEmployeeDraft(item.id, { sum_plan: Number(event.target.value) })}
-                  inputProps={{ min: 0, step: '0.01' }}
-                  sx={{
-                    width: '100%', minWidth: 0,
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1, bgcolor: 'common.white', fontSize: 13,
-                      '& fieldset': { borderColor: 'divider' },
-                      '&:hover fieldset': { borderColor: 'text.secondary' },
-                      '&.Mui-focused fieldset': { borderColor: 'primary.main', borderWidth: 1 },
-                    },
-                    '& .MuiInputBase-input': { py: 0.75, px: 1, textAlign: 'right' },
-                  }}
-                />
+            {employeeCanEdit && !isDeleted && !item.is_income ? (
+              <InlineEditMoneyCell
+                value={Number(item.sum_plan)}
+                editable
+                formatValue={tableMoney}
+                parseValue={(raw) => {
+                  const amount = Number(raw.replace(/\s/g, '').replace(',', '.'));
+                  return Number.isFinite(amount) ? amount : null;
+                }}
+                validate={(amount) => amount >= 0}
+                ariaLabel="Запрошенная сумма"
+                title="Нажмите, чтобы изменить запрошенную сумму"
+                onCommit={(sum_plan) => patchItemField.mutate({ id: item.id, body: { sum_plan } })}
+              />
             ) : (
               <Typography variant="body2" sx={{ fontSize: 13, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{tableMoney(item.sum_plan)}</Typography>
             )}
@@ -1340,19 +1288,11 @@ function ItemsTable({
       case 'analytics_3':
       case 'analytics_4':
       case 'analytics_5': {
-        const value = local[columnId] ?? item[columnId] ?? '';
-        const useDraftEditor = employeeCanEdit && isEditingItem && !isDeleted;
-        const useInlineEditor = canEditItemAnalytics(item) && !useDraftEditor && !isDeleted;
+        const value = item[columnId] ?? '';
+        const useInlineEditor = canEditItemAnalytics(item) && !isDeleted;
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
-            {useDraftEditor ? (
-              <ItemTextEditor
-                field={columnId}
-                itemId={item.id}
-                value={value}
-                onDraftChange={updateEmployeeDraft}
-              />
-            ) : useInlineEditor ? (
+            {useInlineEditor ? (
               <EditableAnalyticsCell
                 itemId={item.id}
                 field={columnId}
@@ -1369,7 +1309,7 @@ function ItemsTable({
             <ItemFilesCell
               kind={kind}
               itemId={item.id}
-              editing={isEditingItem && !isDeleted}
+              editing={employeeCanEdit && !isDeleted}
               stagedFiles={stagedFiles}
               pendingDeletedFileIds={pendingDeletedFileIds}
               onRemoveStagedFile={(file) =>
@@ -1390,7 +1330,7 @@ function ItemsTable({
                   [item.id]: (current[item.id] || []).filter((id) => id !== fileId),
                 }))
               }
-              disabled={saveAllEmployeeItemChanges.isPending || isDeleted}
+              disabled={saveStagedFileChanges.isPending || isDeleted}
             />
           </TableCell>
         );
@@ -1410,10 +1350,10 @@ function ItemsTable({
                     <SaveOutlinedIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>
-              ) : employeeCanEdit && !isDeleted && isEditingItem ? (
+              ) : employeeCanEdit && !isDeleted ? (
                 <>
                   <FileAttachAction
-                    disabled={saveAllEmployeeItemChanges.isPending}
+                    disabled={saveStagedFileChanges.isPending}
                     onUpload={(file) => stageFile(item.id, file)}
                   />
                   <Tooltip title="Перераспределить в другую статью или категорию">
@@ -1421,7 +1361,7 @@ function ItemsTable({
                       size="small"
                       color="primary"
                       onClick={() => setRedistributionTarget(item)}
-                      disabled={saveAllEmployeeItemChanges.isPending}
+                      disabled={saveStagedFileChanges.isPending}
                       aria-label="Перераспределить строку"
                     >
                       <SwapHorizIcon fontSize="small" />
@@ -1433,7 +1373,7 @@ function ItemsTable({
                         size="small"
                         color="error"
                         onClick={() => setDeleteTarget(item)}
-                        disabled={saveAllEmployeeItemChanges.isPending}
+                        disabled={saveStagedFileChanges.isPending}
                         aria-label="Удалить строку"
                       >
                         <DeleteOutlineIcon fontSize="small" />
@@ -1514,19 +1454,15 @@ function ItemsTable({
     onError: (error) => toast(getErrorMessage(error, 'Не удалось перераспределить строку'), 'error'),
   });
 
-  const hasPendingEmployeeChanges = Object.keys(drafts).length > 0
-    || Object.values(stagedFilesByItem).some((files) => files.length > 0)
+  const hasPendingFileChanges = Object.values(stagedFilesByItem).some((files) => files.length > 0)
     || Object.values(pendingDeletedFileIdsByItem).some((fileIds) => fileIds.length > 0);
-  const saveAllEmployeeItemChanges = useMutation({
+  const saveStagedFileChanges = useMutation({
     mutationFn: async () => {
       const itemIds = new Set([
-        ...Object.keys(drafts),
         ...Object.keys(stagedFilesByItem),
         ...Object.keys(pendingDeletedFileIdsByItem),
       ]);
       for (const itemId of itemIds) {
-        const body = drafts[itemId] || {};
-        if (Object.keys(body).length > 0) await api.patch(`/items/${itemId}`, body);
         for (const file of stagedFilesByItem[itemId] || []) {
           const form = new FormData();
           form.append('file', file);
@@ -1538,23 +1474,17 @@ function ItemsTable({
       }
     },
     onSuccess: () => {
-      setDrafts({});
       setStagedFilesByItem({});
       setPendingDeletedFileIdsByItem({});
-      setAutoFitSnapshots({});
-      setIsEditMode(false);
       refresh();
       queryClient.invalidateQueries({ queryKey: ['item-files', kind] });
-      toast('Изменения сохранены', 'success');
+      toast('Файлы сохранены', 'success');
     },
-    onError: (error) => toast(getErrorMessage(error, 'Не удалось сохранить изменения'), 'error'),
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось сохранить файлы'), 'error'),
   });
-  const cancelAllEmployeeItemChanges = () => {
-    setDrafts({});
+  const cancelStagedFileChanges = () => {
     setStagedFilesByItem({});
     setPendingDeletedFileIdsByItem({});
-    setAutoFitSnapshots({});
-    setIsEditMode(false);
   };
 
   const approveArticleItems = useMutation({
@@ -1737,38 +1667,30 @@ function ItemsTable({
                 Свернуть все
               </Button>
             </>}
-            {employeeCanEdit && (isEditMode ? <>
-              <Button
-                size="small"
-                color="primary"
-                startIcon={<SaveOutlinedIcon sx={{ fontSize: 16 }} />}
-                onClick={() => saveAllEmployeeItemChanges.mutate()}
-                disabled={!hasPendingEmployeeChanges || saveAllEmployeeItemChanges.isPending}
-                sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
-              >
-                Сохранить
-              </Button>
-              <Button
-                size="small"
-                color="inherit"
-                startIcon={<CloseIcon sx={{ fontSize: 16 }} />}
-                onClick={cancelAllEmployeeItemChanges}
-                disabled={saveAllEmployeeItemChanges.isPending}
-                sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
-              >
-                Отменить
-              </Button>
-            </> : (
-              <Button
-                size="small"
-                color="primary"
-                startIcon={<EditOutlinedIcon sx={{ fontSize: 16 }} />}
-                onClick={() => setIsEditMode(true)}
-                sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
-              >
-                Редактировать
-              </Button>
-            ))}
+            {employeeCanEdit && hasPendingFileChanges && (
+              <>
+                <Button
+                  size="small"
+                  color="primary"
+                  startIcon={<SaveOutlinedIcon sx={{ fontSize: 16 }} />}
+                  onClick={() => saveStagedFileChanges.mutate()}
+                  disabled={saveStagedFileChanges.isPending}
+                  sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
+                >
+                  Сохранить файлы
+                </Button>
+                <Button
+                  size="small"
+                  color="inherit"
+                  startIcon={<CloseIcon sx={{ fontSize: 16 }} />}
+                  onClick={cancelStagedFileChanges}
+                  disabled={saveStagedFileChanges.isPending}
+                  sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
+                >
+                  Отменить
+                </Button>
+              </>
+            )}
             <TableColumnTools
               buttonLabel="Колонки"
               columns={itemTableDefinitions}
@@ -1789,7 +1711,7 @@ function ItemsTable({
         {!canApproveArticle && (
           <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
             {employeeCanEdit
-              ? 'Нажмите «Редактировать» над таблицей, чтобы изменить строки заявки.'
+              ? 'Нажмите на значение в ячейке, чтобы изменить строку. Изменения сохраняются автоматически.'
               : 'Строки заявки показаны в режиме просмотра.'}
           </Typography>
         )}
@@ -1807,7 +1729,7 @@ function ItemsTable({
           </Stack>
         </Paper>
       )}
-      {employeeCanEdit && isEditMode && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || saveAllEmployeeItemChanges.isPending} />}
+      {employeeCanEdit && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || saveStagedFileChanges.isPending} />}
       <TableContainer
         className="request-items-table"
         component={Paper}
@@ -1882,7 +1804,6 @@ function ItemsTable({
               const item = row.item;
               const local = drafts[item.id] || {};
               const isDeleted = item.status === 'deleted';
-              const isEditingItem = isEditMode;
               const draftStatus = local.status || item.status;
               const hasDraftChanges = hasEffectiveItemChanges(item, local);
               const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
@@ -1910,7 +1831,7 @@ function ItemsTable({
                       item,
                       local,
                       isDeleted,
-                      isEditingItem,
+                      false,
                       draftStatus,
                       inactiveCatalogSelection,
                       catalogId ?? null,
@@ -1931,16 +1852,27 @@ function ItemsTable({
                               const plan = visibleMonthPlans.find((entry) => entry.month === index + 1);
                               return <Box key={month} sx={{ px: 1, py: 0.5, borderRadius: 1, bgcolor: 'background.paper' }}>
                                 <Typography variant="caption" color="text.secondary">{month}</Typography>
-                                {canEconomist ? (
-                                  <TextField
-                                    size="small"
+                                {employeeCanEdit ? (
+                                  <InlineEditTextCell
                                     value={String(plan?.sum_plan ?? '')}
-                                    inputProps={{ inputMode: 'decimal' }}
-                                    onChange={(event) => {
-                                      const next = completeMonthPlans(visibleMonthPlans).map((entry) => entry.month === index + 1 ? { ...entry, sum_plan: normalizeMonthAmount(event.target.value) } : entry);
-                                      updateEconomistMonthPlans(item.id, next);
+                                    editable
+                                    align="right"
+                                    ariaLabel={`План ${month}`}
+                                    title={`Нажмите, чтобы изменить план на ${month}`}
+                                    onCommit={(next) => {
+                                      const nextPlans = completeMonthPlans(visibleMonthPlans).map((entry) => (
+                                        entry.month === index + 1
+                                          ? { ...entry, sum_plan: normalizeMonthAmount(next) }
+                                          : entry
+                                      ));
+                                      patchItemField.mutate({
+                                        id: item.id,
+                                        body: {
+                                          month_plans: nextPlans,
+                                          sum_plan: Number(centsToAmount(monthPlansTotal(nextPlans.map((entry) => String(entry.sum_plan))))),
+                                        },
+                                      });
                                     }}
-                                    sx={{ mt: 0.25, width: '100%' }}
                                   />
                                 ) : <Typography variant="body2">{money(Number(plan?.sum_plan ?? 0))}</Typography>}
                               </Box>;

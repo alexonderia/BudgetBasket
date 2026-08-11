@@ -29,6 +29,7 @@ import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { InlineEditSelectCell, InlineEditTextCell } from '../components/inlineEdit';
 import { useAppToast } from '../components/Layout';
 import type { CatalogItem, Unit, User } from '../types';
 import { filterFieldSx } from '../utils/responsive';
@@ -180,8 +181,6 @@ export default function CatalogsPage({ user }: { user: User }) {
   const [departmentId, setDepartmentId] = useState('');
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ name: '', is_active: true });
   const meta = META[kind];
   const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
   const departments = useMemo(() => units.filter((unit) => unit.type === 'department' || !unit.parent_id), [units]);
@@ -202,8 +201,8 @@ export default function CatalogsPage({ user }: { user: User }) {
     && units.some((unit) => unit.parent_id === departmentId && user.unit_ids?.includes(unit.id))
   );
   const update = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: typeof draft }) => api.patch(`${meta.path}/${id}`, { name: body.name.trim(), is_active: body.is_active }),
-    onSuccess: () => { toast('Категория обновлена', 'success'); setEditingId(null); queryClient.invalidateQueries({ queryKey: [meta.path] }); },
+    mutationFn: ({ id, body }: { id: string; body: { name: string; is_active: boolean } }) => api.patch(`${meta.path}/${id}`, { name: body.name.trim(), is_active: body.is_active }),
+    onSuccess: () => { toast('Категория обновлена', 'success'); queryClient.invalidateQueries({ queryKey: [meta.path] }); },
     onError: (error) => toast(errorMessage(error, 'Не удалось обновить категорию'), 'error'),
   });
   const downloadTemplate = async () => {
@@ -214,7 +213,6 @@ export default function CatalogsPage({ user }: { user: User }) {
       toast(errorMessage(error, 'Не удалось скачать шаблон'), 'error');
     }
   };
-  const startEdit = (row: CategoryRow) => { setEditingId(row.id); setDraft({ name: row.name, is_active: row.is_active }); };
 
   return <Stack spacing={2.5}>
     <Paper className="surface-pad"><Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }} justifyContent="space-between">
@@ -230,13 +228,30 @@ export default function CatalogsPage({ user }: { user: User }) {
     <Paper className="surface-pad"><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
       Статья или инвест-проект находится на верхнем уровне. Для каждой новой статьи система создаёт одноимённую категорию; в заявке выбирается пара «статья + категория».
     </Typography>
-    <Box sx={{ overflowX: 'auto' }}><Table size="small"><TableHead><TableRow><TableCell>{meta.article}</TableCell><TableCell>Категория</TableCell><TableCell>Активна</TableCell>{canManageCategories && <TableCell width={100}>Действия</TableCell>}</TableRow></TableHead>
-      <TableBody>{rows.map((row) => { const editing = editingId === row.id; return <TableRow key={row.id}>
+    <Box sx={{ overflowX: 'auto' }}><Table size="small"><TableHead><TableRow><TableCell>{meta.article}</TableCell><TableCell>Категория</TableCell><TableCell>Активна</TableCell></TableRow></TableHead>
+      <TableBody>{rows.map((row) => <TableRow key={row.id}>
         <TableCell>{row.article.name}</TableCell>
-        <TableCell>{editing ? <TextField size="small" value={draft.name} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} /> : row.name}</TableCell>
-        <TableCell>{editing ? <TextField select size="small" value={draft.is_active ? 'yes' : 'no'} onChange={(event) => setDraft((value) => ({ ...value, is_active: event.target.value === 'yes' }))}><MenuItem value="yes">Да</MenuItem><MenuItem value="no">Нет</MenuItem></TextField> : row.is_active ? 'Да' : 'Нет'}</TableCell>
-        {canManageCategories && <TableCell>{editing ? <><Tooltip title="Сохранить"><span><IconButton size="small" disabled={!draft.name.trim() || update.isPending} onClick={() => update.mutate({ id: row.id, body: draft })}><CheckIcon fontSize="small" /></IconButton></span></Tooltip><Tooltip title="Отмена"><IconButton size="small" onClick={() => setEditingId(null)}><CloseIcon fontSize="small" /></IconButton></Tooltip></> : <Tooltip title="Изменить категорию"><IconButton size="small" onClick={() => startEdit(row)}><EditOutlinedIcon fontSize="small" /></IconButton></Tooltip>}</TableCell>}
-      </TableRow>; })}{rows.length === 0 && <TableRow><TableCell colSpan={canManageCategories ? 4 : 3} align="center">Категории не найдены</TableCell></TableRow>}</TableBody>
+        <TableCell>
+          <InlineEditTextCell
+            value={row.name}
+            editable={canManageCategories}
+            ariaLabel="Категория"
+            title="Нажмите, чтобы изменить категорию"
+            onCommit={(name) => update.mutate({ id: row.id, body: { name, is_active: row.is_active } })}
+          />
+        </TableCell>
+        <TableCell>
+          <InlineEditSelectCell
+            value={row.is_active ? 'yes' : 'no'}
+            editable={canManageCategories}
+            options={[{ value: 'yes', label: 'Да' }, { value: 'no', label: 'Нет' }]}
+            display={row.is_active ? 'Да' : 'Нет'}
+            ariaLabel="Активна"
+            title="Нажмите, чтобы изменить активность категории"
+            onCommit={(next) => update.mutate({ id: row.id, body: { name: row.name, is_active: next === 'yes' } })}
+          />
+        </TableCell>
+      </TableRow>)}{rows.length === 0 && <TableRow><TableCell colSpan={3} align="center">Категории не найдены</TableCell></TableRow>}</TableBody>
     </Table></Box></Paper>
     <ImportDialog open={importDialogOpen} kind={kind} departmentId={departmentId} departments={departments} catalog={catalog} onClose={() => setImportDialogOpen(false)} onDownloadTemplate={downloadTemplate} onImported={(result) => { if (result.rows.length) toast(`Импорт завершён: создано ${result.created}, обновлено ${result.updated}`, 'success'); queryClient.invalidateQueries({ queryKey: [meta.path] }); }} />
     <CategoryDialog open={categoryDialogOpen} kind={kind} departmentId={departmentId} articles={articles} onClose={() => setCategoryDialogOpen(false)} />

@@ -45,8 +45,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { usePageChromeActions, usePageChromeLeading } from './Layout';
+import { getApiErrorMessage } from '../utils/apiErrors';
+import { useAppToast, usePageChromeActions, usePageChromeLeading } from './Layout';
 import { ConfirmDialog } from './ConfirmDialog';
+import { InlineEditMoneyCell } from './inlineEdit';
 import { ArticleRevisionDialog, type RevisionTarget } from './ArticleRevisionDialog';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from './TableColumnControls';
 import {
@@ -55,6 +57,10 @@ import {
   DEFAULT_COLUMN_VISIBILITY,
   DEFAULT_COLUMN_ORDER,
   DEFAULT_COLUMN_WIDTHS,
+  defaultRegistryColumnVisibility,
+  applyWorkflowColumnVisibility,
+  groupPreviousStepSummary,
+  groupYourStepSummary,
   groupReadinessPercent,
   groupHasCfoActions,
   groupHasCfoCompleteActions,
@@ -63,6 +69,7 @@ import {
   isGroupActionable,
   isGroupSelectable,
   isRowActionable,
+  canQuickDecideGroup,
   parseMoneyInput,
   REGISTRY_COLUMNS,
   REGISTRY_VIEW_LABELS,
@@ -71,6 +78,7 @@ import {
   rowRejectedAmount,
   STATUS_LABELS,
   toMoneyInput,
+  usesWorkflowStepColumns,
   workflowApproveLabel,
   type RegistryColumnId,
   type RegistryFilters,
@@ -87,7 +95,8 @@ import {
   sortRegisterItems,
 } from './approval-register/registryTableColumns';
 import { useTableColumnControls, type TableSortState } from '../utils/tableColumns';
-import { RegistryGroupStatusCell, RegistryStatusCell } from './approval-register/RegistryStatusCell';
+import { RegistryGroupStatusCell, EditableRegistryStatusCell, type RegistryRowDecision } from './approval-register/RegistryStatusCell';
+import { RegistryPreviousStepCell, RegistryYourDecisionCell } from './approval-register/registryWorkflowCells';
 import { STATUS_LEGEND_SPECS, StatusVisualBadge } from './approval-register/registryStatusVisual';
 import { RequestHistoryDrawer, type RequestHistoryTarget } from './request-history/RequestHistoryDrawer';
 import { RequestHistoryPanel } from './request-history/RequestHistoryPanel';
@@ -273,26 +282,40 @@ function topLevelSelectedGroups(groups: ApprovalRegisterGroup[], parents: Map<st
 
 function readPreferences(
   userId: string,
+  role?: User['role'],
 ): { view?: RegistryView; filters?: RegistryFilters; order: RegistryColumnId[]; visibility: Record<RegistryColumnId, boolean>; widths: Record<RegistryColumnId, number> } {
+  const roleVisibility = defaultRegistryColumnVisibility(role);
   try {
     const userKey = preferencesStorageKey(userId);
     const raw = localStorage.getItem(userKey) ?? localStorage.getItem(LEGACY_PREFERENCES_KEY);
     const legacyRaw = localStorage.getItem(LEGACY_COLUMNS_KEY);
-    if (!raw && !legacyRaw) return { order: DEFAULT_COLUMN_ORDER, visibility: DEFAULT_COLUMN_VISIBILITY, widths: DEFAULT_COLUMN_WIDTHS };
+    if (!raw && !legacyRaw) return { order: DEFAULT_COLUMN_ORDER, visibility: roleVisibility, widths: DEFAULT_COLUMN_WIDTHS };
     const parsed: unknown = JSON.parse(raw || legacyRaw || '');
-    if (!parsed || typeof parsed !== 'object') return { order: DEFAULT_COLUMN_ORDER, visibility: DEFAULT_COLUMN_VISIBILITY, widths: DEFAULT_COLUMN_WIDTHS };
+    if (!parsed || typeof parsed !== 'object') return { order: DEFAULT_COLUMN_ORDER, visibility: roleVisibility, widths: DEFAULT_COLUMN_WIDTHS };
     const value = parsed as { view?: RegistryView; filters?: Partial<RegistryFilters>; order?: RegistryColumnId[]; visibility?: Partial<Record<RegistryColumnId, boolean>>; widths?: Partial<Record<RegistryColumnId, number>> };
     const migratedFromLegacy = !localStorage.getItem(userKey) && Boolean(raw);
     const view = value.view;
+    const mergedVisibility = { ...roleVisibility, ...value.visibility };
+    // Restore line-detail columns after the dense layout that hid them.
+    if (
+      usesWorkflowStepColumns(role)
+      && value.visibility
+      && value.visibility.justification === false
+      && value.visibility.files === false
+    ) {
+      mergedVisibility.justification = true;
+      mergedVisibility.comment = true;
+      mergedVisibility.files = true;
+    }
     return {
       view,
       filters: value.filters ? { ...EMPTY_FILTERS, ...value.filters, cfoId: '', articleId: '', requestStatus: '' } : undefined,
       order: value.order?.filter((id): id is RegistryColumnId => DEFAULT_COLUMN_ORDER.includes(id)) || DEFAULT_COLUMN_ORDER,
-      visibility: { ...DEFAULT_COLUMN_VISIBILITY, ...value.visibility },
+      visibility: applyWorkflowColumnVisibility(mergedVisibility, role),
       widths: { ...DEFAULT_COLUMN_WIDTHS, ...value.widths },
     };
   } catch {
-    return { order: DEFAULT_COLUMN_ORDER, visibility: DEFAULT_COLUMN_VISIBILITY, widths: DEFAULT_COLUMN_WIDTHS };
+    return { order: DEFAULT_COLUMN_ORDER, visibility: roleVisibility, widths: DEFAULT_COLUMN_WIDTHS };
   }
 }
 
@@ -618,22 +641,7 @@ function RegistryFooter({ totalRows }: { totalRows: number }) {
   );
 }
 
-function EditableMoneyCell({ item, active, onCommit }: { item: ApprovalRegisterRow; active: boolean; onCommit: (amount: number) => void }) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(() => toMoneyInput(item.approved_sum));
-  useEffect(() => { if (!editing) setValue(toMoneyInput(item.approved_sum)); }, [editing, item.approved_sum]);
-  const save = () => {
-    const amount = parseMoneyInput(value);
-    if (amount === null || amount > item.requested_sum) return;
-    setEditing(false);
-    onCommit(amount);
-  };
-  if (!active) return <Typography variant="body2" sx={{ fontSize: 13 }}>{money(item.approved_sum)}</Typography>;
-  if (!editing) return <Box component="button" type="button" onClick={(event) => { event.stopPropagation(); setEditing(true); }} onKeyDown={(event) => { if (event.key === 'Enter') setEditing(true); }} sx={{ border: 0, bgcolor: 'transparent', font: 'inherit', fontSize: 13, cursor: 'pointer', p: 0, textAlign: 'right', width: '100%', color: 'primary.main', textDecoration: 'underline dotted rgba(37, 99, 235, 0.45)' }} title="Нажмите, чтобы изменить сумму — сохранится сразу после Enter или клика вне поля">{money(item.approved_sum)}</Box>;
-  return <TextField autoFocus size="small" value={value} onChange={(event) => setValue(event.target.value)} error={parseMoneyInput(value) === null || (parseMoneyInput(value) || 0) > item.requested_sum} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); save(); } if (event.key === 'Escape') { setValue(toMoneyInput(item.approved_sum)); setEditing(false); } }} onBlur={save} inputProps={{ inputMode: 'decimal', 'aria-label': 'Согласованная сумма' }} sx={{ width: '100%', '& .MuiInputBase-input': { py: 0.2, px: 0.75, fontSize: 13, textAlign: 'right' } }} />;
-}
-
-function DecisionDialog({ target, onClose, onSave, saving, error }: { target: DecisionTarget | null; onClose: () => void; onSave: (comment: string, amount?: number) => void; saving: boolean; error: string | null }) {
+function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionTarget | null; onClose: () => void; onSave: (comment: string, amount?: number) => void; saving: boolean }) {
   const [comment, setComment] = useState('');
   const [amount, setAmount] = useState('');
   useEffect(() => {
@@ -661,13 +669,12 @@ function DecisionDialog({ target, onClose, onSave, saving, error }: { target: De
         label="Согласованная сумма"
         value={amount}
         onChange={(event) => setAmount(event.target.value)}
-        error={adjustedAmount === null || (adjustedAmount || 0) > target.rows[0].requested_sum}
-        helperText="Можно скорректировать сумму, но не больше запрошенной"
+        error={adjustedAmount === null || (adjustedAmount || 0) < 0}
+        helperText="Можно согласовать сумму больше или меньше запрошенной"
       />
     )}
     <TextField size="small" label={requiresComment ? 'Комментарий' : 'Комментарий (необязательно)'} required={requiresComment} multiline minRows={3} value={comment} onChange={(event) => setComment(event.target.value)} />
-    {error && <Alert severity="error">{error}</Alert>}
-  </Stack></DialogContent><DialogActions><Button onClick={onClose} disabled={saving}>Отмена</Button><Button variant="contained" disabled={saving || (requiresComment && !comment.trim()) || (showAmount && (adjustedAmount === null || adjustedAmount === undefined || adjustedAmount > target.rows[0].requested_sum))} onClick={() => onSave(comment.trim(), adjustedAmount ?? undefined)}>{saving ? 'Сохраняется…' : 'Подтвердить'}</Button></DialogActions></Dialog>;
+  </Stack></DialogContent><DialogActions><Button onClick={onClose} disabled={saving}>Отмена</Button><Button variant="contained" disabled={saving || (requiresComment && !comment.trim()) || (showAmount && (adjustedAmount === null || adjustedAmount === undefined || adjustedAmount < 0))} onClick={() => onSave(comment.trim(), adjustedAmount ?? undefined)}>{saving ? 'Сохраняется…' : 'Подтвердить'}</Button></DialogActions></Dialog>;
 }
 
 function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: ApprovalRegisterRow | null; onClose: () => void; onOpenHistory: (item: ApprovalRegisterRow, full?: boolean) => void }) {
@@ -698,6 +705,30 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
           )}
         </Box>
       )}
+      {item.status_context?.previous_step && (
+        <Box>
+          <Typography variant="caption" color="text.secondary">Предыдущий шаг</Typography>
+          <Typography variant="body2">
+            {item.status_context.previous_step.amount != null ? `${money(item.status_context.previous_step.amount)} · ` : ''}
+            {item.status_context.previous_step.label}
+          </Typography>
+          {item.status_context.previous_step.hint ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{item.status_context.previous_step.hint}</Typography>
+          ) : null}
+        </Box>
+      )}
+      {item.status_context?.your_step && (
+        <Box>
+          <Typography variant="caption" color="text.secondary">Ваше решение</Typography>
+          <Typography variant="body2">
+            {item.status_context.your_step.amount != null ? `${money(item.status_context.your_step.amount)} · ` : ''}
+            {item.status_context.your_step.label}
+          </Typography>
+          {item.status_context.your_step.hint ? (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{item.status_context.your_step.hint}</Typography>
+          ) : null}
+        </Box>
+      )}
       {[['ЦФО', item.cfo_name], ['Статья', item.article_name], ['Категория', item.category_name], ['Модуль', item.module_name], ['Запрошено', money(item.requested_sum)], ['Согласовано', money(item.approved_sum)], ['Статус', STATUS_LABELS[item.status]], ['Обоснование', item.justification || '—'], ['Комментарий экономиста', item.comment || '—']].map(([label, value]) => <Box key={label}><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="body2">{value}</Typography></Box>)}
       {ANALYTICS_FIELD_KEYS.map((key) => (
         <Box key={key}>
@@ -726,6 +757,7 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
 
 function RowActions({ item, user, onDecision, onOpen, onHistory }: { item: ApprovalRegisterRow; user: User; onDecision: (target: DecisionTarget) => void; onOpen: () => void; onHistory: () => void }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const workflowColumns = usesWorkflowStepColumns(user.role);
   const actionable = isRowActionable(item, user.role);
   const allowAmountEdit = user.role === 'economist' && item.is_approval_actionable;
   const approve = () => onDecision({
@@ -735,6 +767,18 @@ function RowActions({ item, user, onDecision, onOpen, onHistory }: { item: Appro
     allowAmountEdit,
   });
   const reject = () => onDecision({ rows: [item], decision: 'rejected' });
+  // For economist/approver/zgd decisions live in «Ваше решение» — keep only history here.
+  if (workflowColumns) {
+    return (
+      <Stack direction="row" spacing={0} justifyContent="flex-end" sx={{ '& .MuiIconButton-root': { p: 0.35 } }}>
+        <Tooltip title="История изменений">
+          <IconButton size="small" onClick={(event) => { event.stopPropagation(); onHistory(); }} aria-label="История изменений">
+            <HistoryOutlinedIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+    );
+  }
   return (
     <Stack direction="row" spacing={0} justifyContent="flex-end" sx={{ '& .MuiIconButton-root': { p: 0.35 } }}>
       {actionable && <>
@@ -763,6 +807,7 @@ function GroupActions({
   onCompleteCfoReview,
   onWorkflowApprove,
   onWorkflowReturn,
+  compact = false,
 }: {
   group: ApprovalRegisterGroup;
   user: User;
@@ -771,6 +816,7 @@ function GroupActions({
   onCompleteCfoReview: (group: ApprovalRegisterGroup) => void;
   onWorkflowApprove: (group: ApprovalRegisterGroup) => void;
   onWorkflowReturn: (group: ApprovalRegisterGroup) => void;
+  compact?: boolean;
 }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const hasCfo = groupHasCfoActions(group);
@@ -778,14 +824,25 @@ function GroupActions({
   const hasWorkflow = groupHasWorkflowActions(group);
   if (!hasCfo && !hasComplete && !hasWorkflow) return null;
 
+  const scopeLabel = group.type === 'article' ? 'статью' : group.type === 'cfo' ? 'ЦФО' : 'группу';
   const primaryApprove = hasCfo ? () => onApproveCfo(group) : () => onWorkflowApprove(group);
   const primaryReject = hasCfo ? () => onReturnCfo(group) : () => onWorkflowReturn(group);
-  const approveTitle = hasCfo ? 'Согласовать все доступные строки группы' : workflowApproveLabel(user.role);
-  const rejectTitle = hasCfo ? 'Вернуть все доступные строки группы на доработку' : 'Вернуть все доступные позиции группы на доработку';
+  const approveTitle = hasCfo
+    ? `Согласовать все доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`
+    : `${workflowApproveLabel(user.role)} (${scopeLabel})`;
+  const rejectTitle = hasCfo
+    ? `Вернуть строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel} на доработку`
+    : `Вернуть позиции ${scopeLabel === 'статью' ? 'статьи' : scopeLabel} на доработку`;
   const showReject = hasCfo || user.role !== 'employee';
 
   return (
-    <Stack direction="row" spacing={0} justifyContent="flex-end" sx={{ '& .MuiIconButton-root': { p: 0.35 } }}>
+    <Stack
+      direction="row"
+      spacing={0}
+      justifyContent="flex-end"
+      onClick={(event) => event.stopPropagation()}
+      sx={{ '& .MuiIconButton-root': { p: 0.35 }, flex: compact ? '0 0 auto' : undefined }}
+    >
       {hasComplete && (
         <Tooltip title="Завершить проверку заявок и передать согласованные строки в маршрут">
           <IconButton size="small" color="primary" onClick={() => onCompleteCfoReview(group)}>
@@ -842,6 +899,63 @@ function GroupActions({
   );
 }
 
+function GroupYourDecisionCell({
+  group,
+  user,
+  onApproveCfo,
+  onReturnCfo,
+  onCompleteCfoReview,
+  onWorkflowApprove,
+  onWorkflowReturn,
+}: {
+  group: ApprovalRegisterGroup;
+  user: User;
+  onApproveCfo: (group: ApprovalRegisterGroup) => void;
+  onReturnCfo: (group: ApprovalRegisterGroup) => void;
+  onCompleteCfoReview: (group: ApprovalRegisterGroup) => void;
+  onWorkflowApprove: (group: ApprovalRegisterGroup) => void;
+  onWorkflowReturn: (group: ApprovalRegisterGroup) => void;
+}) {
+  const summary = groupYourStepSummary(group.aggregates);
+  const quick = canQuickDecideGroup(group);
+  return (
+    <Stack
+      direction="row"
+      alignItems="center"
+      justifyContent="flex-end"
+      spacing={0.5}
+      sx={{ minWidth: 0, maxWidth: '100%' }}
+    >
+      <Typography
+        variant="body2"
+        noWrap
+        title={summary}
+        sx={{
+          fontSize: 13,
+          lineHeight: 1.25,
+          color: quick ? 'warning.main' : 'text.primary',
+          fontWeight: quick ? 600 : 400,
+          minWidth: 0,
+        }}
+      >
+        {summary}
+      </Typography>
+      {quick ? (
+        <GroupActions
+          group={group}
+          user={user}
+          compact
+          onApproveCfo={onApproveCfo}
+          onReturnCfo={onReturnCfo}
+          onCompleteCfoReview={onCompleteCfoReview}
+          onWorkflowApprove={onWorkflowApprove}
+          onWorkflowReturn={onWorkflowReturn}
+        />
+      ) : null}
+    </Stack>
+  );
+}
+
 function SelectionBar({
   selectionRoots,
   selectedRows,
@@ -881,8 +995,10 @@ function SelectionBar({
 }
 
 function RegistryRowCells({ item, columns, widths, selected, active, user, onSelect, onActive, onDecision, onSaveRowDecision, onOpen, onHistory, structureLevel = 0 }: { item: ApprovalRegisterRow; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selected: boolean; active: boolean; user: User; onSelect: (checked: boolean) => void; onActive: () => void; onDecision: (target: DecisionTarget) => void; onSaveRowDecision: (row: ApprovalRegisterRow, decision: RowDecision, amount: number, comment?: string) => void; onOpen: () => void; onHistory: () => void; structureLevel?: number }) {
+  const workflowColumns = usesWorkflowStepColumns(user.role);
   const actionEnabled = isRowActionable(item, user.role);
   const amountEditable = canEditApprovedAmount(user.role, item);
+  const statusEditable = actionEnabled;
   const rowStatus = rowRegistryStatus(item);
   const commitAmount = (amount: number) => {
     if (amountEditable && item.is_approval_actionable) {
@@ -895,6 +1011,26 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, onSel
     }
     onDecision({ rows: [item], decision: amount === item.requested_sum ? 'approved' : 'approved_with_changes', amount });
   };
+  const commitDecision = (decision: RegistryRowDecision, amount: number) => {
+    if (statusEditable && (item.is_approval_actionable || item.is_cfo_review_actionable)) {
+      onSaveRowDecision(item, decision, amount);
+      return;
+    }
+    onDecision({
+      rows: [item],
+      decision,
+      amount,
+      allowAmountEdit: user.role === 'economist' && item.is_approval_actionable,
+    });
+  };
+  const openStatusDecision = (decision: RegistryRowDecision, amount = item.approved_sum || item.requested_sum) => {
+    onDecision({
+      rows: [item],
+      decision,
+      amount,
+      allowAmountEdit: user.role === 'economist' && item.is_approval_actionable,
+    });
+  };
   const cellTextSx = { fontSize: 13, lineHeight: 1.25 };
   const cells: Partial<Record<RegistryColumnId, React.ReactNode>> = {
     select: actionEnabled
@@ -906,16 +1042,77 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, onSel
         <Typography variant="caption" color="text.secondary" noWrap title={`${item.module_name} · ${item.article_name}`} sx={{ display: 'block', fontSize: 11, lineHeight: 1.2 }}>
           {item.module_name} · {item.article_name}
         </Typography>
+        {(item.justification || item.comment || item.files_count > 0) && (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap
+            title={[item.justification, item.comment, item.files_count ? `Файлов: ${item.files_count}` : ''].filter(Boolean).join(' · ')}
+            sx={{ display: 'block', fontSize: 11, lineHeight: 1.2, opacity: 0.9 }}
+          >
+            {item.justification || item.comment || (item.files_count ? `Файлов: ${item.files_count}` : '')}
+          </Typography>
+        )}
+        <Typography
+          component="button"
+          type="button"
+          variant="caption"
+          onClick={(event) => { event.stopPropagation(); onOpen(); }}
+          sx={{
+            display: 'inline',
+            p: 0,
+            m: 0,
+            border: 0,
+            background: 'none',
+            color: 'primary.main',
+            cursor: 'pointer',
+            fontSize: 11,
+            lineHeight: 1.2,
+            textAlign: 'left',
+            '&:hover': { textDecoration: 'underline' },
+          }}
+        >
+          Подробнее
+        </Typography>
       </Box>
     ),
     requested: <Typography variant="body2" sx={cellTextSx}>{money(item.requested_sum)}</Typography>,
-    approved: <EditableMoneyCell item={item} active={amountEditable} onCommit={commitAmount} />,
+    approved: workflowColumns ? (
+      <RegistryPreviousStepCell display={item.status_context?.previous_step} />
+    ) : (
+      <InlineEditMoneyCell
+        value={item.approved_sum}
+        editable={amountEditable}
+        formatValue={money}
+        parseValue={parseMoneyInput}
+        validate={(amount) => amount >= 0}
+        ariaLabel="Согласованная сумма"
+        onCommit={commitAmount}
+      />
+    ),
     rejected: <Typography variant="body2" sx={{ ...cellTextSx, color: rowRejectedAmount(item) ? 'error.main' : 'inherit' }}>{rejectedMoney(rowRejectedAmount(item))}</Typography>,
-    status: <RegistryStatusCell status={rowStatus} item={item} />,
+    your_step: workflowColumns ? (
+      <RegistryYourDecisionCell
+        item={item}
+        active={statusEditable}
+        amountEditable={amountEditable}
+        onCommit={commitDecision}
+        onDecision={openStatusDecision}
+      />
+    ) : null,
+    status: (
+      <EditableRegistryStatusCell
+        status={rowStatus}
+        item={item}
+        active={statusEditable}
+        onCommit={(decision) => commitDecision(decision, item.approved_sum || item.requested_sum)}
+        onDecision={openStatusDecision}
+      />
+    ),
     justification: <Typography variant="body2" noWrap title={item.justification || '—'} sx={cellTextSx}>{item.justification || '—'}</Typography>,
     comment: <Typography variant="body2" noWrap title={item.comment || '—'} sx={cellTextSx}>{item.comment || '—'}</Typography>,
     files: <Typography variant="body2" align="center" sx={cellTextSx}>{item.files_count || '—'}</Typography>,
-    actions: <RowActions item={item} user={user} onDecision={onDecision} onOpen={onOpen} onHistory={onHistory} />,
+    actions: workflowColumns ? null : <RowActions item={item} user={user} onDecision={onDecision} onOpen={onOpen} onHistory={onHistory} />,
     ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
       const fieldValue = item[key] || '';
       const editable = canEditItemAnalytics(item);
@@ -1098,8 +1295,9 @@ function ModuleGroupHeaderRow({
       </Stack>
     ),
     requested: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(module.aggregates.requested_sum)}</Typography>,
-    approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(module.aggregates.approved_sum)}</Typography>,
+    approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{usesWorkflowStepColumns(user.role) ? groupPreviousStepSummary(module.aggregates) : money(module.aggregates.approved_sum)}</Typography>,
     rejected: <Typography variant="body2" sx={{ fontSize: 13, color: module.aggregates.rejected_sum ? 'error.main' : 'inherit' }}>{rejectedMoney(module.aggregates.rejected_sum)}</Typography>,
+    your_step: usesWorkflowStepColumns(user.role) ? <Typography variant="body2" sx={{ fontSize: 13 }}>{groupYourStepSummary(module.aggregates)}</Typography> : null,
     status: <RegistryGroupStatusCell status={groupRegistryStatus(module.aggregates)} aggregates={module.aggregates} />,
     justification: '—',
     comment: '—',
@@ -1339,13 +1537,24 @@ function TreeRows({
         : null,
       structure: <Stack direction="row" alignItems="center" spacing={0.25} sx={{ pl: level * 1.15, minWidth: 0 }}><Box sx={{ width: 22, flex: '0 0 auto' }}>{hasContent && <IconButton size="small" aria-label={isExpanded ? 'Свернуть группу' : 'Раскрыть группу'} onClick={() => onToggle(group)} sx={{ p: 0.25 }}>{isExpanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}</IconButton>}</Box><Box minWidth={0}><Typography variant="body2" fontWeight={level === 0 ? 700 : 600} noWrap title={group.name} sx={{ fontSize: 13, lineHeight: 1.25 }}>{group.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>{group.label} · {group.aggregates.total_rows} строк{groupStructureCaptionExtras(group, user)}</Typography></Box></Stack>,
       requested: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(group.aggregates.requested_sum)}</Typography>,
-      approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{money(group.aggregates.approved_sum)}</Typography>,
+      approved: <Typography variant="body2" sx={{ fontSize: 13 }}>{usesWorkflowStepColumns(user.role) ? groupPreviousStepSummary(group.aggregates) : money(group.aggregates.approved_sum)}</Typography>,
       rejected: <Typography variant="body2" sx={{ fontSize: 13, color: group.aggregates.rejected_sum ? 'error.main' : 'inherit' }}>{rejectedMoney(group.aggregates.rejected_sum)}</Typography>,
+      your_step: usesWorkflowStepColumns(user.role) ? (
+        <GroupYourDecisionCell
+          group={group}
+          user={user}
+          onApproveCfo={onApproveGroup}
+          onReturnCfo={onCfoReviewReturn}
+          onCompleteCfoReview={onCompleteCfoReview}
+          onWorkflowApprove={onWorkflowApprove}
+          onWorkflowReturn={onWorkflowReturn}
+        />
+      ) : null,
       status: <RegistryGroupStatusCell status={groupRegistryStatus(group.aggregates)} aggregates={group.aggregates} />,
       justification: '—',
       comment: '—',
       files: '—',
-      actions: isGroupActionable(group) && groupSelectable
+      actions: isGroupActionable(group) && groupSelectable && !usesWorkflowStepColumns(user.role)
         ? <GroupActions group={group} user={user} onApproveCfo={onApproveGroup} onReturnCfo={onCfoReviewReturn} onCompleteCfoReview={onCompleteCfoReview} onWorkflowApprove={onWorkflowApprove} onWorkflowReturn={onWorkflowReturn} />
         : null,
       ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
@@ -1493,13 +1702,14 @@ export function ApprovalRegister({
   inRequestsPage?: boolean;
   hideHeader?: boolean;
 }) {
+  const toast = useAppToast();
   const availableViews = useMemo<RegistryView[]>(
     () => ['cfo', 'module', 'article', 'category', 'request'],
     [],
   );
   const defaultView = useMemo(() => defaultRegisterView(user), [user]);
   const [searchParams, setSearchParams] = useSearchParams();
-  const [storedPreferences] = useState(() => readPreferences(user.id));
+  const [storedPreferences] = useState(() => readPreferences(user.id, user.role));
   const [view, setView] = useState<RegistryView>(() => {
     const storedView = storedPreferences.view
       || (sessionStorage.getItem(registerViewStorageKey(user.id)) as RegistryView);
@@ -1533,7 +1743,6 @@ export function ApprovalRegister({
     target?: RevisionTarget | null;
     initialLines?: ApprovalRegisterRow[];
   } | null>(null);
-  const [decisionError, setDecisionError] = useState<string | null>(null);
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
   const deferredSearch = useDeferredValue(filters.search);
   const effectiveFilters = useMemo(() => ({ ...filters, search: deferredSearch }), [deferredSearch, filters]);
@@ -1639,17 +1848,16 @@ export function ApprovalRegister({
   }, onSuccess: (response, variables) => {
     if (variables.target.rows.length === 1) updateRegisterCache(queryClient, variables.target.rows[0], response.data as BudgetItem);
     else queryClient.invalidateQueries({ queryKey: ['approval-register'] });
-    setSelected(new Map()); setSelectedGroups(new Map()); setDecisionTarget(null); setDecisionError(null);
-  }, onError: () => setDecisionError('Не удалось сохранить решение. Данные не изменены; попробуйте ещё раз.') });
+    setSelected(new Map()); setSelectedGroups(new Map()); setDecisionTarget(null);
+  }, onError: (error) => toast(getApiErrorMessage(error, 'Не удалось сохранить решение'), 'error') });
   const saveRowDecision = useMutation({
     mutationFn: async ({ row, decision, amount, comment = '' }: { row: ApprovalRegisterRow; decision: RowDecision; amount?: number; comment?: string }) => (
       postRowDecision(row, decision, comment, amount)
     ),
     onSuccess: (response, variables) => {
       updateRegisterCache(queryClient, variables.row, response.data as BudgetItem);
-      setDecisionError(null);
     },
-    onError: () => setDecisionError('Не удалось сохранить решение по строке. Обновите реестр и попробуйте снова.'),
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось сохранить решение по строке'), 'error'),
   });
   const handleSaveRowDecision = useCallback((
     row: ApprovalRegisterRow,
@@ -1675,6 +1883,7 @@ export function ApprovalRegister({
       setGroupsToApprove([]);
       setSelectedGroups(new Map());
     },
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось согласовать группу'), 'error'),
   });
   const completeCfoReviewGroups = useMutation({
     mutationFn: async (groups: ApprovalRegisterGroup[]) => {
@@ -1691,6 +1900,7 @@ export function ApprovalRegister({
       queryClient.invalidateQueries({ queryKey: ['cfo-approval-route'] });
       setSelectedGroups(new Map());
     },
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось завершить проверку ЦФО'), 'error'),
   });
   const workflowGroupAction = useMutation({
     mutationFn: async ({ groups, action, comment = '', targetStepId }: { groups: ApprovalRegisterGroup[]; action: 'submit' | 'approve' | 'return_for_revision'; comment?: string; targetStepId?: string }) => {
@@ -1709,6 +1919,7 @@ export function ApprovalRegister({
       queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
       setSelectedGroups(new Map());
     },
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось выполнить действие по группе'), 'error'),
   });
   const toggleGroup = useCallback((group: ApprovalRegisterGroup) => {
     setExpanded((current) => {
@@ -1741,7 +1952,13 @@ export function ApprovalRegister({
       </Button>
     </Stack>
   ), [collapseAll, expandAll]);
-  const toggleColumn = (id: RegistryColumnId) => setPreferences((current) => ({ ...current, visibility: { ...current.visibility, [id]: !current.visibility[id] } }));
+  const toggleColumn = (id: RegistryColumnId) => setPreferences((current) => ({
+    ...current,
+    visibility: applyWorkflowColumnVisibility(
+      { ...current.visibility, [id]: !current.visibility[id] },
+      user.role,
+    ),
+  }));
   const moveColumn = (target: RegistryColumnId) => {
     if (!draggedColumn || draggedColumn === target || target === 'select' || target === 'structure') return;
     setPreferences((current) => {
@@ -1834,7 +2051,6 @@ export function ApprovalRegister({
     const actionableRows = selectedRows.filter((row) => isRowActionable(row, user.role));
     if (actionableRows.length === 1) {
       const row = actionableRows[0];
-      setDecisionError(null);
       setDecisionTarget({
         rows: [row],
         decision: 'approved',
@@ -1851,14 +2067,12 @@ export function ApprovalRegister({
       return;
     }
     if (actionableRows.length > 1) {
-      setDecisionError(null);
       setDecisionTarget({ rows: actionableRows, decision: 'approved' });
     }
   };
   const handleBulkReject = () => {
     const actionableRows = selectedRows.filter((row) => isRowActionable(row, user.role));
     if (actionableRows.length === 1) {
-      setDecisionError(null);
       setDecisionTarget({ rows: actionableRows, decision: 'rejected' });
       return;
     }
@@ -1872,7 +2086,6 @@ export function ApprovalRegister({
     const workflowRows = actionableRows.filter((row) => row.is_approval_actionable);
     const cfoRows = actionableRows.filter((row) => row.is_cfo_review_actionable);
     if (workflowRows.length && !cfoRows.length) {
-      setDecisionError(null);
       setDecisionTarget({ rows: workflowRows, decision: 'rejected' });
       return;
     }
@@ -2011,7 +2224,7 @@ export function ApprovalRegister({
       columns={REGISTRY_COLUMNS}
       visibility={preferences.visibility}
       onToggleColumn={toggleColumn}
-      onResetColumns={() => setPreferences({ order: DEFAULT_COLUMN_ORDER, visibility: DEFAULT_COLUMN_VISIBILITY, widths: DEFAULT_COLUMN_WIDTHS })}
+      onResetColumns={() => setPreferences({ order: DEFAULT_COLUMN_ORDER, visibility: defaultRegistryColumnVisibility(user.role), widths: DEFAULT_COLUMN_WIDTHS })}
       onResetFilters={() => {
         setFilters(EMPTY_FILTERS);
         columnControls.resetFilters();
@@ -2033,9 +2246,6 @@ export function ApprovalRegister({
         </Typography>
       </Box>
     ) : null}
-    {decisionError && !decisionTarget && (
-      <Alert severity="error" onClose={() => setDecisionError(null)}>{decisionError}</Alert>
-    )}
     <RegistryFilterBar
       view={view}
       filters={filters}
@@ -2097,7 +2307,11 @@ export function ApprovalRegister({
                   ) : (
                     <>
                       <TableColumnHeader
-                        label={column.label}
+                        label={
+                          column.id === 'approved' && usesWorkflowStepColumns(user.role)
+                            ? 'Согласовано, ₽'
+                            : column.label
+                        }
                         sortable={definition?.sortable !== false}
                         filterable={definition?.filterable !== false}
                         sortDirection={columnControls.sort?.column === column.id ? columnControls.sort.direction : null}
@@ -2156,14 +2370,12 @@ export function ApprovalRegister({
                   const workflowRows = target.rows.filter((row) => row.is_approval_actionable);
                   const cfoRows = target.rows.filter((row) => row.is_cfo_review_actionable);
                   if (workflowRows.length && !cfoRows.length) {
-                    setDecisionError(null);
                     setDecisionTarget({ ...target, rows: workflowRows });
                     return;
                   }
                   openRowRevisionDialog(cfoRows.length ? cfoRows : target.rows, setRevisionDialog);
                   return;
                 }
-                setDecisionError(null);
                 setDecisionTarget(target);
               }}
               onSaveRowDecision={handleSaveRowDecision}
@@ -2187,7 +2399,7 @@ export function ApprovalRegister({
       </Table>
     </TableContainer>
     <RegistryFooter totalRows={data?.aggregates.total_rows || 0} />
-    <DecisionDialog target={decisionTarget} saving={decide.isPending} error={decisionError} onClose={() => { setDecisionTarget(null); setDecisionError(null); }} onSave={(comment, amount) => decisionTarget && decide.mutate({ target: decisionTarget, comment, amount })} />
+    <DecisionDialog target={decisionTarget} saving={decide.isPending} onClose={() => setDecisionTarget(null)} onSave={(comment, amount) => decisionTarget && decide.mutate({ target: decisionTarget, comment, amount })} />
     <ConfirmDialog
       open={groupsToApprove.length > 0}
       title={groupsToApprove.length === 1 ? `Согласовать ${groupsToApprove[0]?.type === 'cfo' ? 'ЦФО' : 'статью'}` : 'Согласовать выбранные группы'}
@@ -2201,7 +2413,6 @@ export function ApprovalRegister({
           <Typography variant="body2" color="text.secondary">
             Строк: {groupsToApprove.reduce((total, group) => total + group.aggregates.total_rows, 0)} · запрошено: {money(groupsToApprove.reduce((total, group) => total + group.aggregates.requested_sum, 0))}
           </Typography>
-          {approveGroups.error && <Alert severity="error">Не удалось согласовать группу. Попробуйте ещё раз.</Alert>}
         </Stack>
       )}
       confirmLabel={approveGroups.isPending ? 'Сохраняется…' : 'Согласовать'}

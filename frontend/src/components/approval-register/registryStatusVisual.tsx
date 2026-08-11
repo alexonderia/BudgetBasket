@@ -31,7 +31,13 @@ export type StatusVisualPresentation = {
   footnote?: string;
   tooltipLines?: string[];
   hint: string;
+  primaryIconOnly?: boolean;
+  showActionIndicator?: boolean;
 };
+
+export function rowNeedsUserDecision(item?: ApprovalRegisterRow) {
+  return item?.status_context?.editability?.can_decide ?? false;
+}
 
 const BADGE_HEIGHT = 24;
 const ICON_SIZE = 14;
@@ -97,12 +103,19 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
   const hint = status.hint;
   const footnote = lineStatusFootnote(item);
   const tooltipLines = lineStatusTooltipLines(item);
-  const withContext = (presentation: StatusVisualPresentation): StatusVisualPresentation => ({
-    ...presentation,
-    footnote: footnote || presentation.footnote,
-    tooltipLines: tooltipLines.length ? tooltipLines : presentation.tooltipLines,
-    meta: footnote || presentation.meta,
-  });
+  const needsDecision = rowNeedsUserDecision(item);
+  const withContext = (presentation: StatusVisualPresentation): StatusVisualPresentation => {
+    const resolvedFootnote = footnote || presentation.footnote;
+    const withDecisionMarkers: StatusVisualPresentation = {
+      ...presentation,
+      footnote: resolvedFootnote,
+      tooltipLines: tooltipLines.length ? tooltipLines : presentation.tooltipLines,
+      meta: resolvedFootnote || presentation.meta,
+      primaryIconOnly: presentation.primaryIconOnly ?? (needsDecision && status.label === 'Ожидает вашего решения'),
+      showActionIndicator: presentation.showActionIndicator ?? (needsDecision && status.label !== 'Ожидает вашего решения'),
+    };
+    return withDecisionMarkers;
+  };
 
   switch (status.label) {
     case 'Утверждено':
@@ -309,7 +322,7 @@ function StatusIcon({ icon: Icon, color }: { icon: SvgIconComponent; color: stri
   return <Icon sx={{ fontSize: ICON_SIZE, color, flex: '0 0 auto' }} />;
 }
 
-export function StatusVisualBadge({ spec }: { spec: StatusVisualSpec }) {
+export function StatusVisualBadge({ spec, iconOnly = false }: { spec: StatusVisualSpec; iconOnly?: boolean }) {
   const ink = VARIANT_INK[spec.variant];
 
   return (
@@ -318,11 +331,12 @@ export function StatusVisualBadge({ spec }: { spec: StatusVisualSpec }) {
       sx={{
         display: 'inline-flex',
         alignItems: 'center',
-        gap: 0.45,
-        width: '100%',
+        justifyContent: iconOnly ? 'center' : 'flex-start',
+        gap: iconOnly ? 0 : 0.45,
+        width: iconOnly ? BADGE_HEIGHT : '100%',
         maxWidth: '100%',
         height: BADGE_HEIGHT,
-        px: 0.75,
+        px: iconOnly ? 0 : 0.75,
         borderRadius: '4px',
         border: '1px solid',
         borderColor: BADGE_SHELL.border,
@@ -333,10 +347,35 @@ export function StatusVisualBadge({ spec }: { spec: StatusVisualSpec }) {
         lineHeight: 1,
         whiteSpace: 'nowrap',
         boxSizing: 'border-box',
+        flex: iconOnly ? '0 0 auto' : undefined,
       }}
     >
       <StatusIcon icon={spec.icon} color={ink} />
-      <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{spec.text}</Box>
+      {!iconOnly ? <Box component="span" sx={{ overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{spec.text}</Box> : null}
+    </Box>
+  );
+}
+
+function ActionIndicatorIcon() {
+  return (
+    <Box
+      component="span"
+      aria-hidden
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: BADGE_HEIGHT,
+        height: BADGE_HEIGHT,
+        borderRadius: '4px',
+        border: '1px solid',
+        borderColor: BADGE_SHELL.border,
+        bgcolor: BADGE_SHELL.bgcolor,
+        color: VARIANT_INK.action,
+        flex: '0 0 auto',
+      }}
+    >
+      <ErrorOutlineIcon sx={{ fontSize: ICON_SIZE }} />
     </Box>
   );
 }
@@ -368,11 +407,16 @@ function StatusTooltip({ presentation }: { presentation: StatusVisualPresentatio
 }
 
 export function StatusVisualCell({ presentation }: { presentation: StatusVisualPresentation }) {
+  const showActionIndicator = presentation.showActionIndicator && !presentation.primaryIconOnly;
+
   return (
     <Tooltip title={<StatusTooltip presentation={presentation} />} arrow placement="top">
       <Box sx={{ minWidth: 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 0.25, py: 0.15 }}>
-        <Box sx={{ height: BADGE_HEIGHT, display: 'flex', alignItems: 'center' }}>
-          <StatusVisualBadge spec={presentation.primary} />
+        <Box sx={{ height: BADGE_HEIGHT, display: 'flex', alignItems: 'center', gap: 0.35, minWidth: 0 }}>
+          <Box sx={{ minWidth: 0, flex: presentation.primaryIconOnly ? '0 0 auto' : 1, height: BADGE_HEIGHT, display: 'flex', alignItems: 'center' }}>
+            <StatusVisualBadge spec={presentation.primary} iconOnly={presentation.primaryIconOnly} />
+          </Box>
+          {showActionIndicator ? <ActionIndicatorIcon /> : null}
         </Box>
         {presentation.footnote ? (
           <Typography

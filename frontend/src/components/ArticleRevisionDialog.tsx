@@ -23,6 +23,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { canEditRevisionLineDetails } from './approval-register/registryConfig';
 import { STATUS_LABELS } from './approval-register/registryConfig';
+import { InlineEditMoneyCell, InlineEditTextCell } from './inlineEdit';
 import type { ApprovalRegisterRow, ApprovalStep, User } from '../types';
 import { money } from '../utils/labels';
 
@@ -283,20 +284,24 @@ export function ArticleRevisionDialog({
                           <TableCell align="right">{money(line.requested_sum)}</TableCell>
                           <TableCell align="right">
                             {workflowLineEdit ? (
-                              <TextField
-                                size="small"
-                                type="number"
-                                disabled={!checked}
-                                value={lineValues[line.id]?.suggested_sum_fact ?? ''}
-                                onChange={(event) => setLineValues((current) => ({
+                              <InlineEditMoneyCell
+                                value={Number(lineValues[line.id]?.suggested_sum_fact ?? line.approved_sum ?? 0)}
+                                editable={checked}
+                                formatValue={money}
+                                parseValue={(raw) => {
+                                  const amount = Number(raw.replace(/\s/g, '').replace(',', '.'));
+                                  return Number.isFinite(amount) ? amount : null;
+                                }}
+                                validate={(amount) => amount >= 0}
+                                ariaLabel="Согласованная сумма"
+                                title="Нажмите, чтобы изменить сумму"
+                                onCommit={(amount) => setLineValues((current) => ({
                                   ...current,
                                   [line.id]: {
-                                    suggested_sum_fact: event.target.value,
+                                    suggested_sum_fact: String(amount),
                                     comment: current[line.id]?.comment || '',
                                   },
                                 }))}
-                                inputProps={{ min: 0, step: 0.01 }}
-                                sx={{ width: 140 }}
                               />
                             ) : (
                               money(line.approved_sum)
@@ -311,16 +316,16 @@ export function ArticleRevisionDialog({
                           </TableCell>
                           {canEditLines && (
                             <TableCell>
-                              <TextField
-                                size="small"
-                                fullWidth
-                                disabled={!checked}
-                                placeholder="Комментарий к строке"
+                              <InlineEditTextCell
                                 value={lineValues[line.id]?.comment || ''}
-                                onChange={(event) => setLineValues((current) => ({
+                                editable={checked}
+                                placeholder="Комментарий к строке"
+                                ariaLabel="Комментарий к строке"
+                                title="Нажмите, чтобы добавить комментарий к строке"
+                                onCommit={(comment) => setLineValues((current) => ({
                                   ...current,
                                   [line.id]: {
-                                    comment: event.target.value,
+                                    comment,
                                     suggested_sum_fact: current[line.id]?.suggested_sum_fact ?? '',
                                   },
                                 }))}

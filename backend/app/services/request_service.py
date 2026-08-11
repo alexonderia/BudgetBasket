@@ -845,6 +845,394 @@ class RequestService:
 
         return latest
 
+    def _build_register_item_step_decisions(
+        self,
+        users: dict[str, dict],
+        profiles: dict[str, dict],
+    ) -> dict[str, dict[str, dict]]:
+        items_by_id = {row["id"]: row for row in self.repo.load_all("req_items")}
+        by_item: dict[str, dict[str, dict]] = {}
+
+        def consider(
+            item_id: str | None,
+            created_at: str | None,
+            user_id: str | None,
+            action: str | None,
+            stage: str | None,
+            log: dict,
+        ) -> None:
+            if not item_id or not action or action not in self._REGISTER_DECISION_ACTIONS:
+                return
+            bucket = by_item.setdefault(item_id, {})
+            current = bucket.get(action)
+            if current and str(created_at or "") <= str(current.get("at") or ""):
+                return
+            item = items_by_id.get(item_id) or {}
+            amount, item_status = self._register_decision_amount_status(
+                log.get("changes") or {},
+                str(item.get("status") or ItemStatus.on_review),
+                float(item.get("sum_fact") or 0),
+                float(item.get("sum_plan") or 0),
+            )
+            bucket[action] = {
+                "at": created_at,
+                "by_id": user_id,
+                "by_name": self._register_user_display_name(users, profiles, user_id),
+                "action": action,
+                "action_label": self._REGISTER_DECISION_LABELS.get(action, action),
+                "stage": stage or self._REGISTER_DECISION_ACTIONS.get(action),
+                "amount": amount,
+                "item_status": item_status,
+            }
+
+        for row in self.repo.load_all("req_logs"):
+            log = row.get("log") or {}
+            action = log.get("action")
+            item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
+            consider(
+                item_id,
+                row.get("created_at"),
+                row.get("user_id"),
+                action,
+                log.get("stage"),
+                log,
+            )
+
+        for row in self.repo.load_all("cfo_position_logs"):
+            log = row.get("log") or {}
+            action = log.get("action")
+            item_id = log.get("req_item_id")
+            if not item_id and log.get("entity") == "req_item":
+                item_id = log.get("entity_id")
+            consider(
+                item_id,
+                row.get("created_at"),
+                row.get("user_id"),
+                action,
+                log.get("stage"),
+                log,
+            )
+
+        return by_item
+
+    @staticmethod
+    def _register_decision_amount_status(
+        changes: dict,
+        fallback_status: str,
+        fallback_sum_fact: float,
+        fallback_sum_plan: float,
+    ) -> tuple[float | None, str]:
+        status_change = changes.get("status") or {}
+        sum_change = changes.get("sum_fact") or {}
+        status = str(status_change.get("to") or fallback_status)
+        if status in APPROVED_ITEM_STATUSES:
+            if sum_change.get("to") is not None:
+                amount = float(sum_change.get("to"))
+            else:
+                amount = float(fallback_sum_fact or fallback_sum_plan or 0)
+        elif status == ItemStatus.rejected:
+            amount = 0.0
+        else:
+            amount = None
+        return amount, status
+
+    @staticmethod
+    def _register_step_display(
+        label: str,
+        tone: str,
+        hint: str,
+        *,
+        ready: bool = False,
+        amount: float | None = None,
+        item_status: str | None = None,
+    ) -> dict:
+        payload = {
+            "label": label,
+            "tone": tone,
+            "hint": hint,
+            "ready": ready,
+        }
+        if amount is not None:
+            payload["amount"] = amount
+        if item_status is not None:
+            payload["item_status"] = item_status
+        return payload
+
+    def _register_status_step_display(
+        self,
+        status: str,
+        prefix: str = "",
+        *,
+        amount: float | None = None,
+    ) -> dict:
+        if status in APPROVED_ITEM_STATUSES:
+            label = "Согласовано"
+            if status == ItemStatus.approved_with_changes:
+                label = "Согласовано с изменениями"
+            tone = "success"
+            resolved_amount = amount
+        elif status == ItemStatus.rejected:
+            label = "На доработке"
+            tone = "error"
+            resolved_amount = 0.0 if amount is None else amount
+        elif status == ItemStatus.on_review:
+            label = "Не проверено"
+            tone = "warning"
+            resolved_amount = None
+        else:
+            label = "—"
+            tone = "default"
+            resolved_amount = None
+        if prefix:
+            label = f"{prefix}: {label}"
+        return self._register_step_display(
+            label,
+            tone,
+            "",
+            amount=resolved_amount,
+            item_status=status,
+        )
+
+    def _register_decision_step_display(self, decision: dict, fallback_status: str) -> dict:
+        item_status = str(decision.get("item_status") or fallback_status)
+        label = decision.get("action_label") or "Решение принято"
+        by_name = decision.get("by_name")
+        if by_name:
+            label = f"{label} · {by_name}"
+        if item_status in APPROVED_ITEM_STATUSES:
+            tone = "success"
+        elif item_status == ItemStatus.rejected:
+            tone = "error"
+        else:
+            tone = "warning"
+        hint_parts = [part for part in [decision.get("stage")] if part]
+        return self._register_step_display(
+            label,
+            tone,
+            " · ".join(hint_parts),
+            amount=decision.get("amount"),
+            item_status=item_status,
+        )
+
+    def _register_entry_amount_for_status(self, entry: dict, status: str) -> float | None:
+        if status in APPROVED_ITEM_STATUSES:
+            approved = float(entry.get("approved_sum") or 0)
+            if approved:
+                return approved
+            return float(entry.get("requested_sum") or 0)
+        if status == ItemStatus.rejected:
+            return 0.0
+        return None
+
+    def _register_workflow_step_displays(
+        self,
+        *,
+        user: dict,
+        users: dict[str, dict],
+        steps: dict[str, dict],
+        position: dict | None,
+        entry: dict,
+        item_step_decisions: dict[str, dict[str, dict]],
+        economist_decided_by_position: dict[str, set[str]],
+    ) -> dict:
+        role = user.get("role")
+        if role not in {"economist", "approver", "zgd"}:
+            return {}
+
+        item_id = entry["id"]
+        status = str(entry.get("status") or ItemStatus.on_review)
+        step_decisions = item_step_decisions.get(item_id, {})
+        cfo_decision = step_decisions.get("cfo_item_decided")
+        economist_decision = step_decisions.get("economist_item_decided")
+
+        if entry.get("is_collecting") or entry.get("request_status") == RequestStatus.draft:
+            return {
+                "previous_step": self._register_step_display(
+                    "Черновик",
+                    "default",
+                    "Заявка ещё не отправлена на проверку",
+                ),
+                "your_step": self._register_step_display(
+                    "Недоступно",
+                    "default",
+                    "Согласование станет доступно после отправки заявки",
+                ),
+            }
+
+        if entry.get("fixed"):
+            return {
+                "previous_step": (
+                    self._register_decision_step_display(
+                        economist_decision or cfo_decision or {},
+                        status,
+                    )
+                    if (economist_decision or cfo_decision)
+                    else self._register_status_step_display(
+                        status,
+                        "Итог",
+                        amount=self._register_entry_amount_for_status(entry, status),
+                    )
+                ),
+                "your_step": self._register_step_display(
+                    "Зафиксировано",
+                    "success",
+                    "Строка зафиксирована после финального согласования",
+                    amount=self._register_entry_amount_for_status(entry, status),
+                    item_status=status,
+                ),
+            }
+
+        if entry.get("is_cfo_review"):
+            return {
+                "previous_step": self._register_step_display(
+                    "Отправлено автором",
+                    "info",
+                    "Заявка отправлена на проверку ответственным ЦФО",
+                ),
+                "your_step": self._register_step_display(
+                    "Не ваш этап",
+                    "default",
+                    "Сейчас проверка у ответственного ЦФО",
+                ),
+            }
+
+        if not entry.get("is_in_approval") or not position:
+            return {
+                "previous_step": self._register_status_step_display(
+                    status,
+                    amount=self._register_entry_amount_for_status(entry, status),
+                ),
+                "your_step": self._register_step_display(
+                    "Не в маршруте",
+                    "default",
+                    "Строка ещё не передана в маршрут согласования",
+                ),
+            }
+
+        step = steps.get(cfo_position_current_step_id(self.repo, position))
+        step_user = users.get(step.get("user_id"), {}) if step else {}
+        step_role = step_user.get("role")
+        is_my_step = step and step.get("user_id") == user.get("id")
+
+        if role == "economist":
+            if cfo_decision:
+                previous = self._register_decision_step_display(cfo_decision, status)
+            elif status == ItemStatus.on_review:
+                previous = self._register_step_display(
+                    "Не проверено ЦФО",
+                    "warning",
+                    "Ответственный ЦФО ещё не принял решение по строке",
+                    item_status=ItemStatus.on_review,
+                )
+            else:
+                previous = self._register_status_step_display(
+                    status,
+                    "ЦФО",
+                    amount=self._register_entry_amount_for_status(entry, status),
+                )
+
+            pending_amount = float(entry.get("requested_sum") or 0)
+            if cfo_decision and cfo_decision.get("amount") is not None:
+                pending_amount = float(cfo_decision["amount"])
+
+            if step_role != "economist":
+                your = self._register_step_display(
+                    "Не ваш этап",
+                    "default",
+                    entry.get("approval_stage") or "Ожидает другого этапа маршрута",
+                )
+            elif entry.get("is_approval_actionable"):
+                your = self._register_step_display(
+                    "Ваше решение",
+                    "action",
+                    "Согласуйте, скорректируйте сумму или верните на доработку",
+                    ready=True,
+                    amount=pending_amount,
+                    item_status=ItemStatus.on_review,
+                )
+            elif item_id in economist_decided_by_position.get(position["id"], set()):
+                your = (
+                    self._register_decision_step_display(economist_decision, status)
+                    if economist_decision
+                    else self._register_status_step_display(
+                        status,
+                        "Вы",
+                        amount=self._register_entry_amount_for_status(entry, status),
+                    )
+                )
+            elif entry.get("frozen"):
+                your = self._register_step_display(
+                    "Передано дальше",
+                    "info",
+                    "Строка проверена и передана на следующий этап",
+                    amount=self._register_entry_amount_for_status(entry, status),
+                    item_status=status,
+                )
+            else:
+                your = self._register_status_step_display(
+                    status,
+                    amount=self._register_entry_amount_for_status(entry, status),
+                )
+
+            return {"previous_step": previous, "your_step": your}
+
+        if role in {"approver", "zgd"}:
+            if economist_decision:
+                previous = self._register_decision_step_display(economist_decision, status)
+            elif entry.get("frozen") or status in APPROVED_ITEM_STATUSES:
+                previous = self._register_status_step_display(
+                    status,
+                    "Экономист",
+                    amount=self._register_entry_amount_for_status(entry, status),
+                )
+            else:
+                previous = self._register_step_display(
+                    "Не проверено",
+                    "warning",
+                    "Экономист ЦФО ещё не проверил строку",
+                    item_status=ItemStatus.on_review,
+                )
+
+            if step_role != role:
+                your = self._register_step_display(
+                    "Не ваш этап",
+                    "default",
+                    entry.get("approval_stage") or "Строка на другом этапе маршрута",
+                )
+            elif not entry.get("frozen") and status == ItemStatus.on_review:
+                your = self._register_step_display(
+                    "Ожидает экономиста",
+                    "warning",
+                    "Сначала экономист должен проверить и передать строку в маршрут",
+                )
+            elif entry.get("frozen") and is_my_step and not entry.get("fixed"):
+                your = self._register_step_display(
+                    "Можно согласовать",
+                    "action",
+                    "Строка готова — согласуйте блок или верните выбранные строки на доработку",
+                    ready=True,
+                    amount=self._register_entry_amount_for_status(entry, status),
+                    item_status=status,
+                )
+            elif entry.get("fixed"):
+                your = self._register_step_display(
+                    "Согласовано",
+                    "success",
+                    "Строка согласована на вашем этапе",
+                    amount=self._register_entry_amount_for_status(entry, status),
+                    item_status=status,
+                )
+            else:
+                your = self._register_step_display(
+                    "Ожидает",
+                    "default",
+                    entry.get("approval_stage") or "Строка в процессе согласования",
+                )
+
+            return {"previous_step": previous, "your_step": your}
+
+        return {}
+
     def _register_current_owner(
         self,
         *,
@@ -999,6 +1387,7 @@ class RequestService:
     def _register_status_context(
         self,
         *,
+        user: dict,
         users: dict[str, dict],
         profiles: dict[str, dict],
         steps: dict[str, dict],
@@ -1006,6 +1395,8 @@ class RequestService:
         cfo_id: str | None,
         entry: dict,
         item_decisions: dict[str, dict],
+        item_step_decisions: dict[str, dict[str, dict]],
+        economist_decided_by_position: dict[str, set[str]],
     ) -> dict:
         last_decision = item_decisions.get(entry["id"])
         current_owner = self._register_current_owner(
@@ -1021,10 +1412,20 @@ class RequestService:
             last_decision=last_decision,
             current_owner=current_owner,
         )
+        workflow_steps = self._register_workflow_step_displays(
+            user=user,
+            users=users,
+            steps=steps,
+            position=position,
+            entry=entry,
+            item_step_decisions=item_step_decisions,
+            economist_decided_by_position=economist_decided_by_position,
+        )
         return {
             "last_decision": last_decision,
             "current_owner": current_owner,
             "editability": editability,
+            **workflow_steps,
         }
 
     # The register intentionally works from request lines, rather than CFO
@@ -1066,6 +1467,7 @@ class RequestService:
         positions = {item["id"]: item for item in self.repo.load_all("cfo_positions")}
         steps = {item["id"]: item for item in self.repo.load_all("steps")}
         item_decisions = self._build_register_item_decisions(users, profiles)
+        item_step_decisions = self._build_register_item_step_decisions(users, profiles)
         economist_cfo_ids = (
             self.permissions.economist_cfo_ids(user["id"])
             if user.get("role") == "economist"
@@ -1252,6 +1654,7 @@ class RequestService:
                 "fixed": bool(item.get("fixed")),
             }
             entry["status_context"] = self._register_status_context(
+                user=user,
                 users=users,
                 profiles=profiles,
                 steps=steps,
@@ -1259,6 +1662,8 @@ class RequestService:
                 cfo_id=current_cfo_id,
                 entry=entry,
                 item_decisions=item_decisions,
+                item_step_decisions=item_step_decisions,
+                economist_decided_by_position=economist_decided_by_position,
             )
             if budget_year and entry["budget_year"] != budget_year:
                 continue

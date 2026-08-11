@@ -12,7 +12,7 @@ export function lineStatusFootnote(item?: ApprovalRegisterRow) {
   if (!context) return undefined;
 
   const { editability, last_decision: lastDecision, current_owner: currentOwner } = context;
-  if (editability.mode === 'editable') return 'Можно изменить';
+  if (editability.mode === 'editable' && editability.can_decide) return undefined;
 
   if (lastDecision?.by_name && (item?.status === 'approved' || item?.status === 'approved_with_changes' || item?.status === 'rejected')) {
     const stage = lastDecision.stage ? ` · ${lastDecision.stage}` : '';

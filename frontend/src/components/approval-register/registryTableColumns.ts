@@ -4,6 +4,8 @@ import { money } from '../../utils/labels';
 import type { TableColumnDefinition, TableSortState } from '../../utils/tableColumns';
 import {
   groupRegistryStatus,
+  groupPreviousStepSummary,
+  groupYourStepSummary,
   rowRegistryStatus,
   rowRejectedAmount,
   type RegistryColumnId,
@@ -19,6 +21,8 @@ export const REGISTRY_COLUMN_MIN_WIDTHS: Record<RegistryColumnId, number> = {
   requested: 100,
   approved: 100,
   rejected: 100,
+  previous_step: 150,
+  your_step: 190,
   status: 120,
   actions: 72,
   justification: 160,
@@ -70,14 +74,53 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
   {
     id: 'approved',
     label: 'Согласовано, ₽',
-    getValue: (row) => money(row.kind === 'group' ? row.group.aggregates.approved_sum : row.item.approved_sum),
-    getSortValue: (row) => (row.kind === 'group' ? row.group.aggregates.approved_sum : row.item.approved_sum),
+    getValue: (row) => {
+      if (row.kind === 'group') return money(row.group.aggregates.approved_sum);
+      const previous = row.item.status_context?.previous_step;
+      if (previous?.amount != null) return money(previous.amount);
+      return previous?.label || money(row.item.approved_sum);
+    },
+    getSortValue: (row) => {
+      if (row.kind === 'group') return row.group.aggregates.approved_sum;
+      const previous = row.item.status_context?.previous_step;
+      if (previous?.amount != null) return previous.amount;
+      return row.item.approved_sum;
+    },
   },
   {
     id: 'rejected',
     label: 'Отклонено, ₽',
     getValue: (row) => money(row.kind === 'group' ? row.group.aggregates.rejected_sum : rowRejectedAmount(row.item)),
     getSortValue: (row) => (row.kind === 'group' ? row.group.aggregates.rejected_sum : rowRejectedAmount(row.item)),
+  },
+  {
+    id: 'previous_step',
+    label: 'Предыдущий шаг',
+    getValue: (row) => (
+      row.kind === 'group'
+        ? groupPreviousStepSummary(row.group.aggregates)
+        : row.item.status_context?.previous_step?.label || '—'
+    ),
+    getSortValue: (row) => (
+      row.kind === 'group'
+        ? groupPreviousStepSummary(row.group.aggregates)
+        : row.item.status_context?.previous_step?.label || ''
+    ),
+  },
+  {
+    id: 'your_step',
+    label: 'Ваше решение',
+    getValue: (row) => {
+      if (row.kind === 'group') return groupYourStepSummary(row.group.aggregates);
+      const your = row.item.status_context?.your_step;
+      if (your?.amount != null) return `${money(your.amount)} · ${your.label}`;
+      return your?.label || '—';
+    },
+    getSortValue: (row) => (
+      row.kind === 'group'
+        ? groupYourStepSummary(row.group.aggregates)
+        : row.item.status_context?.your_step?.label || ''
+    ),
   },
   {
     id: 'status',

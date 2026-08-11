@@ -185,6 +185,17 @@ export interface RegisterLineStatusContext {
   last_decision?: RegisterLineStatusDecision | null;
   current_owner?: RegisterLineStatusOwner | null;
   editability: RegisterLineEditability;
+  previous_step?: RegisterStepDecisionDisplay | null;
+  your_step?: RegisterStepDecisionDisplay | null;
+}
+
+export interface RegisterStepDecisionDisplay {
+  label: string;
+  tone: 'success' | 'error' | 'warning' | 'info' | 'action' | 'default';
+  hint: string;
+  ready?: boolean;
+  amount?: number | null;
+  item_status?: ItemStatus | null;
 }
 
 export interface ApprovalRegisterRow {

@@ -2,7 +2,7 @@ import type { ApprovalRegisterGroup, ApprovalRegisterRow, ItemStatus, RegisterAg
 import { ANALYTICS_FIELD_KEYS, EMPTY_ANALYTICS_FILTERS, type AnalyticsFieldKey } from '../../utils/analyticsFields';
 
 export type RegistryView = 'cfo' | 'category' | 'article' | 'module' | 'request';
-export type RegistryColumnId = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'status' | 'justification' | 'comment' | 'files' | 'actions' | AnalyticsFieldKey;
+export type RegistryColumnId = 'select' | 'structure' | 'requested' | 'approved' | 'rejected' | 'status' | 'previous_step' | 'your_step' | 'justification' | 'comment' | 'files' | 'actions' | AnalyticsFieldKey;
 
 export type RegistryFilters = {
   search: string;
@@ -23,15 +23,17 @@ export const REGISTRY_VIEW_LABELS: Record<RegistryView, string> = {
 
 export const REGISTRY_COLUMNS: Array<{ id: RegistryColumnId; label: string; width: number; hideable?: boolean }> = [
   { id: 'select', label: '', width: 40, hideable: false },
-  { id: 'structure', label: 'Структура', width: 320, hideable: false },
-  { id: 'requested', label: 'Запрошено, ₽', width: 118 },
-  { id: 'approved', label: 'Согласовано, ₽', width: 126 },
+  { id: 'structure', label: 'Структура', width: 300, hideable: false },
+  { id: 'requested', label: 'Запрошено, ₽', width: 110 },
+  { id: 'approved', label: 'Согласовано, ₽', width: 132 },
   { id: 'rejected', label: 'Отклонено, ₽', width: 118 },
+  { id: 'your_step', label: 'Ваше решение', width: 168, hideable: true },
+  { id: 'previous_step', label: 'Предыдущий шаг', width: 168, hideable: true },
   { id: 'status', label: 'Статус', width: 188 },
-  { id: 'actions', label: 'Действия', width: 108, hideable: false },
-  { id: 'justification', label: 'Обоснование', width: 300 },
-  { id: 'comment', label: 'Комментарий', width: 220 },
-  { id: 'files', label: 'Файлы', width: 86 },
+  { id: 'actions', label: 'Действия', width: 108, hideable: true },
+  { id: 'justification', label: 'Обоснование', width: 240 },
+  { id: 'comment', label: 'Комментарий', width: 180 },
+  { id: 'files', label: 'Файлы', width: 72 },
   ...ANALYTICS_FIELD_KEYS.map((id) => ({ id, label: `Аналитика ${id.slice(-1)}`, width: 160, hideable: true })),
 ];
 
@@ -41,6 +43,8 @@ export const DEFAULT_COLUMN_VISIBILITY: Record<RegistryColumnId, boolean> = {
   requested: true,
   approved: true,
   rejected: true,
+  previous_step: false,
+  your_step: false,
   status: true,
   justification: true,
   comment: true,
@@ -66,6 +70,75 @@ export function orderedRegistryColumns(order: RegistryColumnId[], visibility: Re
     const column = byId.get(id);
     return column && visibility[id] ? [column] : [];
   });
+}
+
+export function usesWorkflowStepColumns(role?: User['role']) {
+  return role === 'economist' || role === 'approver' || role === 'zgd';
+}
+
+export function defaultRegistryColumnVisibility(role?: User['role']): Record<RegistryColumnId, boolean> {
+  const visibility = { ...DEFAULT_COLUMN_VISIBILITY };
+  if (usesWorkflowStepColumns(role)) {
+    // Decision columns instead of status/actions; keep line details visible.
+    visibility.status = false;
+    visibility.previous_step = false;
+    visibility.actions = false;
+    visibility.rejected = false;
+    visibility.your_step = true;
+    visibility.justification = true;
+    visibility.comment = true;
+    visibility.files = true;
+  }
+  return visibility;
+}
+
+/** Keep workflow layout from drifting back to duplicated decision columns via saved prefs. */
+export function applyWorkflowColumnVisibility(
+  visibility: Record<RegistryColumnId, boolean>,
+  role?: User['role'],
+): Record<RegistryColumnId, boolean> {
+  if (!usesWorkflowStepColumns(role)) return visibility;
+  return {
+    ...visibility,
+    your_step: true,
+    actions: false,
+    previous_step: false,
+    status: false,
+    rejected: false,
+  };
+}
+
+export function groupPreviousStepSummary(aggregates: RegisterAggregates) {
+  const waiting = Math.max(aggregates.pending_rows - aggregates.cfo_review_actionable_requests - aggregates.actionable_positions, 0);
+  if (aggregates.cfo_review_requests > 0) {
+    return `ЦФО: ${aggregates.cfo_review_requests} на проверке`;
+  }
+  if (waiting > 0) {
+    return `Ожидает: ${waiting}`;
+  }
+  if (aggregates.approved_rows > 0) {
+    return `Проверено: ${aggregates.approved_rows + aggregates.rejected_rows}`;
+  }
+  return '—';
+}
+
+export function groupYourStepSummary(aggregates: RegisterAggregates) {
+  const actionable = aggregates.cfo_review_actionable_requests + aggregates.actionable_positions;
+  if (actionable > 0) {
+    return `К решению: ${actionable}`;
+  }
+  if (aggregates.cfo_review_completable_requests > 0) {
+    return `Можно передать: ${aggregates.cfo_review_completable_requests}`;
+  }
+  if (aggregates.approved_rows === aggregates.total_rows && aggregates.total_rows > 0) {
+    return 'Все проверено';
+  }
+  return '—';
+}
+
+/** Article/CFO rows that can be decided in one click from the group row. */
+export function canQuickDecideGroup(group: ApprovalRegisterGroup) {
+  return isGroupActionable(group) && (group.type === 'article' || group.type === 'cfo');
 }
 
 export const STATUS_LABELS: Record<ItemStatus, string> = {

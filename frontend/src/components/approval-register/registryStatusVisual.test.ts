@@ -8,13 +8,43 @@ const baseStatus = {
 };
 
 describe('registry status visuals', () => {
-  it('highlights actionable row with filled action badge', () => {
+  it('highlights actionable row with icon-only action badge', () => {
     const presentation = rowStatusPresentation({ ...baseStatus, label: 'Ожидает вашего решения' }, {
       is_cfo_review: true,
+      status_context: {
+        editability: {
+          can_decide: true,
+          can_edit_amount: true,
+          can_edit_analytics: true,
+          mode: 'editable',
+          summary: 'Можно изменить',
+          detail: 'Вы можете согласовать строку',
+        },
+      },
     } as never);
     expect(presentation.primary.text).toBe('Ваше решение');
     expect(presentation.primary.variant).toBe('action');
+    expect(presentation.primaryIconOnly).toBe(true);
     expect(presentation.meta).toContain('ЦФО');
+  });
+
+  it('shows action indicator for editable approved lines', () => {
+    const presentation = rowStatusPresentation({ ...baseStatus, label: 'Утверждено' }, {
+      status: 'approved',
+      status_context: {
+        editability: {
+          can_decide: true,
+          can_edit_amount: true,
+          can_edit_analytics: true,
+          mode: 'editable',
+          summary: 'Можно изменить',
+          detail: 'Экономист может принять решение',
+        },
+      },
+    } as never);
+    expect(presentation.primary.text).toBe('Согласовано');
+    expect(presentation.showActionIndicator).toBe(true);
+    expect(presentation.footnote).toBeUndefined();
   });
 
   it('keeps approved row compact and calm', () => {

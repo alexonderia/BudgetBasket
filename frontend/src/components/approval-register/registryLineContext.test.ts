@@ -74,6 +74,6 @@ describe('registryLineContext', () => {
         },
       },
     };
-    expect(lineStatusFootnote(row)).toBe('Можно изменить');
+    expect(lineStatusFootnote(row)).toBeUndefined();
   });
 });
