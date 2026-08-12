@@ -1225,7 +1225,7 @@ export default function RequestsPage({ user }: { user: User }) {
   });
   const isCfoResponsible = user.role === 'employee'
     && (user.unit_ids || []).some((unitId) => units.some((unit) => unit.id === unitId && unit.type === 'cfo'));
-  const isReviewer = isCfoResponsible || ['economist', 'approver', 'zgd'].includes(user.role);
+  const isReviewer = isCfoResponsible || ['admin', 'economist', 'approver', 'zgd'].includes(user.role);
 
   if (user.role === 'employee' && unitsPending) {
     return <Typography color="text.secondary">Загрузка заявок…</Typography>;

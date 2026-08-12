@@ -270,6 +270,16 @@ function redistributeMonthPlans(plans: BudgetItem['month_plans'], target: bigint
   return portions.map((item) => ({ month: item.index + 1, sum_plan: centsToAmount(item.value) }));
 }
 
+function evenlyDistributeMonthPlans(target: bigint): BudgetItem['month_plans'] {
+  const base = target / 12n;
+  let remainder = target % 12n;
+  return MONTH_NAMES.map((_, index) => {
+    const amount = base + (remainder > 0n ? 1n : 0n);
+    if (remainder > 0n) remainder -= 1n;
+    return { month: index + 1, sum_plan: centsToAmount(amount) };
+  });
+}
+
 function uploadValidationError(file: File) {
   const extension = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
   if (!UPLOAD_EXTENSIONS.has(extension)) {
@@ -685,10 +695,16 @@ function AddItemForm({
   const [name, setName] = useState('');
   const [sumPlan, setSumPlan] = useState('');
   const [monthPlanValues, setMonthPlanValues] = useState<string[]>(() => Array(12).fill(''));
+  const [autoFillExpenseMonths, setAutoFillExpenseMonths] = useState(true);
   const [justification, setJustification] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const annualTotal = monthPlansTotal(monthPlanValues);
   const monthPlanErrors = monthPlanValues.map(monthAmountError);
+
+  useEffect(() => {
+    if (isIncome || !autoFillExpenseMonths || monthAmountError(sumPlan)) return;
+    setMonthPlanValues(evenlyDistributeMonthPlans(monthAmountToCents(sumPlan)).map((plan) => String(plan.sum_plan)));
+  }, [autoFillExpenseMonths, isIncome, sumPlan]);
 
   const create = useMutation({
     mutationFn: async () => {
@@ -696,10 +712,8 @@ function AddItemForm({
         [kind === 'dds' ? 'dds_id' : 'invest_id']: article?.id,
         is_income: isIncome,
         name,
-        sum_plan: isIncome ? centsToAmount(annualTotal) : Number(sumPlan),
-        ...(isIncome ? {
-          month_plans: monthPlanValues.map((sum_plan, index) => ({ month: index + 1, sum_plan: centsToAmount(monthAmountError(sum_plan) ? 0n : monthAmountToCents(sum_plan)) })),
-        } : {}),
+        sum_plan: centsToAmount(annualTotal),
+        month_plans: monthPlanValues.map((sum_plan, index) => ({ month: index + 1, sum_plan: centsToAmount(monthAmountError(sum_plan) ? 0n : monthAmountToCents(sum_plan)) })),
         justification,
       });
       try {
@@ -722,6 +736,7 @@ function AddItemForm({
       setName('');
       setSumPlan('');
       setMonthPlanValues(Array(12).fill(''));
+      setAutoFillExpenseMonths(true);
       setJustification('');
       setPendingFiles([]);
       queryClient.invalidateQueries({ queryKey: ['request-details', requestId] });
@@ -733,6 +748,7 @@ function AddItemForm({
         setName('');
         setSumPlan('');
         setMonthPlanValues(Array(12).fill(''));
+        setAutoFillExpenseMonths(true);
         setJustification('');
         setPendingFiles([]);
       }
@@ -777,10 +793,13 @@ function AddItemForm({
         )}
       />
       {!isIncome && <TextField
-          label="Плановая сумма"
+          label="Плановая сумма для распределения"
           inputProps={{ inputMode: 'decimal' }}
           value={sumPlan}
-          onChange={(event) => setSumPlan(normalizePositiveAmount(event.target.value))}
+          onChange={(event) => {
+            setSumPlan(normalizePositiveAmount(event.target.value));
+            setAutoFillExpenseMonths(true);
+          }}
           disabled={disabled}
           sx={{ minWidth: { xs: 0, sm: 140 }, width: { xs: '100%', lg: 'auto' } }}
         />}
@@ -791,24 +810,26 @@ function AddItemForm({
         disabled={disabled}
         sx={{ minWidth: { xs: 0, sm: 200 }, width: { xs: '100%', lg: 'auto' }, flex: 1 }}
       />
-        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || !name.trim() || (!isIncome && Number(sumPlan) <= 0) || monthPlanErrors.some(Boolean) || create.isPending} sx={{ width: { xs: '100%', lg: 'auto' } }}>
+        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || !name.trim() || annualTotal <= 0n || monthPlanErrors.some(Boolean) || create.isPending} sx={{ width: { xs: '100%', lg: 'auto' } }}>
           {isIncome ? 'Добавить доход' : 'Добавить расход'}
         </Button>
       </Stack>
-      {isIncome && (
-        <Box component="section" sx={{ borderTop: 1, borderColor: 'divider', pt: 2 }}>
-          <Typography variant="subtitle1" sx={{ mb: 1.25 }}>План поступлений по месяцам</Typography>
+      <Box component="section" sx={{ borderTop: 1, borderColor: 'divider', pt: 2 }}>
+          <Typography variant="subtitle1" sx={{ mb: 0.5 }}>{isIncome ? 'План поступлений по месяцам' : 'План расходов по месяцам'}</Typography>
+          {!isIncome && <Typography variant="body2" color="text.secondary" sx={{ mb: 1.25 }}>Сумма распределяется поровну на 12 месяцев. Значения можно скорректировать вручную.</Typography>}
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', lg: 'repeat(4, 1fr)' }, gap: 1.25 }}>
             {MONTH_NAMES.map((month, index) => (
               <TextField key={month} label={month} size="small" inputProps={{ inputMode: 'decimal' }} value={monthPlanValues[index]}
                 error={!!monthPlanErrors[index]} helperText={monthPlanErrors[index] || undefined} disabled={disabled}
-                onChange={(event) => setMonthPlanValues((current) => current.map((value, itemIndex) => itemIndex === index ? normalizeMonthAmount(event.target.value) : value))}
+                onChange={(event) => {
+                  setAutoFillExpenseMonths(false);
+                  setMonthPlanValues((current) => current.map((value, itemIndex) => itemIndex === index ? normalizeMonthAmount(event.target.value) : value));
+                }}
               />
             ))}
           </Box>
           <Typography variant="subtitle1" sx={{ mt: 1.5 }}>Итого за год: {annualTotalLabel(annualTotal)}</Typography>
-        </Box>
-      )}
+      </Box>
       <TextField
         label="Обоснование"
         value={justification}
@@ -925,6 +946,7 @@ function ItemsTable({
   const [deleteTarget, setDeleteTarget] = useState<BudgetItem | null>(null);
   const [redistributionTarget, setRedistributionTarget] = useState<BudgetItem | null>(null);
   const [expandedItemGroups, setExpandedItemGroups] = useState<Set<string>>(new Set());
+  const [expandedMonthPlans, setExpandedMonthPlans] = useState<Set<string>>(new Set());
   const [articleApprovalTarget, setArticleApprovalTarget] = useState<ArticleApprovalTarget | null>(null);
   const [selectedItems, setSelectedItems] = useState<Map<string, BudgetItem>>(new Map());
   const [bulkDecision, setBulkDecision] = useState<{ items: BudgetItem[]; decision: BulkItemDecision } | null>(null);
@@ -937,6 +959,15 @@ function ItemsTable({
       || revisionItemIds.has(item.id)
       || cfoRevisionItemIds.has(item.id)
     );
+  const canCfoEditMonthPlans = (item: BudgetItem) => user.role === 'employee'
+    && !item.frozen
+    && !item.fixed
+    && request.status === 'on_review'
+    && request.available_actions?.includes('complete_cfo_review') === true
+    && !!request.cfo_unit_id
+    && (user.unit_ids || []).includes(request.cfo_unit_id)
+    && !revisionItemIds.has(item.id)
+    && !cfoRevisionItemIds.has(item.id);
   const canEmployeeEditFiles = (item: BudgetItem) => user.role === 'employee'
     && !item.frozen
     && !item.fixed
@@ -1175,7 +1206,8 @@ function ItemsTable({
       case 'structure':
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2, pl: 2.5 })}>
-            <Box sx={{ minWidth: 0 }}>
+            <Stack direction="row" spacing={0.25} alignItems="center" sx={{ minWidth: 0 }}>
+            <Box sx={{ minWidth: 0, flex: 1 }}>
               {canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id) && !isDeleted ? (
                 <InlineEditTextCell
                   value={item.name}
@@ -1191,6 +1223,25 @@ function ItemsTable({
               )}
               {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" sx={{ mt: 0.25, height: 20, fontSize: 10 }} />}
             </Box>
+              {!isDeleted && (
+                <Tooltip title={expandedMonthPlans.has(item.id) ? 'Свернуть план по месяцам' : 'Показать план по месяцам'}>
+                  <IconButton
+                    size="small"
+                    onClick={() => setExpandedMonthPlans((current) => {
+                      const next = new Set(current);
+                      if (next.has(item.id)) next.delete(item.id);
+                      else next.add(item.id);
+                      return next;
+                    })}
+                    aria-label={expandedMonthPlans.has(item.id) ? 'Свернуть план по месяцам' : 'Показать план по месяцам'}
+                    aria-expanded={expandedMonthPlans.has(item.id)}
+                    sx={{ p: 0.35, flexShrink: 0 }}
+                  >
+                    <ExpandMoreIcon fontSize="small" sx={{ transform: expandedMonthPlans.has(item.id) ? 'rotate(180deg)' : undefined }} />
+                  </IconButton>
+                </Tooltip>
+              )}
+            </Stack>
           </TableCell>
         );
       case 'justification':
@@ -1444,6 +1495,9 @@ function ItemsTable({
     }
   };
   const tableWidth = visibleItemColumns.reduce((sum, column) => sum + columnWidths[column.id], 0);
+  const statusColumnIndex = visibleItemColumns.findIndex((column) => column.id === 'status');
+  const monthPlanColumnSpan = statusColumnIndex >= 0 ? statusColumnIndex + 1 : visibleItemColumns.length;
+  const trailingMonthPlanColumnSpan = visibleItemColumns.length - monthPlanColumnSpan;
 
   const headerCell = (column: ItemTableColumn) => ({
     width: itemVisibility[column] ? columnWidths[column] : 0,
@@ -1921,17 +1975,20 @@ function ItemsTable({
                       pendingDeletedFileIds,
                     ))}
                   </TableRow>
-                  {item.is_income && !isDeleted && (
+                  {!isDeleted && expandedMonthPlans.has(item.id) && (
                     <TableRow>
-                      <TableCell colSpan={visibleItemColumns.length} sx={{ py: 1.25, px: 2, bgcolor: 'action.hover', borderBottom: 1, borderColor: 'divider' }}>
-                        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }}>
-                          <Typography variant="body2" fontWeight={600} sx={{ minWidth: 156 }}>План по месяцам</Typography>
-                          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(96px, 1fr))', sm: 'repeat(4, minmax(96px, 1fr))', xl: 'repeat(6, minmax(96px, 1fr))' }, gap: 0.75, flex: 1 }}>
+                      <TableCell colSpan={monthPlanColumnSpan} sx={{ py: 0.75, px: 1, bgcolor: 'action.hover', borderBottom: 1, borderColor: 'divider' }}>
+                        <Stack spacing={0.65}>
+                          <Stack direction="row" alignItems="center" spacing={0.5}>
+                            <Typography variant="caption" fontWeight={700}>{item.is_income ? 'План поступлений по месяцам' : 'План расходов по месяцам'}</Typography>
+                            <Typography variant="caption" color="text.secondary">· {money(Number(monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan))) / 100n))}</Typography>
+                          </Stack>
+                          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 0.5 }}>
                             {MONTH_NAMES.map((month, index) => {
                               const plan = visibleMonthPlans.find((entry) => entry.month === index + 1);
-                              return <Box key={month} sx={{ px: 1, py: 0.5, borderRadius: 1, bgcolor: 'background.paper' }}>
-                                <Typography variant="caption" color="text.secondary">{month}</Typography>
-                                {canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id) ? (
+                              return <Box key={month} sx={{ minWidth: 0, px: 0.65, py: 0.4, borderRadius: 0.75, bgcolor: 'background.paper' }}>
+                                <Typography variant="caption" color="text.secondary" noWrap>{month.slice(0, 3)}</Typography>
+                                {(canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id)) || canCfoEditMonthPlans(item) ? (
                                   <InlineEditTextCell
                                     value={String(plan?.sum_plan ?? '')}
                                     editable
@@ -1946,35 +2003,32 @@ function ItemsTable({
                                       ));
                                       patchItemField.mutate({
                                         id: item.id,
-                                        body: {
-                                          month_plans: nextPlans,
-                                          sum_plan: Number(centsToAmount(monthPlansTotal(nextPlans.map((entry) => String(entry.sum_plan))))),
-                                        },
+                                        body: { month_plans: nextPlans },
                                       });
                                     }}
                                   />
-                                ) : <Typography variant="body2">{money(Number(plan?.sum_plan ?? 0))}</Typography>}
+                                ) : <Typography variant="caption" fontWeight={600} noWrap>{tableMoney(Number(plan?.sum_plan ?? 0))}</Typography>}
                               </Box>;
                             })}
                           </Box>
-                          <Stack spacing={0.5} alignItems={{ md: 'flex-end' }}>
-                            <Typography variant="body2" fontWeight={600} whiteSpace="nowrap">Утверждено по месяцам: {money(Number(monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan))) / 100n))}</Typography>
-                            {canEconomist && (local.sum_fact !== undefined || draftStatus !== 'on_review') && (() => {
-                              const monthTotal = monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan)));
-                              const approvedTotal = monthAmountToCents(String(factValue ?? 0));
-                              const difference = approvedTotal - monthTotal;
-                              const snapshot = autoFitSnapshots[item.id];
-                              return <>
-                                {difference !== 0n && <>
-                                  <Typography variant="caption" color={difference > 0n ? 'success.main' : 'error.main'}>Разница: {annualTotalLabel(difference < 0n ? -difference : difference)}</Typography>
-                                  <Button size="small" variant="outlined" disabled={monthTotal === 0n} onClick={() => autoFitEconomistMonthPlans(item.id, visibleMonthPlans, factValue)}>Автоподбор</Button>
-                                </>}
-                                {snapshot && <Button size="small" color="inherit" onClick={() => rollbackAutoFit(item.id)}>Откатить</Button>}
-                              </>;
-                            })()}
-                          </Stack>
+                          {canEconomist && (local.sum_fact !== undefined || draftStatus !== 'on_review') && (() => {
+                            const monthTotal = monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan)));
+                            const approvedTotal = monthAmountToCents(String(factValue ?? 0));
+                            const difference = approvedTotal - monthTotal;
+                            const snapshot = autoFitSnapshots[item.id];
+                            return <Stack direction="row" spacing={0.5} alignItems="center">
+                              {difference !== 0n && <>
+                                <Typography variant="caption" color={difference > 0n ? 'success.main' : 'error.main'}>Разница: {annualTotalLabel(difference < 0n ? -difference : difference)}</Typography>
+                                <Button size="small" variant="outlined" disabled={monthTotal === 0n} onClick={() => autoFitEconomistMonthPlans(item.id, visibleMonthPlans, factValue)}>Автоподбор</Button>
+                              </>}
+                              {snapshot && <Button size="small" color="inherit" onClick={() => rollbackAutoFit(item.id)}>Откатить</Button>}
+                            </Stack>;
+                          })()}
                         </Stack>
                       </TableCell>
+                      {trailingMonthPlanColumnSpan > 0 && (
+                        <TableCell colSpan={trailingMonthPlanColumnSpan} sx={{ p: 0, bgcolor: '#fff', borderBottom: 1, borderColor: 'divider' }} />
+                      )}
                     </TableRow>
                   )}
                 </Fragment>

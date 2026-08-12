@@ -25,12 +25,25 @@ class BudgetItemService:
         return {
             **item,
             "name": clean_request_item_name(item.get("name")),
-            "month_plans": month_plans or [] if item.get("is_income", False) else [],
+            "month_plans": month_plans if month_plans is not None else [],
         }
 
     @staticmethod
     def _zero_month_plans() -> list[dict]:
         return [{"month": month, "sum_plan": Decimal("0")} for month in range(1, 13)]
+
+    @classmethod
+    def _even_month_plans(cls, total: object) -> list[dict]:
+        """Split an annual amount over 12 months without losing kopecks."""
+        total_cents = int(cls._decimal(total) * 100)
+        base, remainder = divmod(total_cents, 12)
+        return [
+            {
+                "month": month,
+                "sum_plan": Decimal(base + (1 if month <= remainder else 0)) / 100,
+            }
+            for month in range(1, 13)
+        ]
 
     def _month_plans_by_item(self, item_ids: set[str] | None = None) -> dict[str, list[dict]]:
         plans: dict[str, dict[int, Decimal]] = {}
@@ -47,9 +60,9 @@ class BudgetItemService:
         }
 
     def _month_plans_for_item(self, item: dict) -> list[dict]:
-        if not item.get("is_income", False):
-            return []
-        return self._month_plans_by_item({item["id"]}).get(item["id"], self._zero_month_plans())
+        return self._month_plans_by_item({item["id"]}).get(
+            item["id"], self._even_month_plans(item.get("sum_plan") or 0)
+        )
 
     def _is_cfo_revision_item(self, item: dict) -> bool:
         """Whether the item was returned by the economist to the CFO owner."""
@@ -119,7 +132,13 @@ class BudgetItemService:
         if not include_deleted:
             items = [row for row in items if row.get("status") != ItemStatus.deleted]
         plans = self._month_plans_by_item({row["id"] for row in items})
-        return [self._public_item(row, plans.get(row["id"], self._zero_month_plans())) for row in items]
+        return [
+            self._public_item(
+                row,
+                plans.get(row["id"], self._even_month_plans(row.get("sum_plan") or 0)),
+            )
+            for row in items
+        ]
 
     def _kind_for_request(self, request: dict) -> str:
         return "invest" if get_required(self.repo, "units", request["unit_id"]).get("uses_invest_projects") else "dds"
@@ -156,20 +175,10 @@ class BudgetItemService:
         if not name:
             raise HTTPException(status_code=400, detail="Укажите наименование строки")
         is_income = payload.get("is_income", False)
-        raw_plans = []
-        if is_income:
-            raw_plans = (
-                payload.get("month_plans") or []
-                if "month_plans" in payload
-                else [{"month": 1, "sum_plan": payload.get("sum_plan", 0)}]
-            )
-        if not is_income and raw_plans:
-            raise HTTPException(status_code=422, detail="Помесячный план доступен только для доходной строки")
-        plans, total = (
-            self._validate_month_plans(raw_plans)
-            if is_income
-            else ([], self._decimal(payload["sum_plan"]))
-        )
+        raw_plans = payload.get("month_plans") if "month_plans" in payload else None
+        if raw_plans is None or (not is_income and not raw_plans):
+            raw_plans = self._even_month_plans(payload.get("sum_plan", 0))
+        plans, total = self._validate_month_plans(raw_plans)
         item = {
             "request_id": request_id,
             "cfo_position_id": None,
@@ -186,8 +195,7 @@ class BudgetItemService:
         }
         with self.repo.transaction() as repo:
             created = repo.create("req_items", item)
-            if is_income:
-                self._replace_month_plans(repo, created["id"], plans)
+            self._replace_month_plans(repo, created["id"], plans)
             self.requests.recalculate_total(request_id, repo=repo)
             public = self._public_item(created, plans)
             self.requests.log(
@@ -349,7 +357,17 @@ class BudgetItemService:
                     detail="При доработке нельзя менять тип или статью строки",
                 )
         else:
-            self.permissions.require_employee_edit_request(user, request)
+            cfo_month_plan_edit = (
+                request.get("status") == RequestStatus.on_review
+                and not self.requests.cfo_review_completed(request["id"])
+                and set(patch) == {"month_plans"}
+            )
+            if cfo_month_plan_edit:
+                self.permissions.require_cfo_request_access(user, request)
+                if item.get("fixed") or item.get("frozen"):
+                    raise HTTPException(status_code=409, detail="Закрытую строку нельзя изменить")
+            else:
+                self.permissions.require_employee_edit_request(user, request)
         normalized = self._employee_patch(patch, allow_sum_fact=is_cfo_revision)
         if is_cfo_revision and "sum_fact" in normalized:
             if normalized["sum_fact"] is None:
@@ -370,20 +388,15 @@ class BudgetItemService:
         if "name" in normalized and not normalized["name"]:
             raise HTTPException(status_code=400, detail="Укажите наименование строки")
 
-        is_income = normalized.get("is_income", item.get("is_income", False))
         raw_plans = normalized.pop("month_plans", None)
         clear_plans = normalized.pop("clear_month_plans", False)
-        if not is_income and raw_plans:
-            raise HTTPException(status_code=422, detail="Помесячный план доступен только для доходной строки")
-        if item.get("is_income") and not is_income and not clear_plans:
-            raise HTTPException(status_code=422, detail="Подтвердите очистку помесячного плана")
         plans: list[dict] | None = None
-        if is_income and raw_plans is not None:
+        if raw_plans is not None:
             plans, normalized["sum_plan"] = self._validate_month_plans(raw_plans)
-        elif is_income and not item.get("is_income"):
-            plans, normalized["sum_plan"] = self._validate_month_plans([])
-        elif not is_income and item.get("is_income"):
-            plans = []
+        elif "sum_plan" in normalized:
+            plans = self._even_month_plans(normalized["sum_plan"])
+        elif clear_plans:
+            plans = self._zero_month_plans()
 
         return self._apply_item_update(user, item, request, normalized, plans=plans)
 
