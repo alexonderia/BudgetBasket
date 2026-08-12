@@ -7,7 +7,6 @@ import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
-import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
@@ -17,14 +16,16 @@ import TableContainer from '@mui/material/TableContainer';
 import TableHead from '@mui/material/TableHead';
 import TableRow from '@mui/material/TableRow';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { canEditRevisionLineDetails } from './approval-register/registryConfig';
 import { STATUS_LABELS } from './approval-register/registryConfig';
 import { InlineEditMoneyCell, InlineEditTextCell } from './inlineEdit';
-import type { ApprovalRegisterRow, ApprovalStep, User } from '../types';
+import type { ApprovalRegisterRow, User } from '../types';
 import { money } from '../utils/labels';
 
 export type RevisionLine = ApprovalRegisterRow & {
@@ -48,11 +49,6 @@ function errorText(error: unknown) {
   return 'Не удалось выполнить операцию';
 }
 
-function stepLabel(steps: ApprovalStep[], stepId: string) {
-  const step = steps.find((candidate) => candidate.id === stepId);
-  return step?.unit?.name || step?.user?.login || stepId.slice(0, 8);
-}
-
 const GROUP_TYPE_LABELS: Record<RevisionTarget['groupType'], string> = {
   cfo: 'ЦФО',
   article: 'статью',
@@ -69,7 +65,6 @@ export function ArticleRevisionDialog({
   initialLines,
   requestId,
   positionId,
-  steps,
   user,
 }: {
   open: boolean;
@@ -80,11 +75,9 @@ export function ArticleRevisionDialog({
   initialLines?: RevisionLine[];
   requestId?: string;
   positionId?: string;
-  steps: ApprovalStep[];
   user: User;
 }) {
   const [comment, setComment] = useState('');
-  const [targetStepId, setTargetStepId] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
   const [lineValues, setLineValues] = useState<Record<string, LineDraft>>({});
   const canEditLines = canEditRevisionLineDetails(user.role);
@@ -103,17 +96,21 @@ export function ArticleRevisionDialog({
   });
 
   const lines = useMemo(() => initialLines || data?.lines || [], [data?.lines, initialLines]);
+  const initialSelection = useMemo(() => {
+    // The selection belongs to the active route state, not to a particular
+    // role.  When a position has been returned, every current assignee sees
+    // its active lines preselected and can adjust the set before handing the
+    // position to the next participant.
+    const activeRevision = lines
+      .filter((line) => line.is_module_revision || line.is_revision)
+      .map((line) => line.id);
+    return activeRevision.length ? activeRevision : lines.map((line) => line.id);
+  }, [lines]);
   const groupName = target?.groupName || data?.group_name || 'группировка';
-  const childStepIds = useMemo(
-    () => [...new Set(steps.flatMap((step) => step.child_step_ids))],
-    [steps],
-  );
-
   useEffect(() => {
     if (!open) return;
     setComment('');
-    setTargetStepId(childStepIds[0] || '');
-    setSelected(lines.map((line) => line.id));
+    setSelected(initialSelection);
     setLineValues(Object.fromEntries(lines.map((line) => [
       line.id,
       {
@@ -123,7 +120,7 @@ export function ArticleRevisionDialog({
           : '',
       },
     ])));
-  }, [open, lines, childStepIds, workflowLineEdit]);
+  }, [open, lines, initialSelection, workflowLineEdit]);
 
   const buildRevisionItem = (itemId: string) => ({
     item_id: itemId,
@@ -150,7 +147,6 @@ export function ArticleRevisionDialog({
       }
       if (positionId) {
         return api.post(`/cfo-positions/${positionId}/return-for-revision`, {
-          ...(workflowLineEdit ? {} : { target_step_id: targetStepId }),
           comment: comment.trim(),
           items,
         });
@@ -167,7 +163,6 @@ export function ArticleRevisionDialog({
         return Promise.all([...byPosition.entries()].map(([position, positionLines]) => api.post(
           `/cfo-positions/${position}/return-for-revision`,
           {
-            ...(workflowLineEdit ? {} : { target_step_id: targetStepId }),
             comment: comment.trim(),
             items: positionLines.map((line) => buildRevisionItem(line.id)),
           },
@@ -178,7 +173,6 @@ export function ArticleRevisionDialog({
       }
       return api.post(`/approval-register/groups/${target.groupType}/${target.groupId}/workflow-action`, {
         action: 'return_for_revision',
-        ...(workflowLineEdit ? {} : { target_step_id: targetStepId }),
         comment: comment.trim(),
         items,
       }, { params: { request_id: requestId } });
@@ -198,7 +192,6 @@ export function ArticleRevisionDialog({
     : 'Укажите общее сообщение к блоку. Выбор строк определяет, какие позиции вернуть на доработку; комментарий сохранится в журнале согласования.';
 
   const tableColSpan = 8 + (canEditLines ? 1 : 0);
-  const needsTargetStep = mode === 'workflow' && !workflowLineEdit;
 
   return (
     <Dialog open={open} onClose={submit.isPending ? undefined : onClose} fullWidth maxWidth="lg">
@@ -225,24 +218,13 @@ export function ArticleRevisionDialog({
               onChange={(event) => setComment(event.target.value)}
             />
           </Paper>
-          {needsTargetStep && (
-            <TextField
-              select
-              label="Вернуть на шаг"
-              value={targetStepId}
-              required
-              fullWidth
-              onChange={(event) => setTargetStepId(event.target.value)}
-            >
-              {childStepIds.map((stepId) => (
-                <MenuItem key={stepId} value={stepId}>{stepLabel(steps, stepId)}</MenuItem>
-              ))}
-            </TextField>
-          )}
           <Box>
             <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Детализация по строкам</Typography>
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
               Выберите строки для доработки. Остальные останутся в текущем блоке и не будут доступны для редактирования.
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+              Выбор можно изменить, пока позиция находится на вашем текущем этапе. После передачи следующему участнику он фиксируется.
             </Typography>
             {isLoading ? (
               <Typography variant="body2" color="text.secondary">Загрузка строк…</Typography>
@@ -310,8 +292,16 @@ export function ArticleRevisionDialog({
                           <TableCell>
                             <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                               <Chip size="small" variant="outlined" label={STATUS_LABELS[line.status]} sx={{ height: 22, fontSize: 11 }} />
-                              {line.fixed && <Chip size="small" color="success" label="Зафиксирована" />}
-                              {line.frozen && !line.fixed && <Chip size="small" color="info" label="В блоке" />}
+                              {line.fixed && (
+                                <Tooltip title="Зафиксирована после финального согласования" arrow>
+                                  <LockOutlinedIcon aria-label="Зафиксирована" color="success" fontSize="small" />
+                                </Tooltip>
+                              )}
+                              {line.frozen && !line.fixed && (
+                                <Tooltip title="Заморожена на текущем этапе" arrow>
+                                  <LockOutlinedIcon aria-label="Заморожена" color="info" fontSize="small" />
+                                </Tooltip>
+                              )}
                             </Stack>
                           </TableCell>
                           {canEditLines && (
@@ -358,7 +348,6 @@ export function ArticleRevisionDialog({
             submit.isPending
             || !comment.trim()
             || !selected.length
-            || (needsTargetStep && !targetStepId)
             || isLoading
           }
           onClick={() => submit.mutate()}

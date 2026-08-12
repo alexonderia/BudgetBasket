@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
-import Chip from '@mui/material/Chip';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import Stack from '@mui/material/Stack';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import type { ApprovalRegisterRow, RegisterAggregates, RegisterStepDecisionDisplay } from '../../types';
 import type { RegistryStatusDisplay } from './registryConfig';
@@ -41,11 +42,10 @@ function StatusWithLifecycle({
   return (
     <Stack spacing={0.35} sx={{ minWidth: 0 }}>
       {children}
-      {(item.frozen || item.fixed) && (
-        <Stack direction="row" spacing={0.35} flexWrap="wrap" useFlexGap>
-          {item.frozen && <Chip size="small" color="info" label="Заморожено" sx={{ height: 19, fontSize: 10 }} />}
-          {item.fixed && <Chip size="small" color="success" label="Зафиксировано" sx={{ height: 19, fontSize: 10 }} />}
-        </Stack>
+      {item.frozen && !item.fixed && (
+        <Tooltip title="Заморожено: изменение строки недоступно" arrow>
+          <LockOutlinedIcon aria-label="Заморожено" sx={{ fontSize: 16, color: 'info.main', ml: 0.25 }} />
+        </Tooltip>
       )}
       {actionHint && <Typography variant="caption" color={active ? 'warning.dark' : 'text.secondary'} sx={{ fontSize: 10, lineHeight: 1.2 }}>{actionHint}</Typography>}
     </Stack>

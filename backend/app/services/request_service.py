@@ -6,7 +6,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 
-from app.models import APPROVED_ITEM_STATUSES, ItemStatus, RequestStatus
+from app.models import APPROVED_ITEM_STATUSES, CfoPositionStatus, ItemStatus, RequestStatus
 from app.repositories.base import Repository
 from app.services.common import (
     cfo_position_current_step_id,
@@ -1351,8 +1351,13 @@ class RequestService:
     ) -> dict | None:
         if entry.get("fixed"):
             return None
-        if entry.get("is_revision"):
-            return None
+        if entry.get("is_module_revision"):
+            responsible_id = request_author_id(self.repo, entry["request_id"])
+            return {
+                "by_id": responsible_id,
+                "by_name": self._register_user_display_name(users, profiles, responsible_id),
+                "role_label": "Ответственный модуля",
+            }
         if entry.get("is_cfo_review") and entry.get("status") == ItemStatus.on_review:
             responsible_id = self.permissions.cfo_responsible_id(cfo_id) if cfo_id else None
             return {
@@ -1438,7 +1443,7 @@ class RequestService:
                 "summary": "Заморожено",
                 "detail": "Строка заморожена. Для изменения требуется явная разморозка.",
             }
-        if entry.get("is_revision"):
+        if entry.get("is_module_revision"):
             can_edit = bool(entry.get("is_revision_actionable"))
             return {
                 "can_decide": False,
@@ -1450,6 +1455,17 @@ class RequestService:
                     "Исправьте возвращённую строку и повторно отправьте заявку"
                     if can_edit else "Строка возвращена ответственному модуля на доработку"
                 ),
+            }
+        if entry.get("is_revision"):
+            owner_name = (current_owner or {}).get("by_name") or "не назначен"
+            role_label = (current_owner or {}).get("role_label") or "ответственный"
+            return {
+                "can_decide": False,
+                "can_edit_amount": False,
+                "can_edit_analytics": False,
+                "mode": "readonly",
+                "summary": "На доработке",
+                "detail": f"Строка возвращена на текущий этап. Сейчас ждёт {role_label}: {owner_name}.",
             }
         if entry.get("status") in APPROVED_ITEM_STATUSES or entry.get("status") == ItemStatus.rejected:
             parts: list[str] = []
@@ -1643,14 +1659,30 @@ class RequestService:
         for link in self.repo.load_all("req_item_files"):
             file_counts[link.get("req_item_id")] = file_counts.get(link.get("req_item_id"), 0) + 1
         economist_decided_by_position: dict[str, set[str]] = {}
+        latest_position_return: dict[str, tuple[tuple[str, int], set[str]]] = {}
         for row in self.repo.load_all("cfo_position_logs"):
             log = row.get("log") or {}
-            if log.get("action") != "economist_item_decided":
-                continue
-            item_id = log.get("req_item_id")
             position_id = row.get("cfo_position_id")
-            if item_id and position_id:
-                economist_decided_by_position.setdefault(position_id, set()).add(item_id)
+            if not position_id:
+                continue
+            if log.get("action") == "economist_item_decided":
+                item_id = log.get("req_item_id")
+                if item_id:
+                    economist_decided_by_position.setdefault(position_id, set()).add(item_id)
+                continue
+            if log.get("action") == "position_returned":
+                key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+                previous = latest_position_return.get(position_id)
+                if previous is None or key > previous[0]:
+                    latest_position_return[position_id] = (
+                        key,
+                        {str(item_id) for item_id in log.get("item_ids") or []},
+                    )
+        revision_items_by_position = {
+            position_id: item_ids
+            for position_id, (_, item_ids) in latest_position_return.items()
+            if positions.get(position_id, {}).get("status") == CfoPositionStatus.on_revision
+        }
         position_items_cache: dict[str, list[dict]] = {}
 
         def position_items(position_id: str) -> list[dict]:
@@ -1675,7 +1707,11 @@ class RequestService:
                 return False
             if step.get("user_id") != user.get("id"):
                 return False
-            return item["id"] not in economist_decided_by_position.get(position["id"], set())
+            returned_items = revision_items_by_position.get(position["id"], set())
+            return (
+                item["id"] in returned_items
+                and position.get("status") == CfoPositionStatus.on_revision
+            ) or item["id"] not in economist_decided_by_position.get(position["id"], set())
 
         def can_act_on_position_block(position: dict | None) -> bool:
             if not position:
@@ -1695,18 +1731,44 @@ class RequestService:
                     and position.get("cfo_unit_id") in economist_cfo_ids
                 )
             if actor.get("role") in {"approver", "zgd"}:
-                return user.get("role") == actor.get("role") and all(
-                    row.get("frozen") or row.get("fixed") for row in items
-                )
+                if user.get("role") != actor.get("role"):
+                    return False
+                # After a higher step returns a position, the direct lower
+                # reviewer receives its selected rows unfrozen.  They must be
+                # able to pass that revision one more direct step down even
+                # though approval itself remains unavailable until the rows
+                # are frozen again.
+                if position.get("status") == CfoPositionStatus.on_revision:
+                    return any(not row.get("fixed") for row in items)
+                return all(row.get("frozen") or row.get("fixed") for row in items)
             return False
 
         def can_submit_position(position: dict | None) -> bool:
+            step = steps.get(cfo_position_current_step_id(self.repo, position)) if position else None
             return bool(
                 position
                 and not all(row.get("fixed") for row in self._items_for_position(self.repo, position["id"]))
                 and user.get("role") == "employee"
                 and position.get("cfo_unit_id") in employee_cfo_ids
+                and step
+                and step.get("unit_id") == position.get("cfo_unit_id")
                 and position.get("status") in {"waiting", "on_review", "on_revision"}
+            )
+
+        def can_complete_economist_position(position: dict | None) -> bool:
+            if not position or user.get("role") != "economist":
+                return False
+            step = steps.get(cfo_position_current_step_id(self.repo, position))
+            if not step or step.get("unit_id") or step.get("user_id") != user.get("id"):
+                return False
+            actor = users.get(step.get("user_id"), {})
+            if actor.get("role") != "economist" or position.get("cfo_unit_id") not in economist_cfo_ids:
+                return False
+            items = position_items(position["id"])
+            decided = economist_decided_by_position.get(position["id"], set())
+            return bool(items) and all(
+                item["id"] in decided and item.get("status") != ItemStatus.on_review
+                for item in items
             )
 
         def approval_stage(position: dict | None, item: dict) -> str | None:
@@ -1745,9 +1807,13 @@ class RequestService:
                 cfo_position_current_step_id(self.repo, position) if position else None
             )
             returned_item_ids = returned_by_request.get(request["id"], set())
+            position_revision_item_ids = revision_items_by_position.get(
+                position.get("id") if position else "", set()
+            )
+            is_module_revision = item["id"] in returned_item_ids
             is_revision = (
-                item["id"] in returned_item_ids
-                or bool(position and position.get("status") == "on_revision")
+                is_module_revision
+                or item["id"] in position_revision_item_ids
             )
             is_cfo_review = (
                 request.get("status") == RequestStatus.on_review
@@ -1786,10 +1852,22 @@ class RequestService:
                     and current_cfo_id in employee_cfo_ids
                 ),
                 "is_revision": is_revision,
+                "is_module_revision": is_module_revision,
                 "is_revision_actionable": (
-                    is_revision
+                    item["id"] in returned_item_ids
                     and user.get("role") == "employee"
                     and request["unit_id"] in self.permissions.employee_module_ids(user["id"])
+                    and not item.get("frozen")
+                    and not item.get("fixed")
+                ),
+                "is_cfo_module_revision_actionable": (
+                    item["id"] in position_revision_item_ids
+                    and bool(position)
+                    and position.get("status") == CfoPositionStatus.on_revision
+                    and bool(position_step_id)
+                    and steps.get(position_step_id, {}).get("unit_id") == current_cfo_id
+                    and user.get("role") == "employee"
+                    and current_cfo_id in employee_cfo_ids
                     and not item.get("frozen")
                     and not item.get("fixed")
                 ),
@@ -1798,6 +1876,7 @@ class RequestService:
                 "is_in_approval": bool(position and position_step_id and not item.get("fixed")),
                 "is_approval_actionable": can_act_on_position(position, item),
                 "is_position_submission_actionable": can_submit_position(position),
+                "is_economist_completion_actionable": can_complete_economist_position(position),
                 "is_position_actionable": (
                     can_act_on_position(position, item)
                     or can_submit_position(position)
@@ -1922,6 +2001,16 @@ class RequestService:
             for entry in entries
             if entry.get("is_position_actionable") and entry.get("position_id")
         }
+        submission_positions = {
+            entry["position_id"]
+            for entry in entries
+            if entry.get("is_position_submission_actionable") and entry.get("position_id")
+        }
+        economist_completion_positions = {
+            entry["position_id"]
+            for entry in entries
+            if entry.get("is_economist_completion_actionable") and entry.get("position_id")
+        }
         return {
             "requested_sum": requested,
             "approved_sum": approved_sum,
@@ -1942,6 +2031,8 @@ class RequestService:
             "cfo_review_completable_requests": len(cfo_review_completable_requests),
             "in_approval_positions": len(positions_in_approval),
             "actionable_positions": len(actionable_positions),
+            "submission_positions": len(submission_positions),
+            "economist_completion_positions": len(economist_completion_positions),
         }
 
     def approval_register(self, user: dict, view: str = "cfo", **filters) -> dict:
@@ -2100,7 +2191,10 @@ class RequestService:
             entry["id"]
             for entry in self._register_entries(user, **filters)
             if entry[field] == group_id
-            and entry.get("is_cfo_review")
+            and (
+                entry.get("is_cfo_review")
+                or entry.get("is_cfo_module_revision_actionable")
+            )
             and not entry.get("frozen")
             and not entry.get("fixed")
             and entry.get("status") != ItemStatus.deleted
@@ -2194,14 +2288,25 @@ class RequestService:
         ]
         cfo_lines = [
             entry for entry in entries
-            if entry.get("is_cfo_review")
+            if (
+                entry.get("is_cfo_review")
+                or entry.get("is_cfo_module_revision_actionable")
+            )
             and not entry.get("frozen")
             and not entry.get("fixed")
             and entry.get("status") != ItemStatus.deleted
         ]
         workflow_lines = [
             entry for entry in entries
-            if entry.get("is_approval_actionable") and not entry.get("fixed")
+            # Approvers and ZGD act on a position as a block, so their
+            # individual rows deliberately do not carry
+            # ``is_approval_actionable``.  They still must be able to select
+            # the frozen, non-final rows which are to be returned for
+            # revision from that actionable position.
+            if entry.get("is_position_actionable")
+            and not entry.get("fixed")
+            and entry.get("status") != ItemStatus.deleted
+            and (entry.get("frozen") or entry.get("is_revision"))
         ]
         if mode == "cfo":
             lines = cfo_lines

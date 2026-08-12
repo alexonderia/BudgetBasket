@@ -1,5 +1,6 @@
 import FactCheckOutlinedIcon from '@mui/icons-material/FactCheckOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import {
   Alert,
@@ -26,6 +27,7 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -271,7 +273,7 @@ function PositionDetails({
                       <TableCell align="right">{money(item.sum_plan)}</TableCell>
                       <TableCell align="right">{money(item.sum_fact)}</TableCell>
                       <TableCell><Chip size="small" label={itemStatus[item.status]} /></TableCell>
-                      <TableCell><Stack direction="row" spacing={0.5}>{item.fixed && <Chip size="small" color="success" label="Зафиксирована" />}{item.frozen && !item.fixed && <Chip size="small" color="info" label="Заморожена" />}{!item.frozen && !item.fixed && position.status === 'on_revision' && <Chip size="small" color="warning" label="Доработка" />}</Stack></TableCell>
+                      <TableCell><Stack direction="row" spacing={0.5} alignItems="center">{item.fixed && <Tooltip title="Зафиксирована после финального согласования" arrow><LockOutlinedIcon aria-label="Зафиксирована" color="success" fontSize="small" /></Tooltip>}{item.frozen && !item.fixed && <Tooltip title="Заморожена на текущем этапе" arrow><LockOutlinedIcon aria-label="Заморожена" color="info" fontSize="small" /></Tooltip>}{!item.frozen && !item.fixed && position.status === 'on_revision' && <Chip size="small" color="warning" label="Доработка" />}</Stack></TableCell>
                       {isEconomist && (
                         <TableCell>
                           <Button
@@ -421,7 +423,6 @@ function PositionDetails({
             frozen: item.frozen,
             fixed: item.fixed,
           }))}
-        steps={currentStep ? [currentStep] : steps}
         user={user}
       />
     </>

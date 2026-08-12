@@ -53,6 +53,11 @@ describe('registry status visuals', () => {
     expect(spec.variant).toBe('success');
   });
 
+  it('renders a fixed line as a lock icon', () => {
+    const presentation = rowStatusPresentation({ ...baseStatus, label: 'Зафиксировано' });
+    expect(presentation.primaryIconOnly).toBe(true);
+  });
+
   it('shows one dominant group status with secondary counts', () => {
     const presentation = groupStatusPresentation({
       requested_sum: 100,
@@ -79,6 +84,32 @@ describe('registry status visuals', () => {
     expect(presentation.primary.variant).toBe('action');
     expect(presentation.meta).toContain('отклонено');
     expect(presentation.meta).toContain('в очереди');
+  });
+
+  it('labels a reviewed CFO position as a handoff, not a line decision', () => {
+    const presentation = groupStatusPresentation({
+      requested_sum: 100, approved_sum: 100, rejected_sum: 0, pending_sum: 0,
+      difference: 0, total_rows: 1, approved_rows: 1, rejected_rows: 0,
+      pending_rows: 0, requests_count: 1, modules_count: 1,
+      aggregate_status: 'approved', collecting_requests: 0, cfo_review_requests: 0,
+      cfo_review_actionable_requests: 0, cfo_review_completable_requests: 0,
+      in_approval_positions: 1, actionable_positions: 1, submission_positions: 1,
+    }, { ...baseStatus, label: 'Передайте экономисту' });
+
+    expect(presentation.primary.text).toBe('Передайте экономисту');
+  });
+
+  it('labels completed economist line review as a handoff', () => {
+    const presentation = groupStatusPresentation({
+      requested_sum: 100, approved_sum: 100, rejected_sum: 0, pending_sum: 0,
+      difference: 0, total_rows: 1, approved_rows: 1, rejected_rows: 0,
+      pending_rows: 0, requests_count: 1, modules_count: 1,
+      aggregate_status: 'approved', collecting_requests: 0, cfo_review_requests: 0,
+      cfo_review_actionable_requests: 0, cfo_review_completable_requests: 0,
+      in_approval_positions: 1, actionable_positions: 1, economist_completion_positions: 1,
+    }, { ...baseStatus, label: 'Согласуйте и передайте' });
+
+    expect(presentation.primary.text).toBe('Согласуйте и передайте');
   });
 
   it('shows revision ahead of a stored final line status', () => {

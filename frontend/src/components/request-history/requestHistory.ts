@@ -18,6 +18,9 @@ const historyActionLabels: Record<string, string> = {
   request_cancelled: 'Заявка отменена',
   request_restored: 'Заявка восстановлена из отмены',
   cfo_request_review_completed: 'Проверка ЦФО завершена',
+  cfo_items_returned_for_revision: 'Строки заявки возвращены на доработку',
+  request_revision_resubmitted_to_cfo: 'Доработанные строки повторно отправлены в ЦФО',
+  position_route_repaired_from_audit: 'Маршрут позиции восстановлен по журналу',
   line_created: 'Создана строка заявки',
   line_updated: 'Изменена строка заявки',
   line_deleted: 'Удалена строка заявки',
@@ -80,11 +83,15 @@ const historyFieldLabels: Record<string, string> = {
 
 const technicalHistoryFields = new Set([
   'id', 'item_id', 'request_id', 'req_id', 'unit_id', 'economist_id', 'created_at', 'updated_at',
+  'step_id', 'current_step_id', 'target_step_id', 'cfo_position_id', 'event_id', 'item_ids',
 ]);
 
 const approvalOnlyActions = new Set([
   'request_submitted_to_cfo',
   'cfo_request_review_completed',
+  'cfo_items_returned_for_revision',
+  'request_revision_resubmitted_to_cfo',
+  'position_route_repaired_from_audit',
   'cfo_item_decided',
   'economist_item_decided',
 ]);
@@ -147,6 +154,44 @@ export function splitRequestLogs(logs: RequestLog[]) {
     else content.push(entry);
   });
   return { content, approval };
+}
+
+export type HistoryEventGroup = {
+  id: string;
+  entries: RequestLog[];
+  grouped: boolean;
+};
+
+/**
+ * Register actions can affect several CFO positions at once.  Such records
+ * have one event_id; show them as one operation while keeping its composition
+ * available in the expanded details.
+ */
+export function groupHistoryEntries(logs: RequestLog[]): HistoryEventGroup[] {
+  const groups = new Map<string, RequestLog[]>();
+  const order: string[] = [];
+
+  logs.forEach((entry) => {
+    const eventId = entry.source === 'cfo_position' ? entry.log.event_id : undefined;
+    // Older group operations were written before event_id was introduced.
+    // Their position logs are created by the same actor, action and comment
+    // within one second, so retain the group presentation for those records.
+    const legacyGroup = entry.source === 'cfo_position' && entry.log.entity === 'cfo_position'
+      ? `legacy:${entry.user?.id || 'unknown'}:${entry.log.action}:${entry.log.comment || ''}:${entry.created_at.slice(0, 19)}`
+      : undefined;
+    const key = eventId ? `event:${eventId}` : legacyGroup || `entry:${entry.id}`;
+    if (!groups.has(key)) order.push(key);
+    groups.set(key, [...(groups.get(key) || []), entry]);
+  });
+
+  return order.map((id) => {
+    const entries = groups.get(id) || [];
+    return {
+      id,
+      entries,
+      grouped: entries.length > 1 || entries.some((entry) => (entry.log.item_ids?.length || 0) > 1),
+    };
+  });
 }
 
 export function filterLogsByLine(logs: RequestLog[], lineId?: string, lineName?: string) {

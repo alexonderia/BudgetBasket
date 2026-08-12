@@ -891,6 +891,7 @@ function ItemsTable({
   items,
   catalog,
   actionableItemIds,
+  revisionItemIds,
   focusArticleId,
   focusCategoryId,
 }: {
@@ -902,6 +903,7 @@ function ItemsTable({
   items: BudgetItem[];
   catalog: CatalogItem[];
   actionableItemIds: Set<string>;
+  revisionItemIds: Set<string>;
   focusArticleId?: string | null;
   focusCategoryId?: string | null;
 }) {
@@ -918,11 +920,11 @@ function ItemsTable({
   const [selectedItems, setSelectedItems] = useState<Map<string, BudgetItem>>(new Map());
   const [bulkDecision, setBulkDecision] = useState<{ items: BudgetItem[]; decision: BulkItemDecision } | null>(null);
   const [bulkDecisionComment, setBulkDecisionComment] = useState('');
-  const canEmployeeChange = user.role === 'employee'
-    && (request.status === 'draft' || Boolean(request.available_actions?.includes('edit_revision')))
-    && !request.frozen;
-  const disabledForEmployee = !canEmployeeChange;
-  const employeeCanEdit = canEmployeeChange;
+  const canEmployeeEditItem = (item: BudgetItem) => user.role === 'employee'
+    && !request.frozen
+    && (request.status === 'draft' || revisionItemIds.has(item.id));
+  const canEmployeeCreateItems = user.role === 'employee' && request.status === 'draft' && !request.frozen;
+  const disabledForEmployee = !canEmployeeCreateItems;
   // Downstream decisions are made from the CFO-position workspace.
   const canEconomist = false;
   const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
@@ -1156,7 +1158,7 @@ function ItemsTable({
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2, pl: 2.5 })}>
             <Box sx={{ minWidth: 0 }}>
-              {employeeCanEdit && !isDeleted ? (
+              {canEmployeeEditItem(item) && !isDeleted ? (
                 <InlineEditTextCell
                   value={item.name}
                   editable
@@ -1176,7 +1178,7 @@ function ItemsTable({
       case 'justification':
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
-            {employeeCanEdit && !isDeleted ? (
+            {canEmployeeEditItem(item) && !isDeleted ? (
               <InlineEditTextCell
                 value={item.justification}
                 editable
@@ -1191,7 +1193,7 @@ function ItemsTable({
       case 'requested':
         return (
           <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2 })}>
-            {employeeCanEdit && !isDeleted && !item.is_income ? (
+            {canEmployeeEditItem(item) && !isDeleted && !item.is_income ? (
               <InlineEditMoneyCell
                 value={Number(item.sum_plan)}
                 editable
@@ -1293,7 +1295,7 @@ function ItemsTable({
       case 'analytics_4':
       case 'analytics_5': {
         const value = item[columnId] ?? '';
-        const useInlineEditor = canEditItemAnalytics(item) && !isDeleted;
+        const useInlineEditor = canEmployeeEditItem(item) && canEditItemAnalytics(item) && !isDeleted;
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
             {useInlineEditor ? (
@@ -1313,7 +1315,7 @@ function ItemsTable({
             <ItemFilesCell
               kind={kind}
               itemId={item.id}
-              editing={employeeCanEdit && !isDeleted}
+              editing={canEmployeeCreateItems && !isDeleted}
               stagedFiles={stagedFiles}
               pendingDeletedFileIds={pendingDeletedFileIds}
               onRemoveStagedFile={(file) =>
@@ -1354,7 +1356,7 @@ function ItemsTable({
                     <SaveOutlinedIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>
-              ) : employeeCanEdit && !isDeleted ? (
+              ) : canEmployeeCreateItems && !isDeleted ? (
                 <>
                   <FileAttachAction
                     disabled={saveStagedFileChanges.isPending}
@@ -1671,7 +1673,7 @@ function ItemsTable({
                 Свернуть все
               </Button>
             </>}
-            {employeeCanEdit && hasPendingFileChanges && (
+            {canEmployeeCreateItems && hasPendingFileChanges && (
               <>
                 <Button
                   size="small"
@@ -1714,7 +1716,9 @@ function ItemsTable({
         )}
         {!canApproveArticle && (
           <Typography variant="caption" color="text.secondary" sx={{ fontSize: 12 }}>
-            {employeeCanEdit
+            {request.available_actions?.includes('edit_revision')
+              ? 'На доработке доступны только строки, возвращённые ответственным ЦФО.'
+              : canEmployeeCreateItems
               ? 'Нажмите на значение в ячейке, чтобы изменить строку. Изменения сохраняются автоматически.'
               : 'Строки заявки показаны в режиме просмотра.'}
           </Typography>
@@ -1733,7 +1737,7 @@ function ItemsTable({
           </Stack>
         </Paper>
       )}
-      {employeeCanEdit && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || saveStagedFileChanges.isPending} />}
+      {canEmployeeCreateItems && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || saveStagedFileChanges.isPending} />}
       <TableContainer
         className="request-items-table"
         component={Paper}
@@ -1856,7 +1860,7 @@ function ItemsTable({
                               const plan = visibleMonthPlans.find((entry) => entry.month === index + 1);
                               return <Box key={month} sx={{ px: 1, py: 0.5, borderRadius: 1, bgcolor: 'background.paper' }}>
                                 <Typography variant="caption" color="text.secondary">{month}</Typography>
-                                {employeeCanEdit ? (
+                                {canEmployeeEditItem(item) ? (
                                   <InlineEditTextCell
                                     value={String(plan?.sum_plan ?? '')}
                                     editable
@@ -2007,7 +2011,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const { data: approvalRegisterRows } = useQuery({
     queryKey: [...detailsKey, 'approval-register-rows-access', request?.unit_id],
     queryFn: async () => (await api.get<ApprovalRegisterRowsResponse>('/approval-register/rows', {
-      params: { module_id: request?.unit_id, request_id: id, page: 1, page_size: 200, status: 'on_review' },
+      params: { module_id: request?.unit_id, request_id: id, page: 1, page_size: 200 },
     })).data,
     enabled: !!request?.unit_id && user.role === 'employee',
     retry: false,
@@ -2298,6 +2302,12 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const actionableRequestItemIds = useMemo(
     () => new Set((approvalRegisterRows?.items || [])
       .filter((item) => item.is_cfo_review_actionable)
+      .map((item) => item.id)),
+    [approvalRegisterRows],
+  );
+  const revisionRequestItemIds = useMemo(
+    () => new Set((approvalRegisterRows?.items || [])
+      .filter((item) => item.is_revision_actionable)
       .map((item) => item.id)),
     [approvalRegisterRows],
   );
@@ -2796,14 +2806,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           {itemsPending ? (
             <Typography color="text.secondary">Загрузка строк заявки…</Typography>
           ) : (
-            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
+            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
           )}
         </Paper>
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
           {itemsPending ? (
             <Typography color="text.secondary">Загрузка строк заявки…</Typography>
           ) : (
-            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
+            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
           )}
         </Paper>
       </Stack>

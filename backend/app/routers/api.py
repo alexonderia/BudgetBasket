@@ -897,6 +897,92 @@ def request_logs(request: Request, request_id: str, user: User):
     return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
+@router.get("/approval-register/history")
+def approval_register_history(request: Request, user: User):
+    """A combined, permission-scoped audit trail for the register."""
+    logs = request.app.state.approval_service.register_history(user)
+    users = {item["id"]: item for item in request.app.state.repo.load_all("users")}
+    profiles = {item["user_id"]: item for item in request.app.state.repo.load_all("profiles")}
+    requests = {item["id"]: item for item in request.app.state.repo.load_all("requests")}
+    units = {item["id"]: item for item in request.app.state.repo.load_all("units")}
+    request_items = {item["id"]: item for item in request.app.state.repo.load_all("req_items")}
+    position_items: dict[str, list[dict]] = {}
+    for request_item in request_items.values():
+        position_id = request_item.get("cfo_position_id")
+        if position_id:
+            position_items.setdefault(position_id, []).append(request_item)
+    catalogs = {
+        "dds_id": {item["id"]: item for item in request.app.state.repo.load_all("dds_catalog")},
+        "invest_id": {item["id"]: item for item in request.app.state.repo.load_all("invests_catalog")},
+    }
+
+    def line_context(log: dict) -> dict | None:
+        changes = log.get("changes") or {}
+        item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
+        if not item_id:
+            item_change = changes.get("item_id") or {}
+            item_id = item_change.get("to") or item_change.get("from") or log.get("req_item_id")
+        item = request_items.get(item_id) if item_id else None
+        if not item:
+            return None
+        article_field = "dds_id" if item.get("dds_id") else "invest_id"
+        category = catalogs[article_field].get(item.get(article_field), {})
+        article = catalogs[article_field].get(category.get("parent_id"), {})
+        return {
+            "type": "request_line",
+            "name": clean_request_item_name(item.get("name")) or changes.get("name", {}).get("to") or changes.get("name", {}).get("from"),
+            "article": article.get("name"),
+            "category": category.get("name"),
+        }
+
+    result = []
+    for item in logs:
+        log = item.get("log") or {}
+        changes = {field: dict(change) for field, change in (log.get("changes") or {}).items()}
+        for field in ("dds_id", "invest_id"):
+            if field in changes:
+                catalog = catalogs[field]
+                changes[field]["from"] = catalog.get(changes[field].get("from"), {}).get("name", changes[field].get("from"))
+                changes[field]["to"] = catalog.get(changes[field].get("to"), {}).get("name", changes[field].get("to"))
+        public_log = {**log, "changes": changes}
+        if public_log.get("item_ids"):
+            contexts = []
+            for item_id in public_log["item_ids"]:
+                linked_item = request_items.get(item_id)
+                if not linked_item:
+                    continue
+                linked_request = requests.get(linked_item.get("request_id"), {})
+                contexts.append({
+                    "id": item_id,
+                    "name": clean_request_item_name(linked_item.get("name")),
+                    "request_id": linked_item.get("request_id"),
+                    "request_unit_name": units.get(linked_request.get("unit_id"), {}).get("name"),
+                })
+            public_log["item_contexts"] = contexts
+            public_log["request_ids"] = sorted({row["request_id"] for row in contexts if row.get("request_id")})
+        request_id = public_log.get("request_id")
+        if not request_id:
+            item_id = public_log.get("req_item_id") or public_log.get("entity_id")
+            request_id = request_items.get(item_id, {}).get("request_id")
+        if not request_id and item.get("cfo_position_id"):
+            position_lines = position_items.get(item["cfo_position_id"], [])
+            request_id = next((line.get("request_id") for line in position_lines if line.get("request_id")), None)
+        budget_request = requests.get(request_id, {})
+        actor = users.get(item.get("user_id"))
+        result.append({
+            **item,
+            "log": public_log,
+            "subject": line_context(public_log),
+            "request_id": request_id,
+            "request_unit_name": units.get(budget_request.get("unit_id"), {}).get("name"),
+            "user": {
+                "id": actor["id"], "login": actor["login"], "role": actor["role"],
+                "profile": profiles.get(actor["id"]),
+            } if actor else None,
+        })
+    return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+
 @router.get("/cfo-positions")
 def list_cfo_positions(
     request: Request,

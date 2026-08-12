@@ -439,7 +439,21 @@ class BudgetItemService:
                 self.permissions.require_cfo_request_access(user, request)
                 if request.get("status") != RequestStatus.on_review:
                     raise HTTPException(status_code=409, detail="Заявка не находится на проверке ЦФО")
-                if self.requests.cfo_review_completed(request["id"], repo=repo):
+                position = (
+                    get_required(repo, "cfo_positions", item["cfo_position_id"])
+                    if item.get("cfo_position_id") else None
+                )
+                position_step = (
+                    repo.get_by_id("steps", position.get("current_step_id"))
+                    if position and position.get("current_step_id") else None
+                )
+                returned_to_cfo = bool(
+                    position
+                    and position.get("status") == "on_revision"
+                    and position_step
+                    and position_step.get("unit_id") == position.get("cfo_unit_id")
+                )
+                if self.requests.cfo_review_completed(request["id"], repo=repo) and not returned_to_cfo:
                     raise HTTPException(status_code=409, detail="Проверка заявки ЦФО уже завершена")
                 if item.get("fixed") or item.get("frozen") or item.get("status") == ItemStatus.deleted:
                     raise HTTPException(status_code=409, detail="Закрытую строку нельзя вернуть на доработку")
@@ -459,8 +473,7 @@ class BudgetItemService:
                     repo=repo,
                 )
                 by_request.setdefault(request["id"], []).append(item["id"])
-                if item.get("cfo_position_id"):
-                    position = get_required(repo, "cfo_positions", item["cfo_position_id"])
+                if position:
                     affected_positions.add(position["id"])
                     repo.update(
                         "cfo_positions",

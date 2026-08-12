@@ -7,6 +7,7 @@ import {
   groupReadiness,
   groupReadinessPercent,
   groupRegistryStatus,
+  groupYourStepSummary,
   isRowActionable,
   orderedRegistryColumns,
   parseMoneyInput,
@@ -26,6 +27,26 @@ describe('registry display helpers', () => {
     expect(rowRegistryStatus(sampleRow).label).toBe('Утверждено');
     expect(AGGREGATE_DISPLAY_LABELS.in_progress).toBe('Частично рассмотрено');
     expect(rowRejectedAmount({ ...sampleRow, status: 'rejected', approved_sum: 0 })).toBe(10);
+  });
+
+  it('distinguishes sending a reviewed position from a line decision', () => {
+    const aggregates = {
+      ...sampleAggregates,
+      actionable_positions: 1,
+      submission_positions: 1,
+    };
+    expect(groupYourStepSummary(aggregates)).toBe('Передать экономисту: 1');
+    expect(groupRegistryStatus(aggregates).label).toBe('Передайте экономисту');
+  });
+
+  it('distinguishes economist completion from a line decision', () => {
+    const aggregates = {
+      ...sampleAggregates,
+      actionable_positions: 1,
+      economist_completion_positions: 1,
+    };
+    expect(groupYourStepSummary(aggregates)).toBe('Согласовать и передать: 1');
+    expect(groupRegistryStatus(aggregates).label).toBe('Согласуйте и передайте');
   });
 
   it('explains draft and waiting states clearly', () => {
@@ -61,6 +82,21 @@ describe('registry display helpers', () => {
         },
       },
     }).label).toBe('Согласовано после доработки');
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      is_revision: true,
+      is_position_submission_actionable: true,
+      status_context: {
+        editability: {
+          can_decide: false,
+          can_edit_amount: false,
+          can_edit_analytics: false,
+          mode: 'readonly',
+          summary: 'На доработке',
+          detail: 'Позиция ждёт повторной проверки ЦФО',
+        },
+      },
+    }).label).toBe('Требуется ваша проверка');
   });
 
   it('does not treat already decided lines as actionable', () => {

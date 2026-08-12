@@ -6,6 +6,7 @@ import DownloadIcon from '@mui/icons-material/Download';
 import DragHandleIcon from '@mui/icons-material/DragHandle';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import UndoIcon from '@mui/icons-material/Undo';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
@@ -2062,8 +2063,11 @@ function UserApprovalPage({ user }: { user: User }) {
                   <TableCell>{item.reviewed_items_count} / {item.items_count}</TableCell>
                   <TableCell>
                     <Stack direction="row" spacing={0.5}>
-                      {item.frozen && <Chip size="small" label="Заморожена" color="warning" variant="outlined" />}
-                      {item.fixed && <Chip size="small" label="Зафиксирована ЗГД" color="success" variant="outlined" />}
+                      {item.fixed ? (
+                        <Tooltip title="Зафиксирована ЗГД" arrow><LockOutlinedIcon aria-label="Зафиксирована ЗГД" color="success" fontSize="small" /></Tooltip>
+                      ) : item.frozen ? (
+                        <Tooltip title="Заморожена" arrow><LockOutlinedIcon aria-label="Заморожена" color="warning" fontSize="small" /></Tooltip>
+                      ) : null}
                     </Stack>
                   </TableCell>
                 </TableRow>

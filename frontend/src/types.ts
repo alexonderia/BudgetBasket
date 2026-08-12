@@ -125,6 +125,10 @@ export interface RegisterAggregates {
   cfo_review_completable_requests: number;
   in_approval_positions: number;
   actionable_positions: number;
+  /** Positions where the only current action is to submit them to the economist. */
+  submission_positions?: number;
+  /** Positions where the economist has reviewed every line and can pass the position on. */
+  economist_completion_positions?: number;
 }
 
 export interface RegisterGroupAnalyticsField {
@@ -226,10 +230,14 @@ export interface ApprovalRegisterRow {
   is_cfo_review_actionable: boolean;
   is_cfo_review_completable?: boolean;
   is_revision?: boolean;
+  is_module_revision?: boolean;
   is_revision_actionable?: boolean;
+  is_cfo_module_revision_actionable?: boolean;
   position_id: string | null;
   is_in_approval: boolean;
   is_approval_actionable: boolean;
+  is_position_submission_actionable?: boolean;
+  is_economist_completion_actionable?: boolean;
   approval_stage: string | null;
   frozen?: boolean;
   fixed?: boolean;
@@ -365,13 +373,22 @@ export interface RequestLog {
   id: number;
   created_at: string;
   source?: 'request' | 'cfo_position';
+  request_id?: string;
+  request_unit_name?: string | null;
   user: { id: string; login: string; role: Role; profile?: Profile | null } | null;
   subject: { type: 'request_line'; name: string | null; article: string | null; category: string | null } | null;
   log: {
     action: string;
     entity: string;
     entity_id?: string;
+    event_id?: string;
+    cfo_position_id?: string;
     req_item_id?: string;
+    item_ids?: string[];
+    request_ids?: string[];
+    item_contexts?: Array<{ id: string; name: string | null; request_id: string; request_unit_name?: string | null }>;
+    decision?: ItemStatus;
+    agreed_sum?: number | string | null;
     comment?: string | null;
     changes: Record<string, { from: unknown; to: unknown }>;
   };

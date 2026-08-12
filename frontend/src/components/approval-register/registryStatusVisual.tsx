@@ -83,10 +83,20 @@ function pluralRows(count: number) {
 
 function groupMetaParts(aggregates: RegisterAggregates, options?: { excludeActionable?: boolean }) {
   const parts: string[] = [];
-  const actionable = aggregates.cfo_review_actionable_requests + aggregates.actionable_positions;
+  const submissionPositions = aggregates.submission_positions || 0;
+  const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const decisions = aggregates.cfo_review_actionable_requests
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
+  const actionable = decisions + submissionPositions + economistCompletionPositions;
 
-  if (!options?.excludeActionable && actionable > 0) {
-    parts.push(`${actionable} требуют решения`);
+  if (!options?.excludeActionable && decisions > 0) {
+    parts.push(`${decisions} требуют решения`);
+  }
+  if (!options?.excludeActionable && submissionPositions > 0) {
+    parts.push(`${submissionPositions} готовы к передаче экономисту`);
+  }
+  if (!options?.excludeActionable && economistCompletionPositions > 0) {
+    parts.push(`${economistCompletionPositions} готовы к передаче дальше`);
   }
   if (aggregates.rejected_rows > 0) {
     parts.push(`${aggregates.rejected_rows} отклонено`);
@@ -185,6 +195,7 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
         primary: { icon: LockOutlinedIcon, text: 'Зафиксировано', variant: 'neutral', hint },
         meta: 'Изменения недоступны',
         hint,
+        primaryIconOnly: true,
       });
     case 'Ожидает предыдущих этапов':
       return withContext({
@@ -208,20 +219,49 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
 }
 
 export function groupStatusPresentation(aggregates: RegisterAggregates, status: RegistryStatusDisplay): StatusVisualPresentation {
-  const actionable = aggregates.cfo_review_actionable_requests + aggregates.actionable_positions;
+  const submissionPositions = aggregates.submission_positions || 0;
+  const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const decisions = aggregates.cfo_review_actionable_requests
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
   const hint = status.hint;
   const metaParts = groupMetaParts(aggregates, { excludeActionable: true });
   const meta = metaParts.length ? metaParts.join(' · ') : undefined;
 
-  if (actionable > 0) {
+  if (decisions > 0) {
     return {
       primary: {
         icon: ErrorOutlineIcon,
-        text: actionable === 1 ? 'Ваше решение' : `Ваше решение · ${actionable}`,
+        text: decisions === 1 ? 'Ваше решение' : `Ваше решение · ${decisions}`,
         variant: 'action',
         hint,
       },
       meta,
+      hint,
+    };
+  }
+
+  if (submissionPositions > 0) {
+    return {
+      primary: {
+        icon: AccountTreeOutlinedIcon,
+        text: submissionPositions === 1 ? 'Передайте экономисту' : `Передайте экономисту · ${submissionPositions}`,
+        variant: 'action',
+        hint,
+      },
+      meta: meta || 'Строки уже рассмотрены; редактирование не требуется',
+      hint,
+    };
+  }
+
+  if (economistCompletionPositions > 0) {
+    return {
+      primary: {
+        icon: AccountTreeOutlinedIcon,
+        text: economistCompletionPositions === 1 ? 'Согласуйте и передайте' : `Согласуйте и передайте · ${economistCompletionPositions}`,
+        variant: 'action',
+        hint,
+      },
+      meta: meta || 'Все строки рассмотрены экономистом',
       hint,
     };
   }

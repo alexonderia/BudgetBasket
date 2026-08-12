@@ -99,10 +99,11 @@ import { RegistryYourDecisionCell } from './approval-register/registryWorkflowCe
 import { STATUS_LEGEND_SPECS, StatusVisualBadge } from './approval-register/registryStatusVisual';
 import { RequestHistoryDrawer, type RequestHistoryTarget } from './request-history/RequestHistoryDrawer';
 import { RequestHistoryPanel } from './request-history/RequestHistoryPanel';
+import { RegisterHistoryDrawer } from './request-history/RegisterHistoryDrawer';
 import { ANALYTICS_FIELD_KEYS, ANALYTICS_FIELD_LABELS, EMPTY_ANALYTICS_FILTERS, buildRegisterFilterParams, canEditItemAnalytics, type AnalyticsFieldKey } from '../utils/analyticsFields';
 import { EditableAnalyticsCell } from './EditableAnalyticsCell';
 import { GroupAnalyticsCell } from './GroupAnalyticsCell';
-import type { ApprovalRegisterGroup, ApprovalRegisterResponse, ApprovalRegisterRow, ApprovalRegisterRowsResponse, ApprovalStep, BudgetItem, FileAttachment, ItemStatus, RegisterAggregates, RequestLog, User } from '../types';
+import type { ApprovalRegisterGroup, ApprovalRegisterResponse, ApprovalRegisterRow, ApprovalRegisterRowsResponse, BudgetItem, FileAttachment, ItemStatus, RegisterAggregates, RequestLog, User } from '../types';
 import { money, requestStatusLabels } from '../utils/labels';
 import { buildRegisterHref, registerDrillFromSearchParams } from '../utils/dashboardNavigation';
 import { filterFieldSx } from '../utils/responsive';
@@ -824,15 +825,20 @@ function GroupActions({
   compact?: boolean;
 }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const hasCfo = groupHasCfoActions(group);
+  const hasCfoReview = group.aggregates.cfo_review_actionable_requests > 0;
+  // Revision rows also exist when an upper workflow step returns a position
+  // to the economist.  They are not a new CFO review: the economist must use
+  // the workflow return form, which sends the position to its direct lower
+  // step.  Treat CFO return actions as employee-only.
+  const hasCfo = user.role === 'employee' && groupHasCfoActions(group);
   const hasComplete = groupHasCfoCompleteActions(group);
   const hasWorkflow = groupHasWorkflowActions(group);
   if (!hasCfo && !hasComplete && !hasWorkflow) return null;
 
   const scopeLabel = group.type === 'article' ? 'статью' : group.type === 'cfo' ? 'ЦФО' : 'группу';
-  const primaryApprove = hasCfo ? () => onApproveCfo(group) : () => onWorkflowApprove(group);
+  const primaryApprove = hasCfoReview ? () => onApproveCfo(group) : () => onWorkflowApprove(group);
   const primaryReject = hasCfo ? () => onReturnCfo(group) : () => onWorkflowReturn(group);
-  const approveTitle = hasCfo
+  const approveTitle = hasCfoReview
     ? `Согласовать все доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`
     : `${workflowApproveLabel(user.role)} (${scopeLabel})`;
   const rejectTitle = hasCfo
@@ -887,7 +893,7 @@ function GroupActions({
           )}
         </>
       )}
-      {hasCfo && hasWorkflow && (
+      {hasCfoReview && hasWorkflow && (
         <>
           <IconButton size="small" onClick={(event) => setAnchor(event.currentTarget)} aria-label="Дополнительные действия по позициям">
             <MoreVertIcon sx={{ fontSize: 17 }} />
@@ -1738,6 +1744,7 @@ export function ApprovalRegister({
   const [activeItem, setActiveItem] = useState<ApprovalRegisterRow | null>(null);
   const [detailsItem, setDetailsItem] = useState<ApprovalRegisterRow | null>(null);
   const [historyTarget, setHistoryTarget] = useState<RequestHistoryTarget | null>(null);
+  const [registerHistoryOpen, setRegisterHistoryOpen] = useState(false);
   const openHistory = useCallback((item: ApprovalRegisterRow, full = false) => {
     setHistoryTarget({
       requestId: item.request_id,
@@ -1831,11 +1838,6 @@ export function ApprovalRegister({
     () => registerDrillTitle(filters, drillLabels),
     [drillLabels, filters.cfoId, filters.articleId, filters.requestStatus],
   );
-  const { data: mySteps = [] } = useQuery({
-    queryKey: ['my-approval-steps'],
-    queryFn: async () => (await api.get<ApprovalStep[]>('/steps/my')).data,
-    enabled: revisionDialog?.mode === 'workflow',
-  });
   const refreshAfterRevision = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['approval-register'] });
     queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
@@ -2077,7 +2079,7 @@ export function ApprovalRegister({
       return;
     }
     if (selectionRoots.length > 0) {
-      const cfoRoots = cfoGroupsForAction(selectionRoots);
+      const cfoRoots = cfoGroupsForApproval(selectionRoots);
       const workflowRoots = workflowGroupsForAction(selectionRoots);
       if (cfoRoots.length) setGroupsToApprove(cfoRoots);
       else if (workflowRoots.length) workflowGroupAction.mutate({ groups: workflowRoots, action: 'approve' });
@@ -2094,7 +2096,7 @@ export function ApprovalRegister({
       return;
     }
     if (selectionRoots.length > 0) {
-      const cfoRoots = cfoGroupsForAction(selectionRoots);
+      const cfoRoots = cfoGroupsForReturn(selectionRoots);
       const workflowRoots = workflowGroupsForAction(selectionRoots);
       if (cfoRoots.length) openGroupRevision(cfoRoots, 'cfo');
       else openGroupRevision(workflowRoots, 'workflow');
@@ -2152,7 +2154,12 @@ export function ApprovalRegister({
       setSelected(new Map());
     }
   };
-  const cfoGroupsForAction = (groups: ApprovalRegisterGroup[]) => groups.filter(groupHasCfoActions);
+  const cfoGroupsForApproval = (groups: ApprovalRegisterGroup[]) => groups.filter(
+    (group) => group.aggregates.cfo_review_actionable_requests > 0,
+  );
+  const cfoGroupsForReturn = (groups: ApprovalRegisterGroup[]) => (
+    user.role === 'employee' ? groups.filter(groupHasCfoActions) : []
+  );
   const workflowGroupsForAction = (groups: ApprovalRegisterGroup[]) => groups.filter(groupHasWorkflowActions);
   const exportRegister = () => { const rows: string[][] = [['Структура', 'Запрошено', 'Согласовано', 'Статус']]; const visit = (groups: ApprovalRegisterGroup[], level = 0) => groups.forEach((group) => { rows.push([`${'  '.repeat(level)}${group.name}`, String(group.aggregates.requested_sum), String(group.aggregates.approved_sum), AGGREGATE_DISPLAY_LABELS[group.aggregates.aggregate_status]]); visit(group.children, level + 1); }); visit(data?.groups || []); const content = rows.map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(';')).join('\n'); const url = URL.createObjectURL(new Blob([`\ufeff${content}`], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = 'реестр-бюджетных-заявок.csv'; link.click(); URL.revokeObjectURL(url); };
   const registerGroupItems = useCallback((groupId: string, items: ApprovalRegisterRow[]) => {
@@ -2272,6 +2279,11 @@ export function ApprovalRegister({
       analyticsFilterOptions={analyticsFilterOptions}
       drillLabels={drillLabels}
     />
+    <Stack direction="row" justifyContent="flex-end" sx={{ mt: -0.35 }}>
+      <Button size="small" startIcon={<HistoryOutlinedIcon />} onClick={() => setRegisterHistoryOpen(true)}>
+        Общая история
+      </Button>
+    </Stack>
     {data && <RegistrySummary aggregates={data.aggregates} />}
     {hasSelection && (
       <SelectionBar
@@ -2433,10 +2445,10 @@ export function ApprovalRegister({
       target={revisionDialog?.target}
       initialLines={revisionDialog?.initialLines}
       requestId={requestId}
-      steps={mySteps}
       user={user}
     />
     <RegistryDetailsDrawer item={detailsItem} onClose={() => setDetailsItem(null)} onOpenHistory={openHistory} />
     <RequestHistoryDrawer target={historyTarget} onClose={() => setHistoryTarget(null)} />
+    <RegisterHistoryDrawer open={registerHistoryOpen} onClose={() => setRegisterHistoryOpen(false)} />
   </Stack>;
 }

@@ -124,9 +124,18 @@ export function groupPreviousStepSummary(aggregates: RegisterAggregates) {
 }
 
 export function groupYourStepSummary(aggregates: RegisterAggregates) {
-  const actionable = aggregates.cfo_review_actionable_requests + aggregates.actionable_positions;
-  if (actionable > 0) {
-    return `К решению: ${actionable}`;
+  const submissionPositions = aggregates.submission_positions || 0;
+  const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const decisions = aggregates.cfo_review_actionable_requests
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
+  if (decisions > 0) {
+    return `К решению: ${decisions}`;
+  }
+  if (economistCompletionPositions > 0) {
+    return `Согласовать и передать: ${economistCompletionPositions}`;
+  }
+  if (submissionPositions > 0) {
+    return `Передать экономисту: ${submissionPositions}`;
   }
   if (aggregates.cfo_review_completable_requests > 0) {
     return `Можно передать: ${aggregates.cfo_review_completable_requests}`;
@@ -206,7 +215,10 @@ export function canEditApprovedAmount(role: User['role'], item: ApprovalRegister
 }
 
 export function groupHasCfoActions(group: ApprovalRegisterGroup) {
-  return group.aggregates.cfo_review_actionable_requests > 0;
+  return group.aggregates.cfo_review_actionable_requests > 0 || (
+    (group.aggregates.revision_rows || 0) > 0
+    && group.aggregates.actionable_positions > 0
+  );
 }
 
 export function groupHasCfoCompleteActions(group: ApprovalRegisterGroup) {
@@ -284,6 +296,7 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
   }
   const wasReviewedAfterRevision = Boolean(
     item.is_revision
+    && !item.is_position_submission_actionable
     && item.status_context
     && !item.status_context?.editability?.can_decide
     && (item.status === 'approved' || item.status === 'approved_with_changes' || item.status === 'rejected'),
@@ -307,13 +320,21 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       shortHint: 'Можно принять решение',
     };
   }
+  if (item.is_position_submission_actionable) {
+    return {
+      label: 'Требуется ваша проверка',
+      tone: 'warning',
+      hint: 'Проверьте доработку и повторно передайте позицию экономисту',
+      shortHint: 'Можно повторно передать',
+    };
+  }
   if (item.is_revision) {
     return {
       label: 'На доработке',
       tone: 'warning',
       hint: item.is_revision_actionable
         ? 'Исправьте строку и повторно отправьте заявку'
-        : 'Строка возвращена нижестоящему участнику на доработку',
+        : 'Строка возвращена на текущий этап маршрута',
       shortHint: 'Требуются исправления',
     };
   }
@@ -430,13 +451,32 @@ export function groupRegistryStatus(aggregates: RegisterAggregates): RegistrySta
     };
   }
 
-  if (aggregates.cfo_review_actionable_requests > 0 || aggregates.actionable_positions > 0) {
-    const actionable = aggregates.cfo_review_actionable_requests + aggregates.actionable_positions;
+  const submissionPositions = aggregates.submission_positions || 0;
+  const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const decisions = aggregates.cfo_review_actionable_requests
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
+  if (decisions > 0) {
     return {
       label: 'Ожидает вашего решения',
       tone: 'warning',
-      hint: `${actionable} объектов ждут вашего решения`,
+      hint: `${decisions} объектов ждут вашего решения`,
       shortHint: 'Можно принять решение',
+    };
+  }
+  if (submissionPositions > 0) {
+    return {
+      label: 'Передайте экономисту',
+      tone: 'warning',
+      hint: `${submissionPositions} позиций проверены по строкам и готовы к передаче экономисту`,
+      shortHint: 'Можно передать экономисту',
+    };
+  }
+  if (economistCompletionPositions > 0) {
+    return {
+      label: 'Согласуйте и передайте',
+      tone: 'warning',
+      hint: `${economistCompletionPositions} позиций рассмотрены экономистом и готовы к передаче дальше по маршруту`,
+      shortHint: 'Можно передать дальше',
     };
   }
   if (aggregates.cfo_review_completable_requests > 0) {
@@ -507,15 +547,6 @@ export function groupRegistryStatus(aggregates: RegisterAggregates): RegistrySta
       shortHint: 'Можно принять решение',
     };
   }
-  if (aggregates.actionable_positions > 0) {
-    return {
-      label: 'Ожидает вашего решения',
-      tone: 'warning',
-      hint: `${aggregates.actionable_positions} позиций ждут вашего согласования`,
-      shortHint: 'Можно принять решение',
-    };
-  }
-
   if (aggregates.cfo_review_requests > 0) {
     return {
       label: 'Проверка ЦФО',
