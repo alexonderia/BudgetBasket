@@ -348,6 +348,16 @@ def test_approval_route_step_runtime_status_after_submit_to_economist(tmp_path):
     assert economist_step["request_status"] == "on_approval"
     assert economist_step["status"] == "on_approval"
     assert economist_step["active_positions_count"] == 1
+    assert economist_step["revision_positions_count"] == 0
+
+    scoped_route = client.get(
+        "/approval-route", params={"request_id": request["id"]}, headers=employee
+    )
+    assert scoped_route.status_code == 200, scoped_route.text
+    scoped_cfo = next(step for step in scoped_route.json() if step.get("unit_id") == CFO_ID)
+    scoped_economist = next(step for step in scoped_route.json() if step.get("is_economist_step"))
+    assert scoped_cfo["request_status"] == "approved"
+    assert scoped_economist["request_status"] == "on_approval"
 
 
 def test_approval_register_marks_economist_lines_actionable_after_submit(tmp_path):
@@ -669,9 +679,16 @@ def test_full_position_route_freezes_and_zgd_fixes(tmp_path):
         json={"analytics_1": "Изменение после фиксации"},
         headers=zgd,
     ).status_code == 409
-    assert client.get(f"/requests/{request['id']}", headers=employee).json()["status"] == "approved"
+    request_body = client.get(f"/requests/{request['id']}", headers=employee).json()
+    assert request_body["status"] == "approved"
+    assert request_body["frozen"] is True
+    assert request_body["fixed"] is True
     route = client.get("/approval-route", headers=employee).json()
     assert all(step["status"] == "closed" for step in route)
+    scoped_route = client.get(
+        "/approval-route", params={"request_id": request["id"]}, headers=employee
+    ).json()
+    assert all(step["request_status"] == "closed" for step in scoped_route)
 
 
 def test_reviewer_return_requires_reason_and_economist_unfreezes(tmp_path):
@@ -706,6 +723,9 @@ def test_reviewer_return_requires_reason_and_economist_unfreezes(tmp_path):
     assert returned.status_code == 200
     assert returned.json()["status"] == "on_revision"
     assert returned.json()["frozen_items_count"] == 0
+    route = client.get("/approval-route", headers=economist).json()
+    economist_step = next(step for step in route if step["id"] == ECONOMIST_STEP_ID)
+    assert economist_step["revision_positions_count"] == 1
     unfrozen = client.post(
         f"/cfo-positions/{position_id}/unfreeze",
         json={"comment": "Принято"},
@@ -713,6 +733,43 @@ def test_reviewer_return_requires_reason_and_economist_unfreezes(tmp_path):
     )
     assert unfrozen.status_code == 200
     assert unfrozen.json()["open_items_count"] >= 1
+
+
+def test_economist_return_to_cfo_makes_selected_items_editable(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+
+    returned = client.post(
+        f"/steps/{ECONOMIST_STEP_ID}/positions/{position_id}/return",
+        json={
+            "target_step_id": LEAF_STEP_ID,
+            "comment": "Уточните обоснование",
+            "item_ids": [items[0]["id"]],
+        },
+        headers=economist,
+    )
+    assert returned.status_code == 200, returned.text
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"request_id": request["id"], "page_size": 25},
+        headers=employee,
+    ).json()["items"]
+    row = next(row for row in rows if row["id"] == items[0]["id"])
+    assert row["status_context"]["editability"]["can_edit_amount"] is True
+    assert row["status_context"]["editability"]["can_edit_analytics"] is False
+    updated = client.patch(
+        f"/items/{items[0]['id']}",
+        json={"sum_fact": 80},
+        headers=employee,
+    )
+    assert updated.status_code == 200, updated.text
 
 
 def test_zgd_return_to_approver_keeps_budget_frozen_and_repeats_route(tmp_path):
@@ -1051,6 +1108,14 @@ def test_economist_return_reopens_cfo_step_without_returning_request_to_module(t
     )
     assert revision_row["is_revision"] is True
     assert revision_row["is_revision_actionable"] is False
+    patched_fact = client.patch(
+        f"/items/{items[0]['id']}", json={"sum_fact": 80}, headers=employee,
+    )
+    assert patched_fact.status_code == 200, patched_fact.text
+    assert patched_fact.json()["sum_fact"] == 80
+    assert client.patch(
+        f"/items/{items[0]['id']}", json={"sum_plan": 125}, headers=employee,
+    ).status_code == 409
     assert client.patch(
         f"/items/{items[0]['id']}", json={"justification": "Исправленное обоснование"}, headers=employee,
     ).status_code == 409

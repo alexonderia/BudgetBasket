@@ -79,8 +79,8 @@ def list_steps(request: Request, user: User):
 
 
 @router.get("/approval-route")
-def cfo_route(request: Request, user: User):
-    return request.app.state.approval_service.approval_route(user)
+def cfo_route(request: Request, user: User, request_id: str | None = None):
+    return request.app.state.approval_service.approval_route(user, request_id=request_id)
 
 
 @router.post("/steps")

@@ -545,12 +545,18 @@ class ApprovalService:
                 },
             )
 
-    def _public_steps(self, repo: Repository, steps: list[dict]) -> list[dict]:
+    def _public_steps(
+        self,
+        repo: Repository,
+        steps: list[dict],
+        *,
+        positions_override: list[dict] | None = None,
+    ) -> list[dict]:
         edges = self._edges(repo)
         units = {row["id"]: row for row in repo.load_all("units")}
         users = {row["id"]: row for row in repo.load_all("users")}
         profiles = {row["user_id"]: row for row in repo.load_all("profiles")}
-        positions = repo.load_all("cfo_positions")
+        positions = positions_override if positions_override is not None else repo.load_all("cfo_positions")
         assignments = repo.load_all("units_responsibles")
         requests = repo.load_all("requests")
 
@@ -599,6 +605,7 @@ class ApprovalService:
         for step in steps:
             actor = self._step_actor(repo, step)
             active = [row for row in positions if self._current_step_id(repo, row) == step["id"]]
+            scoped_positions = self._positions_for_step(repo, step, positions, edges)
             economist_cfo_ids = sorted(self._economist_cfo_ids(repo, step))
             economist_cfo_id = economist_cfo_ids[0] if economist_cfo_ids else None
             cfo = units.get(step.get("unit_id") or economist_cfo_id)
@@ -620,6 +627,10 @@ class ApprovalService:
                     "parent_step_ids": self._parents(step["id"], edges),
                     "child_step_ids": self._children(step["id"], edges),
                     "active_positions_count": len(active),
+                    "revision_positions_count": sum(
+                        row.get("status") == CfoPositionStatus.on_revision
+                        for row in scoped_positions
+                    ),
                     "request_status": self._step_runtime_status(repo, step, positions, edges),
                 }
             )
@@ -666,10 +677,32 @@ class ApprovalService:
                 allowed.add(step["id"])
         return self._public_steps(self.repo, [row for row in steps if row["id"] in allowed])
 
-    def approval_route(self, user: dict) -> list[dict]:
+    def approval_route(self, user: dict, request_id: str | None = None) -> list[dict]:
         """Return the connected, read-only approval branch relevant to the viewer."""
         self.sync_automatic_steps(user)
-        all_steps = self._public_steps(self.repo, self.repo.load_all("steps"))
+        positions_override = None
+        if request_id:
+            request = get_required(self.repo, "requests", request_id)
+            self.permissions.require_view_request(user, request)
+            request_item_ids = {
+                item["id"]
+                for item in self.repo.load_all("req_items")
+                if item.get("request_id") == request_id
+            }
+            position_ids = {
+                item.get("cfo_position_id")
+                for item in self.repo.load_all("req_items")
+                if item.get("id") in request_item_ids and item.get("cfo_position_id")
+            }
+            positions_override = [
+                position for position in self.repo.load_all("cfo_positions")
+                if position.get("id") in position_ids
+            ]
+        all_steps = self._public_steps(
+            self.repo,
+            self.repo.load_all("steps"),
+            positions_override=positions_override,
+        )
         if user.get("role") == "admin":
             return all_steps
         if user.get("role") == "employee":

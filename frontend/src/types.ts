@@ -300,6 +300,7 @@ export interface ApprovalStep {
   child_step_ids: string[];
   request_status?: StepStatus;
   active_positions_count?: number;
+  revision_positions_count?: number;
   active_requests_count?: number;
 }
 

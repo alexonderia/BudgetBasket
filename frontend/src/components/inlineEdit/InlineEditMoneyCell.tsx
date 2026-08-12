@@ -11,6 +11,8 @@ export function InlineEditMoneyCell({
   formatValue,
   parseValue,
   validate,
+  onDraftChange,
+  saveOnBlur = true,
   ariaLabel = 'Сумма',
   title = 'Нажмите, чтобы изменить сумму',
 }: {
@@ -20,6 +22,8 @@ export function InlineEditMoneyCell({
   formatValue: (amount: number) => string;
   parseValue: (raw: string) => number | null;
   validate?: (amount: number) => boolean;
+  onDraftChange?: (amount: number) => void;
+  saveOnBlur?: boolean;
   ariaLabel?: string;
   title?: string;
 }) {
@@ -37,6 +41,18 @@ export function InlineEditMoneyCell({
     if (!isValid(amount)) return;
     setEditing(false);
     if (amount !== value) onCommit(amount!);
+  };
+
+  const changeDraft = (nextDraft: string) => {
+    setDraft(nextDraft);
+    const amount = parseValue(nextDraft);
+    if (isValid(amount)) onDraftChange?.(amount!);
+  };
+
+  const cancel = () => {
+    setDraft(formatValue(value));
+    onDraftChange?.(value);
+    setEditing(false);
   };
 
   if (!editable) {
@@ -61,7 +77,7 @@ export function InlineEditMoneyCell({
       autoFocus
       size="small"
       value={draft}
-      onChange={(event) => setDraft(event.target.value)}
+      onChange={(event) => changeDraft(event.target.value)}
       error={!isValid(parsed)}
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
@@ -69,11 +85,13 @@ export function InlineEditMoneyCell({
           save();
         }
         if (event.key === 'Escape') {
-          setDraft(formatValue(value));
-          setEditing(false);
+          cancel();
         }
       }}
-      onBlur={save}
+      onBlur={() => {
+        if (saveOnBlur) save();
+        else setEditing(false);
+      }}
       inputProps={{ inputMode: 'decimal', 'aria-label': ariaLabel }}
       sx={inlineEditTextFieldSx({ align: 'right' })}
     />

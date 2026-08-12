@@ -51,6 +51,38 @@ class BudgetItemService:
             return []
         return self._month_plans_by_item({item["id"]}).get(item["id"], self._zero_month_plans())
 
+    def _is_cfo_revision_item(self, item: dict) -> bool:
+        """Whether the item was returned by the economist to the CFO owner."""
+        if item["id"] in self.requests.returned_item_ids(item["request_id"]):
+            return False
+        position_id = item.get("cfo_position_id")
+        position = self.repo.get_by_id("cfo_positions", position_id) if position_id else None
+        if not position or position.get("status") != "on_revision":
+            return False
+        step = self.repo.get_by_id("steps", position.get("current_step_id"))
+        if not step or step.get("unit_id") != position.get("cfo_unit_id"):
+            return False
+        returns = [
+            row for row in self.repo.load_all("cfo_position_logs")
+            if row.get("cfo_position_id") == position_id
+            and (row.get("log") or {}).get("action") == "position_returned"
+        ]
+        if not returns:
+            return False
+        latest = max(returns, key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)))
+        latest_key = (str(latest.get("created_at") or ""), int(latest.get("id") or 0))
+        returned_to_module = any(
+            (row.get("log") or {}).get("action") == "item_returned_to_module"
+            and (row.get("log") or {}).get("req_item_id") == item["id"]
+            and (str(row.get("created_at") or ""), int(row.get("id") or 0)) > latest_key
+            for row in self.repo.load_all("cfo_position_logs")
+            if row.get("cfo_position_id") == position_id
+        )
+        return (
+            item["id"] in set((latest.get("log") or {}).get("item_ids") or [])
+            and not returned_to_module
+        )
+
     @classmethod
     def _validate_month_plans(cls, month_plans: list[dict]) -> tuple[list[dict], Decimal]:
         by_month: dict[int, Decimal] = {}
@@ -165,12 +197,14 @@ class BudgetItemService:
         return public
 
     @staticmethod
-    def _employee_patch(patch: dict) -> dict:
+    def _employee_patch(patch: dict, *, allow_sum_fact: bool = False) -> dict:
         fields = {
             "dds_id", "invest_id", "name", "sum_plan", "justification",
             "is_income", "month_plans", "clear_month_plans",
             *ANALYTICS_FIELDS,
         }
+        if allow_sum_fact:
+            fields.add("sum_fact")
         if set(patch) - fields:
             raise HTTPException(status_code=403, detail="Поля рассмотрения изменяются только командами решения")
         return dict(patch)
@@ -219,6 +253,11 @@ class BudgetItemService:
             raise HTTPException(status_code=409, detail="Сначала разморозьте строку")
         if item.get("status") == ItemStatus.deleted:
             raise HTTPException(status_code=409, detail="Удалённую строку нельзя изменить")
+        if self._is_cfo_revision_item(item):
+            raise HTTPException(
+                status_code=403,
+                detail="Ответственному ЦФО доступно изменение только фактической суммы",
+            )
         if request.get("status") == RequestStatus.draft:
             self.permissions.require_employee_edit_request(user, request)
             return
@@ -282,12 +321,26 @@ class BudgetItemService:
             raise HTTPException(status_code=400, detail="Удалённую строку нельзя изменить")
         if patch and set(patch) <= set(ANALYTICS_FIELDS):
             return self._patch_item_analytics(user, item, request, patch)
-        is_returned_revision = (
+        is_module_revision = (
             request.get("status") == RequestStatus.on_review
             and item_id in self.requests.returned_item_ids(request["id"])
         )
-        if is_returned_revision:
-            self.permissions.require_employee_unit_access(user, request["unit_id"])
+        is_cfo_revision = self._is_cfo_revision_item(item)
+        if is_module_revision or is_cfo_revision:
+            if is_module_revision:
+                self.permissions.require_employee_unit_access(user, request["unit_id"])
+            else:
+                self.permissions.require_cfo_request_access(user, request)
+            if is_cfo_revision and set(patch) - {"sum_fact"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Ответственному ЦФО доступно изменение только фактической суммы",
+                )
+            if is_cfo_revision and {"sum_plan", "month_plans", "clear_month_plans"} & set(patch):
+                raise HTTPException(
+                    status_code=409,
+                    detail="При доработке ответственному ЦФО доступна фактическая, а не плановая сумма",
+                )
             if item.get("fixed") or item.get("frozen"):
                 raise HTTPException(status_code=409, detail="Закрытую строку нельзя изменить")
             if {"dds_id", "invest_id", "is_income"} & set(patch):
@@ -297,7 +350,16 @@ class BudgetItemService:
                 )
         else:
             self.permissions.require_employee_edit_request(user, request)
-        normalized = self._employee_patch(patch)
+        normalized = self._employee_patch(patch, allow_sum_fact=is_cfo_revision)
+        if is_cfo_revision and "sum_fact" in normalized:
+            if normalized["sum_fact"] is None:
+                raise HTTPException(status_code=422, detail="Укажите фактическую сумму")
+            if item.get("status") in {ItemStatus.approved, ItemStatus.approved_with_changes}:
+                normalized["status"] = (
+                    ItemStatus.approved
+                    if self._decimal(normalized["sum_fact"]) == self._decimal(item["sum_plan"])
+                    else ItemStatus.approved_with_changes
+                )
         if "dds_id" in normalized or "invest_id" in normalized:
             kind, article_id = self._validate_article(request, {**item, **normalized})
             normalized["dds_id"] = article_id if kind == "dds" else None
@@ -326,7 +388,7 @@ class BudgetItemService:
         return self._apply_item_update(user, item, request, normalized, plans=plans)
 
     @staticmethod
-    def normalize_decision(item: dict, payload: dict) -> dict:
+    def normalize_decision(item: dict, payload: dict, *, require_change_comment: bool = True) -> dict:
         decision = payload["decision"]
         if decision not in {
             ItemStatus.approved, ItemStatus.approved_with_changes, ItemStatus.rejected
@@ -349,7 +411,7 @@ class BudgetItemService:
             for field in ("name", "justification"):
                 if payload.get(field) is not None:
                     patch[field] = payload[field].strip()
-            if not comment:
+            if require_change_comment and not comment:
                 raise HTTPException(status_code=422, detail="Для одобрения с изменениями нужен комментарий")
             if all(item.get(key) == value for key, value in patch.items() if key not in {"status", "comment"}):
                 raise HTTPException(status_code=422, detail="Укажите изменённые значения")
@@ -371,7 +433,7 @@ class BudgetItemService:
         if item.get("frozen") or item.get("fixed"):
             raise HTTPException(status_code=409, detail="Закрытая строка не рассматривается")
         before = dict(item)
-        normalized = self.normalize_decision(item, payload)
+        normalized = self.normalize_decision(item, payload, require_change_comment=False)
         if payload["decision"] in {ItemStatus.approved, ItemStatus.approved_with_changes}:
             # CFO approval is an intermediate review result.  The line gets its
             # accepted domain status only after the economist's decision.

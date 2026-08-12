@@ -141,6 +141,9 @@ class RequestService:
 
     def public_request(self, request: dict, summary: dict | None = None) -> dict:
         summary = summary or self.summary(request["id"])
+        active_items = self._items(request["id"])
+        all_items_frozen = bool(active_items) and all(bool(item.get("frozen")) for item in active_items)
+        all_items_fixed = bool(active_items) and all(bool(item.get("fixed")) for item in active_items)
         cfo_id = self.permissions.cfo_for_module(request["unit_id"])
         actions: list[str] = []
         if request.get("status") == RequestStatus.draft:
@@ -163,6 +166,8 @@ class RequestService:
             "sum_fact": summary["approved_sum"],
             "total_approved_sum": summary["approved_sum"],
             "summary": summary,
+            "frozen": all_items_frozen,
+            "fixed": all_items_fixed,
             "available_actions": actions,
             "unit_budget": {
                 "annual_budget": float(
@@ -1405,6 +1410,7 @@ class RequestService:
             and not entry.get("fixed")
             and (
                 bool(entry.get("is_revision_actionable"))
+                or bool(entry.get("is_cfo_module_revision_actionable"))
                 or bool(entry.get("is_cfo_review_actionable"))
                 or bool(entry.get("is_approval_actionable"))
             )
@@ -1457,6 +1463,18 @@ class RequestService:
                 ),
             }
         if entry.get("is_revision"):
+            module_revision_editable = bool(entry.get("is_revision_actionable"))
+            cfo_revision_editable = bool(entry.get("is_cfo_module_revision_actionable"))
+            can_edit = module_revision_editable or cfo_revision_editable
+            if can_edit:
+                return {
+                    "can_decide": False,
+                    "can_edit_amount": True,
+                    "can_edit_analytics": module_revision_editable,
+                    "mode": "editable",
+                    "summary": "На доработке",
+                    "detail": "Исправьте возвращённую строку и повторно передайте позицию экономисту.",
+                }
             owner_name = (current_owner or {}).get("by_name") or "не назначен"
             role_label = (current_owner or {}).get("role_label") or "ответственный"
             return {

@@ -10,6 +10,7 @@ from uuid import uuid4
 from fastapi import HTTPException, UploadFile
 
 from app.config import Settings
+from app.models import RequestStatus
 from app.repositories.base import Repository
 from app.services.common import get_required
 from app.services.file_guard_client import FileGuardClient, require_processed_file
@@ -89,9 +90,25 @@ class FileService:
         item = get_required(self.repo, "req_items", item_id)
         return item, get_required(self.repo, "requests", item["request_id"])
 
+    def _require_item_file_edit(self, user: dict, item: dict, request: dict) -> None:
+        """Allow files for drafts and module-owned revision lines only."""
+        if item.get("fixed") or item.get("frozen"):
+            raise HTTPException(status_code=409, detail="Закрытую строку нельзя изменять")
+        if request.get("status") == RequestStatus.draft:
+            self.permissions.require_employee_edit_request(user, request)
+            return
+        if (
+            request.get("status") == RequestStatus.on_review
+            and self.request_service
+            and item["id"] in self.request_service.returned_item_ids(request["id"])
+        ):
+            self.permissions.require_employee_unit_access(user, request["unit_id"])
+            return
+        self.permissions.require_employee_upload_file(user, request)
+
     async def upload_for_item(self, user: dict, item_id: str, upload: UploadFile) -> dict:
         item, request = self._item_and_request(item_id)
-        self.permissions.require_employee_upload_file(user, request)
+        self._require_item_file_edit(user, item, request)
         file = await self._upload(upload)
         self._link_uploaded_file(user, item_id, file["id"])
         if self.request_service:
@@ -136,8 +153,8 @@ class FileService:
         return file
 
     def _link_uploaded_file(self, user: dict, item_id: str, file_id: str | int) -> dict:
-        _item, request = self._item_and_request(item_id)
-        self.permissions.require_employee_upload_file(user, request)
+        item, request = self._item_and_request(item_id)
+        self._require_item_file_edit(user, item, request)
         get_required(self.repo, "files", file_id)
         file_id = int(file_id) if str(file_id).isdigit() else file_id
         if any(link.get("file_id") == file_id and link.get("req_item_id") == item_id for link in self.repo.load_all("req_item_files")):
@@ -146,8 +163,7 @@ class FileService:
 
     def delete_link(self, user: dict, item_id: str, file_id: str | int) -> None:
         item, request = self._item_and_request(item_id)
-        self.permissions.require_request_unfrozen(request)
-        self.permissions.require_employee_upload_file(user, request)
+        self._require_item_file_edit(user, item, request)
         file_id = int(file_id) if str(file_id).isdigit() else file_id
         if not self.repo.delete_where("req_item_files", {"req_item_id": item_id, "file_id": file_id}):
             raise HTTPException(status_code=404, detail="Вложение не найдено")

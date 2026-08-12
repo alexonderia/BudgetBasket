@@ -212,10 +212,13 @@ function stepDisplayStatus(step: ApprovalStep): StepStatus {
 function stepStatusLabel(step: ApprovalStep): string {
   const status = stepDisplayStatus(step);
   const base = stepStatusLabels[status];
-  if (status === 'on_approval' && (step.active_positions_count || 0) > 0) {
-    return `${base}: ${step.active_positions_count}`;
-  }
-  return base;
+  const activeSuffix = status === 'on_approval' && (step.active_positions_count || 0) > 0
+    ? `: ${step.active_positions_count}`
+    : '';
+  const revisionSuffix = (step.revision_positions_count || 0) > 0
+    ? ` · На доработке: ${step.revision_positions_count}`
+    : '';
+  return `${base}${activeSuffix}${revisionSuffix}`;
 }
 
 function canDeleteApprovalStep(step: ApprovalStep) {

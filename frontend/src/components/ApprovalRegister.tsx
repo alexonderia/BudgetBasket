@@ -1,6 +1,7 @@
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import CloseIcon from '@mui/icons-material/Close';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -96,7 +97,7 @@ import {
 import { useTableColumnControls, type TableSortState } from '../utils/tableColumns';
 import { RegistryGroupStatusCell, EditableRegistryStatusCell, type RegistryRowDecision } from './approval-register/RegistryStatusCell';
 import { RegistryYourDecisionCell } from './approval-register/registryWorkflowCells';
-import { STATUS_LEGEND_SPECS, StatusVisualBadge } from './approval-register/registryStatusVisual';
+import { STATUS_LEGEND_SPECS, StatusVisualBadge, rowStatusPresentation } from './approval-register/registryStatusVisual';
 import { RequestHistoryDrawer, type RequestHistoryTarget } from './request-history/RequestHistoryDrawer';
 import { RequestHistoryPanel } from './request-history/RequestHistoryPanel';
 import { RegisterHistoryDrawer } from './request-history/RegisterHistoryDrawer';
@@ -679,11 +680,27 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
     queryFn: async () => (await api.get<RequestLog[]>(`/requests/${item!.request_id}/logs`)).data,
     enabled: !!item,
   });
-  return <Drawer anchor="right" open={!!item} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: 520 }, p: 2.5 } }}>
-    {item && <Stack spacing={2}><Box><Typography variant="h6">{item.name}</Typography><Typography variant="body2" color="text.secondary">Заявка №{item.request_id.slice(0, 8)}</Typography></Box><Divider />
+  const field = (label: string, value: React.ReactNode, wide = false) => (
+    <Box sx={{ gridColumn: wide ? '1 / -1' : undefined, minWidth: 0 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.35, fontWeight: 600 }}>{label}</Typography>
+      <Typography variant="body2" sx={{ color: 'text.primary', lineHeight: 1.45, overflowWrap: 'anywhere' }}>{value || '—'}</Typography>
+    </Box>
+  );
+  return <Drawer anchor="right" open={!!item} onClose={onClose} PaperProps={{ sx: { width: { xs: '100%', sm: 560 }, bgcolor: '#F8FAFC' } }}>
+    {item && <Stack spacing={0} sx={{ minHeight: '100%' }}>
+      <Box sx={{ px: { xs: 2, sm: 3 }, pt: 2.25, pb: 1.75, bgcolor: '#fff', borderBottom: '1px solid', borderColor: 'divider' }}>
+        <Stack direction="row" spacing={1.5} alignItems="flex-start" justifyContent="space-between">
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.25, letterSpacing: '-0.01em' }}>{item.name}</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>Заявка №{item.request_id.slice(0, 8)}</Typography>
+          </Box>
+          <IconButton aria-label="Закрыть" onClick={onClose} size="small" sx={{ mt: -0.5, mr: -0.75 }}><CloseIcon fontSize="small" /></IconButton>
+        </Stack>
+      </Box>
+      <Stack spacing={2.25} sx={{ px: { xs: 2, sm: 3 }, py: 2.25 }}>
       {item.status_context && (
-        <Box sx={{ p: 1.25, borderRadius: 1, border: '1px solid', borderColor: 'divider', bgcolor: item.status_context.editability.mode === 'editable' ? 'warning.50' : 'grey.50' }}>
-          <Typography variant="subtitle2" sx={{ mb: 0.75 }}>
+        <Box sx={{ p: 1.5, borderRadius: 2, border: '1px solid', borderColor: item.status_context.editability.mode === 'editable' ? '#F6C36B' : '#D7DEE8', bgcolor: item.status_context.editability.mode === 'editable' ? '#FFF9ED' : '#fff' }}>
+          <Typography variant="subtitle2" sx={{ mb: 0.65, fontWeight: 800 }}>
             {item.is_revision_actionable
               ? 'Требуется исправить строку'
               : item.status_context.editability.can_decide
@@ -694,7 +711,7 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
                     ? 'Изменения заблокированы'
                     : 'От вас действий не требуется'}
           </Typography>
-          <Typography variant="body2" color="text.secondary">{item.status_context.editability.detail}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.5 }}>{item.status_context.editability.detail}</Typography>
           {item.approval_stage && (
             <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75 }}>Текущий этап: {item.approval_stage}</Typography>
           )}
@@ -711,34 +728,36 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
           )}
         </Box>
       )}
-      {item.status_context?.previous_step && (
-        <Box>
-          <Typography variant="caption" color="text.secondary">Предыдущий шаг</Typography>
-          <Typography variant="body2">
-            {item.status_context.previous_step.amount != null ? `${money(item.status_context.previous_step.amount)} · ` : ''}
-            {item.status_context.previous_step.label}
-          </Typography>
-          {item.status_context.previous_step.hint ? (
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{item.status_context.previous_step.hint}</Typography>
-          ) : null}
+      {(item.status_context?.previous_step || item.status_context?.your_step) && <Box>
+        <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: '0.08em' }}>Маршрут согласования</Typography>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1, mt: 0.75 }}>
+          {item.status_context?.previous_step && <Box sx={{ p: 1.25, bgcolor: '#fff', border: '1px solid', borderColor: 'divider', borderRadius: 1.5 }}>
+            <Typography variant="caption" color="text.secondary">Предыдущий шаг</Typography>
+            <Typography variant="body2" fontWeight={700}>{item.status_context.previous_step.amount != null ? `${money(item.status_context.previous_step.amount)} · ` : ''}{item.status_context.previous_step.label}</Typography>
+            {item.status_context.previous_step.hint && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35 }}>{item.status_context.previous_step.hint}</Typography>}
+          </Box>}
+          {item.status_context?.your_step && <Box sx={{ p: 1.25, bgcolor: '#fff', border: '1px solid', borderColor: '#BFD4FF', borderRadius: 1.5 }}>
+            <Typography variant="caption" color="text.secondary">Ваше решение</Typography>
+            <Typography variant="body2" fontWeight={700}>{item.status_context.your_step.amount != null ? `${money(item.status_context.your_step.amount)} · ` : ''}{item.status_context.your_step.label}</Typography>
+            {item.status_context.your_step.hint && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35 }}>{item.status_context.your_step.hint}</Typography>}
+          </Box>}
         </Box>
-      )}
-      {item.status_context?.your_step && (
-        <Box>
-          <Typography variant="caption" color="text.secondary">Ваше решение</Typography>
-          <Typography variant="body2">
-            {item.status_context.your_step.amount != null ? `${money(item.status_context.your_step.amount)} · ` : ''}
-            {item.status_context.your_step.label}
-          </Typography>
-          {item.status_context.your_step.hint ? (
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>{item.status_context.your_step.hint}</Typography>
-          ) : null}
+      </Box>}
+      <Box>
+        <Typography variant="overline" sx={{ color: 'text.secondary', fontWeight: 800, letterSpacing: '0.08em' }}>Детали строки</Typography>
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 1.75, mt: 1 }}>
+          {field('ЦФО', item.cfo_name)}{field('Статья', item.article_name)}{field('Категория', item.category_name)}{field('Модуль', item.module_name)}
+          <Box sx={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', sm: 'repeat(3, 1fr)' }, gap: 1, p: 1.25, borderRadius: 1.5, bgcolor: '#fff', border: '1px solid', borderColor: 'divider' }}>
+            {field('План', money(item.requested_sum))}{field('Факт', money(item.approved_sum))}
+            {field('Корректировка', money(item.status === 'rejected' ? item.requested_sum : item.status === 'approved_with_changes' ? Math.max(item.requested_sum - item.approved_sum, 0) : 0))}
+          </Box>
+          <Box sx={{ gridColumn: '1 / -1' }}><Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontWeight: 600 }}>Статус</Typography><StatusVisualBadge spec={rowStatusPresentation(rowRegistryStatus(item), item).primary} /></Box>
+          {field('Обоснование', item.justification, true)}{field('Комментарий экономиста', item.comment, true)}
         </Box>
-      )}
-      {[['ЦФО', item.cfo_name], ['Статья', item.article_name], ['Категория', item.category_name], ['Модуль', item.module_name], ['Запрошено', money(item.requested_sum)], ['Согласовано', money(item.approved_sum)], ['Статус', STATUS_LABELS[item.status]], ['Обоснование', item.justification || '—'], ['Комментарий экономиста', item.comment || '—']].map(([label, value]) => <Box key={label}><Typography variant="caption" color="text.secondary">{label}</Typography><Typography variant="body2">{value}</Typography></Box>)}
+      </Box>
       {ANALYTICS_FIELD_KEYS.map((key) => (
-        <Box key={key}>
-          <Typography variant="caption" color="text.secondary">{ANALYTICS_FIELD_LABELS[key]}</Typography>
+        <Box key={key} sx={{ p: 1.25, bgcolor: '#fff', border: '1px solid', borderColor: 'divider', borderRadius: 1.5 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5, fontWeight: 600 }}>{ANALYTICS_FIELD_LABELS[key]}</Typography>
           <EditableAnalyticsCell
             itemId={item.id}
             field={key}
@@ -748,7 +767,7 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
           />
         </Box>
       ))}
-      <Box><Typography variant="subtitle2">Прикреплённые файлы</Typography>{files.length ? files.map((file) => <Typography key={file.id} variant="body2">{file.original_name}</Typography>) : <Typography variant="body2" color="text.secondary">Нет файлов</Typography>}</Box>
+      <Box sx={{ p: 1.5, bgcolor: '#fff', border: '1px solid', borderColor: 'divider', borderRadius: 1.5 }}><Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.75 }}>Прикреплённые файлы</Typography>{files.length ? files.map((file) => <Typography key={file.id} variant="body2" sx={{ lineHeight: 1.5 }}>{file.original_name}</Typography>) : <Typography variant="body2" color="text.secondary">Нет файлов</Typography>}</Box>
       <Box>
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
           <Typography variant="subtitle2">История изменений</Typography>
@@ -757,6 +776,7 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
         <RequestHistoryPanel logs={logs} loading={logsPending} lineId={item.id} lineName={item.name} embedded showTabs />
       </Box>
       <Button component="a" href={`/requests/${item.request_id}?article_id=${encodeURIComponent(item.article_id)}&category_id=${encodeURIComponent(item.category_id)}`} target="_blank" rel="noopener noreferrer" variant="outlined" startIcon={<OpenInNewIcon />}>Открыть заявку</Button>
+      </Stack>
     </Stack>}
   </Drawer>;
 }
@@ -1013,7 +1033,13 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, onSel
   const amountEditable = canEditApprovedAmount(user.role, item);
   const statusEditable = actionEnabled;
   const rowStatus = rowRegistryStatus(item);
+  const [draftFact, setDraftFact] = useState(item.approved_sum);
+  useEffect(() => { setDraftFact(item.approved_sum); }, [item.approved_sum, item.id]);
   const commitAmount = (amount: number) => {
+    if (item.is_cfo_review_actionable) {
+      onSaveRowDecision(item, amount === item.requested_sum ? 'approved' : 'approved_with_changes', amount);
+      return;
+    }
     if (amount !== item.requested_sum) {
       onDecision({ rows: [item], decision: 'approved_with_changes', amount });
       return;
@@ -1095,18 +1121,22 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, onSel
     ),
     requested: <Typography variant="body2" sx={cellTextSx}>{money(item.requested_sum)}</Typography>,
     approved: (
+      <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
       <InlineEditMoneyCell
-        value={item.approved_sum}
+        value={draftFact}
         editable={amountEditable}
         formatValue={money}
         parseValue={parseMoneyInput}
         validate={(amount) => amount >= 0}
         ariaLabel="Фактическая сумма"
         title={amountEditable ? 'Изменить факт в рамках вашего шага' : 'Факт можно изменить только на назначенном вам шаге'}
-        onCommit={commitAmount}
+        onDraftChange={setDraftFact}
+        saveOnBlur={false}
+        onCommit={setDraftFact}
       />
+      </Stack>
     ),
-    rejected: <Typography variant="body2" sx={{ ...cellTextSx, color: item.approved_sum - item.requested_sum ? 'warning.dark' : 'text.secondary' }}>{money(item.approved_sum - item.requested_sum)}</Typography>,
+    rejected: <Typography variant="body2" sx={{ ...cellTextSx, color: draftFact - item.requested_sum ? 'warning.dark' : 'text.secondary' }}>{money(draftFact - item.requested_sum)}</Typography>,
     your_step: workflowColumns ? (
       <RegistryYourDecisionCell
         item={item}
@@ -1117,13 +1147,18 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, onSel
       />
     ) : null,
     status: (
-      <EditableRegistryStatusCell
-        status={rowStatus}
-        item={item}
-        active={statusEditable}
-        onCommit={(decision) => commitDecision(decision, item.status === 'on_review' ? item.requested_sum : item.approved_sum)}
-        onDecision={openStatusDecision}
-      />
+      <Stack spacing={0.5} alignItems="flex-start">
+        <EditableRegistryStatusCell
+          status={rowStatus}
+          item={item}
+          active={statusEditable}
+          onCommit={(decision) => commitDecision(decision, item.status === 'on_review' ? item.requested_sum : draftFact)}
+          onDecision={openStatusDecision}
+        />
+        {amountEditable && draftFact !== item.approved_sum && (
+          <Button size="small" variant="contained" onClick={() => commitAmount(draftFact)} sx={{ px: 1, fontSize: 11 }}>Сохранить факт</Button>
+        )}
+      </Stack>
     ),
     justification: <Typography variant="body2" noWrap title={item.justification || '—'} sx={cellTextSx}>{item.justification || '—'}</Typography>,
     comment: <Typography variant="body2" noWrap title={item.comment || '—'} sx={cellTextSx}>{item.comment || '—'}</Typography>,
