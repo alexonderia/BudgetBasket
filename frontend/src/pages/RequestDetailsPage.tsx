@@ -1977,22 +1977,30 @@ function ItemsTable({
                   </TableRow>
                   {!isDeleted && expandedMonthPlans.has(item.id) && (
                     <TableRow>
-                      <TableCell colSpan={monthPlanColumnSpan} sx={{ py: 0.75, px: 1, bgcolor: 'action.hover', borderBottom: 1, borderColor: 'divider' }}>
-                        <Stack spacing={0.65}>
-                          <Stack direction="row" alignItems="center" spacing={0.5}>
-                            <Typography variant="caption" fontWeight={700}>{item.is_income ? 'План поступлений по месяцам' : 'План расходов по месяцам'}</Typography>
-                            <Typography variant="caption" color="text.secondary">· {money(Number(monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan))) / 100n))}</Typography>
+                      <TableCell colSpan={monthPlanColumnSpan} sx={{ py: 0.8, px: 1.25, bgcolor: '#fff', borderBottom: 1, borderColor: 'divider' }}>
+                        <Stack spacing={0.75}>
+                          <Stack direction="row" alignItems="baseline" spacing={0.5}>
+                            <Typography variant="body2" fontWeight={700} sx={{ fontSize: 13 }}>
+                              {item.is_income ? 'План поступлений по месяцам' : 'План расходов по месяцам'}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ fontSize: 13 }}>
+                              · {money(Number(monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan))) / 100n))}
+                            </Typography>
                           </Stack>
-                          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 0.5 }}>
+                          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', md: 'repeat(6, minmax(0, 1fr))' }, gap: 0.55 }}>
                             {MONTH_NAMES.map((month, index) => {
                               const plan = visibleMonthPlans.find((entry) => entry.month === index + 1);
-                              return <Box key={month} sx={{ minWidth: 0, px: 0.65, py: 0.4, borderRadius: 0.75, bgcolor: 'background.paper' }}>
-                                <Typography variant="caption" color="text.secondary" noWrap>{month.slice(0, 3)}</Typography>
+                              const displayAmount = tableMoney(Number(plan?.sum_plan ?? 0));
+                              return <Box key={month} sx={{ minWidth: 0, minHeight: 31, px: 0.7, py: 0.35, borderRadius: 1.25, bgcolor: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 0.5, boxShadow: '0 1px 2px rgba(15, 23, 42, 0.03)' }}>
+                                <Typography variant="caption" color="text.secondary" noWrap sx={{ fontSize: 12 }}>
+                                  {month.slice(0, 3)}
+                                </Typography>
                                 {(canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id)) || canCfoEditMonthPlans(item) ? (
                                   <InlineEditTextCell
                                     value={String(plan?.sum_plan ?? '')}
                                     editable
                                     align="right"
+                                    displayValue={displayAmount}
                                     ariaLabel={`План ${month}`}
                                     title={`Нажмите, чтобы изменить план на ${month}`}
                                     onCommit={(next) => {
@@ -2007,7 +2015,7 @@ function ItemsTable({
                                       });
                                     }}
                                   />
-                                ) : <Typography variant="caption" fontWeight={600} noWrap>{tableMoney(Number(plan?.sum_plan ?? 0))}</Typography>}
+                                ) : <Typography variant="caption" fontWeight={600} noWrap sx={{ fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{displayAmount}</Typography>}
                               </Box>;
                             })}
                           </Box>
