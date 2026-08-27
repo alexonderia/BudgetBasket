@@ -11,6 +11,7 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import RestartAltIcon from '@mui/icons-material/RestartAlt';
 import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
 import SendIcon from '@mui/icons-material/Send';
@@ -281,6 +282,41 @@ function evenlyDistributeMonthPlans(target: bigint): BudgetItem['month_plans'] {
   });
 }
 
+function redistributeUnlockedMonthPlans(
+  plans: BudgetItem['month_plans'],
+  target: bigint,
+  lockedMonths: Set<number>,
+): BudgetItem['month_plans'] | null {
+  const current = completeMonthPlans(plans);
+  const lockedTotal = current.reduce(
+    (total, plan) => total + (lockedMonths.has(plan.month) ? monthAmountToCents(String(plan.sum_plan)) : 0n),
+    0n,
+  );
+  if (lockedTotal > target) return null;
+
+  const openMonths = current.filter((plan) => !lockedMonths.has(plan.month));
+  const remaining = target - lockedTotal;
+  if (openMonths.length === 0) return remaining === 0n ? current : null;
+  const openTotal = openMonths.reduce((total, plan) => total + monthAmountToCents(String(plan.sum_plan)), 0n);
+  if (openTotal === 0n) {
+    const base = remaining / BigInt(openMonths.length);
+    let remainder = remaining % BigInt(openMonths.length);
+    return current.map((plan) => {
+      if (lockedMonths.has(plan.month)) return plan;
+      const sum_plan = centsToAmount(base + (remainder > 0n ? 1n : 0n));
+      if (remainder > 0n) remainder -= 1n;
+      return { ...plan, sum_plan };
+    });
+  }
+  const weightedOpenPlans = redistributeMonthPlans(
+    current.map((plan) => lockedMonths.has(plan.month) ? { ...plan, sum_plan: '0.00' } : plan),
+    remaining,
+  );
+  return weightedOpenPlans.map((plan) => lockedMonths.has(plan.month)
+    ? current.find((currentPlan) => currentPlan.month === plan.month)!
+    : plan);
+}
+
 function uploadValidationError(file: File) {
   const extension = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
   if (!UPLOAD_EXTENSIONS.has(extension)) {
@@ -332,12 +368,6 @@ function isInactiveCatalogSelection(catalog: CatalogItem[], articleId?: string |
 function reviewValidationError(item: BudgetItem, draft: Partial<BudgetItem>) {
   const status = draft.status || item.status;
   const sumFact = draft.sum_fact !== undefined ? draft.sum_fact : item.sum_fact;
-  if (item.is_income && draft.sum_fact !== undefined) {
-    const monthTotal = monthPlansTotal((draft.month_plans ?? item.month_plans ?? []).map((plan) => String(plan.sum_plan)));
-    if (monthAmountToCents(String(draft.sum_fact ?? 0)) !== monthTotal) {
-      return 'Утверждённая сумма должна совпадать с итогом месячного плана. Используйте «Автоподбор» или скорректируйте месяцы.';
-    }
-  }
   if (status === 'approved' && sumFact !== null && Number(sumFact) !== Number(item.sum_plan)) {
     return 'Для статуса «Утверждено» сумма должна совпадать с планом.';
   }
@@ -696,16 +726,15 @@ function AddItemForm({
   const [name, setName] = useState('');
   const [sumPlan, setSumPlan] = useState('');
   const [monthPlanValues, setMonthPlanValues] = useState<string[]>(() => Array(12).fill(''));
-  const [autoFillExpenseMonths, setAutoFillExpenseMonths] = useState(true);
+  const [lockedMonths, setLockedMonths] = useState<Set<number>>(() => new Set());
+  const [redistributionError, setRedistributionError] = useState('');
   const [justification, setJustification] = useState('');
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const annualTotal = monthPlansTotal(monthPlanValues);
   const monthPlanErrors = monthPlanValues.map(monthAmountError);
-
-  useEffect(() => {
-    if (isIncome || !autoFillExpenseMonths || monthAmountError(sumPlan)) return;
-    setMonthPlanValues(evenlyDistributeMonthPlans(monthAmountToCents(sumPlan)).map((plan) => String(plan.sum_plan)));
-  }, [autoFillExpenseMonths, isIncome, sumPlan]);
+  const monthPlanCents = (value: string) => monthAmountError(value) ? 0n : monthAmountToCents(value || '0');
+  const planTarget = monthAmountError(sumPlan) ? null : monthAmountToCents(sumPlan);
+  const planDifference = planTarget === null ? null : planTarget - annualTotal;
 
   const create = useMutation({
     mutationFn: async () => {
@@ -713,7 +742,7 @@ function AddItemForm({
         [kind === 'dds' ? 'dds_id' : 'invest_id']: article?.id,
         is_income: isIncome,
         name,
-        sum_plan: centsToAmount(annualTotal),
+        sum_plan: centsToAmount(planTarget ?? annualTotal),
         month_plans: monthPlanValues.map((sum_plan, index) => ({ month: index + 1, sum_plan: centsToAmount(monthAmountError(sum_plan) ? 0n : monthAmountToCents(sum_plan)) })),
         justification,
       });
@@ -737,7 +766,8 @@ function AddItemForm({
       setName('');
       setSumPlan('');
       setMonthPlanValues(Array(12).fill(''));
-      setAutoFillExpenseMonths(true);
+      setLockedMonths(new Set());
+      setRedistributionError('');
       setJustification('');
       setPendingFiles([]);
       queryClient.invalidateQueries({ queryKey: ['request-details', requestId] });
@@ -749,7 +779,8 @@ function AddItemForm({
         setName('');
         setSumPlan('');
         setMonthPlanValues(Array(12).fill(''));
-        setAutoFillExpenseMonths(true);
+        setLockedMonths(new Set());
+        setRedistributionError('');
         setJustification('');
         setPendingFiles([]);
       }
@@ -774,6 +805,20 @@ function AddItemForm({
     ]);
   };
 
+  const redistributeByCurrentWeights = () => {
+    if (planTarget === null) return;
+    const month_plans = redistributeUnlockedMonthPlans(monthPlanValues.map((sum_plan, index) => ({
+      month: index + 1,
+      sum_plan: centsToAmount(monthAmountError(sum_plan) ? 0n : monthAmountToCents(sum_plan)),
+    })), planTarget, lockedMonths);
+    if (!month_plans) {
+      setRedistributionError('Сумма зафиксированных месяцев больше плановой суммы');
+      return;
+    }
+    setRedistributionError('');
+    setMonthPlanValues(month_plans.map((plan) => String(plan.sum_plan)));
+  };
+
   return (
     <Stack spacing={1.25} sx={{ my: 2 }}>
       <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} alignItems={{ lg: 'center' }}>
@@ -793,17 +838,32 @@ function AddItemForm({
           />
         )}
       />
-      {!isIncome && <TextField
+      <TextField
           label="Плановая сумма для распределения"
           inputProps={{ inputMode: 'decimal' }}
           value={sumPlan}
           onChange={(event) => {
-            setSumPlan(normalizePositiveAmount(event.target.value));
-            setAutoFillExpenseMonths(true);
+            const next = normalizePositiveAmount(event.target.value);
+            setSumPlan(next);
+            setRedistributionError('');
+            if (!monthAmountError(next)) {
+              const current = monthPlanValues.map((sum_plan, index) => ({
+                month: index + 1,
+                sum_plan: lockedMonths.has(index + 1)
+                  ? centsToAmount(monthAmountError(sum_plan) ? 0n : monthAmountToCents(sum_plan))
+                  : '0.00',
+              }));
+              const month_plans = redistributeUnlockedMonthPlans(current, monthAmountToCents(next), lockedMonths);
+              if (!month_plans) {
+                setRedistributionError('Сумма зафиксированных месяцев больше новой плановой суммы');
+                return;
+              }
+              setMonthPlanValues(month_plans.map((plan) => String(plan.sum_plan)));
+            }
           }}
           disabled={disabled}
           sx={{ minWidth: { xs: 0, sm: 140 }, width: { xs: '100%', lg: 'auto' } }}
-        />}
+        />
       <TextField
         label="Наименование"
         value={name}
@@ -811,25 +871,60 @@ function AddItemForm({
         disabled={disabled}
         sx={{ minWidth: { xs: 0, sm: 200 }, width: { xs: '100%', lg: 'auto' }, flex: 1 }}
       />
-        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || !name.trim() || annualTotal <= 0n || monthPlanErrors.some(Boolean) || create.isPending} sx={{ width: { xs: '100%', lg: 'auto' } }}>
+        <Button variant="contained" onClick={() => create.mutate()} disabled={disabled || !article || !name.trim() || annualTotal <= 0n || planDifference !== 0n || monthPlanErrors.some(Boolean) || create.isPending} sx={{ width: { xs: '100%', lg: 'auto' } }}>
           {isIncome ? 'Добавить доход' : 'Добавить расход'}
         </Button>
       </Stack>
       <Box component="section" sx={{ borderTop: 1, borderColor: 'divider', pt: 2 }}>
           <Typography variant="subtitle1" sx={{ mb: 0.5 }}>{isIncome ? 'План поступлений по месяцам' : 'План расходов по месяцам'}</Typography>
-          {!isIncome && <Typography variant="body2" color="text.secondary" sx={{ mb: 1.25 }}>Сумма распределяется поровну на 12 месяцев. Значения можно скорректировать вручную.</Typography>}
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.25 }}>Годовая сумма распределяется поровну на 12 месяцев. После ручной корректировки используйте кнопку, чтобы распределить разницу с планом по текущим весам.</Typography>
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', lg: 'repeat(4, 1fr)' }, gap: 1.25 }}>
             {MONTH_NAMES.map((month, index) => (
-              <TextField key={month} label={month} size="small" inputProps={{ inputMode: 'decimal' }} value={monthPlanValues[index]}
-                error={!!monthPlanErrors[index]} helperText={monthPlanErrors[index] || undefined} disabled={disabled}
-                onChange={(event) => {
-                  setAutoFillExpenseMonths(false);
-                  setMonthPlanValues((current) => current.map((value, itemIndex) => itemIndex === index ? normalizeMonthAmount(event.target.value) : value));
-                }}
-              />
+              <Box key={month} sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.25 }}>
+                <TextField label={month} size="small" inputProps={{ inputMode: 'decimal' }} value={monthPlanValues[index]}
+                  error={!!monthPlanErrors[index]} helperText={monthPlanErrors[index] || undefined} disabled={disabled} sx={{ flex: 1 }}
+                  onChange={(event) => {
+                    const next = monthPlanValues.map((value, itemIndex) => itemIndex === index ? normalizeMonthAmount(event.target.value) : value);
+                    setRedistributionError('');
+                    setMonthPlanValues(next);
+                  }}
+                />
+                <Tooltip title={lockedMonths.has(index + 1) ? 'Месяц зафиксирован: не менять при распределении' : 'Зафиксировать месяц при распределении'}>
+                  <IconButton
+                    size="small"
+                    aria-label={lockedMonths.has(index + 1) ? `Снять фиксацию: ${month}` : `Зафиксировать: ${month}`}
+                    disabled={disabled}
+                    onClick={() => setLockedMonths((current) => {
+                      const next = new Set(current);
+                      if (next.has(index + 1)) next.delete(index + 1);
+                      else next.add(index + 1);
+                      return next;
+                    })}
+                    sx={{ mt: 0.5 }}
+                  >
+                    {lockedMonths.has(index + 1) ? <LockOutlinedIcon fontSize="small" color="primary" /> : <LockOpenOutlinedIcon fontSize="small" />}
+                  </IconButton>
+                </Tooltip>
+              </Box>
             ))}
           </Box>
           <Typography variant="subtitle1" sx={{ mt: 1.5 }}>Итого за год: {annualTotalLabel(annualTotal)}</Typography>
+          {planDifference !== null && planDifference !== 0n && (
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} sx={{ mt: 1 }}>
+              <Typography variant="body2" color={planDifference > 0n ? 'success.main' : 'error.main'}>
+                Разница с планом: {annualTotalLabel(planDifference < 0n ? -planDifference : planDifference)}
+              </Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                disabled={disabled || annualTotal === 0n}
+                onClick={redistributeByCurrentWeights}
+              >
+                Распределить разницу по текущим весам
+              </Button>
+            </Stack>
+          )}
+          {redistributionError && <Typography variant="caption" color="error.main" sx={{ display: 'block', mt: 0.5 }}>{redistributionError}</Typography>}
       </Box>
       <TextField
         label="Обоснование"
@@ -941,6 +1036,7 @@ function ItemsTable({
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const [drafts, setDrafts] = useState<Record<string, Partial<BudgetItem>>>({});
+  const [weightTargets, setWeightTargets] = useState<Record<string, string>>({});
   const [stagedFilesByItem, setStagedFilesByItem] = useState<Record<string, File[]>>({});
   const [pendingDeletedFileIdsByItem, setPendingDeletedFileIdsByItem] = useState<Record<string, number[]>>({});
   const [autoFitSnapshots, setAutoFitSnapshots] = useState<Record<string, { month_plans: BudgetItem['month_plans']; sum_fact: number | null | undefined }>>({});
@@ -1071,8 +1167,15 @@ function ItemsTable({
       .map(([id, group]) => ({
         id,
         name: group.name,
-        items: group.items,
-        categories: [...group.categories.values()].sort((left, right) => left.name.localeCompare(right.name, 'ru')),
+        // Keep the current user-defined order within each state, but always show
+        // deleted rows after the active ones.
+        items: [...group.items].sort((left, right) => Number(left.status === 'deleted') - Number(right.status === 'deleted')),
+        categories: [...group.categories.values()]
+          .map((categoryGroup) => ({
+            ...categoryGroup,
+            items: [...categoryGroup.items].sort((left, right) => Number(left.status === 'deleted') - Number(right.status === 'deleted')),
+          }))
+          .sort((left, right) => left.name.localeCompare(right.name, 'ru')),
       }))
       .sort((left, right) => left.name.localeCompare(right.name, 'ru'));
   }, [catalog, kind, visibleItems]);
@@ -1263,9 +1366,9 @@ function ItemsTable({
       case 'requested':
         return (
           <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2 })}>
-            {canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id) && !isDeleted && !item.is_income ? (
+            {((canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id)) || canCfoEditMonthPlans(item)) && !isDeleted ? (
               <InlineEditMoneyCell
-                value={Number(item.sum_plan)}
+                value={Number(local.sum_plan ?? item.sum_plan)}
                 editable
                 formatValue={tableMoney}
                 parseValue={(raw) => {
@@ -1275,10 +1378,17 @@ function ItemsTable({
                 validate={(amount) => amount >= 0}
                 ariaLabel="Запрошенная сумма"
                 title="Нажмите, чтобы изменить запрошенную сумму"
-                onCommit={(sum_plan) => patchItemField.mutate({ id: item.id, body: { sum_plan } })}
+                onCommit={(sum_plan) => {
+                  const month_plans = evenlyDistributeMonthPlans(monthAmountToCents(String(sum_plan)));
+                  setDrafts((current) => ({
+                    ...current,
+                    [item.id]: { ...current[item.id], sum_plan, month_plans },
+                  }));
+                  patchItemField.mutate({ id: item.id, body: { sum_plan } });
+                }}
               />
             ) : (
-              <Typography variant="body2" sx={{ fontSize: 13, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{tableMoney(item.sum_plan)}</Typography>
+              <Typography variant="body2" sx={{ fontSize: 13, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{tableMoney(local.sum_plan ?? item.sum_plan)}</Typography>
             )}
           </TableCell>
         );
@@ -1496,9 +1606,7 @@ function ItemsTable({
     }
   };
   const tableWidth = visibleItemColumns.reduce((sum, column) => sum + columnWidths[column.id], 0);
-  const statusColumnIndex = visibleItemColumns.findIndex((column) => column.id === 'status');
-  const monthPlanColumnSpan = statusColumnIndex >= 0 ? statusColumnIndex + 1 : visibleItemColumns.length;
-  const trailingMonthPlanColumnSpan = visibleItemColumns.length - monthPlanColumnSpan;
+  const monthPlanColumnSpan = visibleItemColumns.length;
 
   const headerCell = (column: ItemTableColumn) => ({
     width: itemVisibility[column] ? columnWidths[column] : 0,
@@ -1879,7 +1987,9 @@ function ItemsTable({
         <Table
           size="small"
           sx={{
-            width: tableWidth,
+            // Fill the available viewport while retaining horizontal scrolling
+            // when the configured columns need more room.
+            width: `max(100%, ${tableWidth}px)`,
             minWidth: tableWidth,
             tableLayout: 'fixed',
             '& td, & th': { borderRight: '1px solid', borderColor: 'rgba(15, 23, 42, 0.06)', fontSize: 12 },
@@ -1999,9 +2109,10 @@ function ItemsTable({
                               const plan = visibleMonthPlans.find((entry) => entry.month === index + 1);
                               const displayAmount = tableMoney(Number(plan?.sum_plan ?? 0));
                               return <Box key={month} sx={{ minWidth: 0, minHeight: 31, px: 0.7, py: 0.35, borderRadius: 1.25, bgcolor: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 0.5, boxShadow: '0 1px 2px rgba(15, 23, 42, 0.03)' }}>
-                                <Typography variant="caption" color="text.secondary" noWrap sx={{ fontSize: 12 }}>
+                                <Typography variant="caption" color="text.secondary" noWrap sx={{ flex: '0 0 34px', fontSize: 12 }}>
                                   {month.slice(0, 3)}
                                 </Typography>
+                                <Box sx={{ flex: 1, minWidth: 0 }}>
                                 {(canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id)) || canCfoEditMonthPlans(item) ? (
                                   <InlineEditTextCell
                                     value={String(plan?.sum_plan ?? '')}
@@ -2016,16 +2127,60 @@ function ItemsTable({
                                           ? { ...entry, sum_plan: normalizeMonthAmount(next) }
                                           : entry
                                       ));
+                                      const sum_plan = Number(centsToAmount(monthPlansTotal(nextPlans.map((entry) => String(entry.sum_plan)))));
+                                      setDrafts((current) => ({
+                                        ...current,
+                                        [item.id]: { ...current[item.id], month_plans: nextPlans, sum_plan },
+                                      }));
                                       patchItemField.mutate({
                                         id: item.id,
-                                        body: { month_plans: nextPlans },
+                                        body: { month_plans: nextPlans, sum_plan },
                                       });
                                     }}
                                   />
-                                ) : <Typography variant="caption" fontWeight={600} noWrap sx={{ fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{displayAmount}</Typography>}
+                                ) : <Typography variant="caption" fontWeight={600} noWrap sx={{ display: 'block', fontSize: 12, fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{displayAmount}</Typography>}
+                                </Box>
                               </Box>;
                             })}
                           </Box>
+                          {(() => {
+                            const currentTotal = monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan)));
+                            const canEditPlan = ((canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id)) || canCfoEditMonthPlans(item));
+                            if (!canEditPlan || currentTotal === 0n) return null;
+                            const targetValue = weightTargets[item.id] ?? String(local.sum_plan ?? item.sum_plan);
+                            const targetError = monthAmountError(targetValue);
+                            return <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ sm: 'center' }} sx={{ alignSelf: 'flex-start' }}>
+                              <TextField
+                                size="small"
+                                label="Сумма для распределения"
+                                inputProps={{ inputMode: 'decimal' }}
+                                value={targetValue}
+                                error={!!targetError}
+                                helperText={targetError || undefined}
+                                onChange={(event) => setWeightTargets((current) => ({
+                                  ...current,
+                                  [item.id]: normalizeMonthAmount(event.target.value),
+                                }))}
+                              />
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                disabled={!!targetError}
+                                onClick={() => {
+                                const target = monthAmountToCents(targetValue);
+                                const month_plans = redistributeMonthPlans(visibleMonthPlans, target);
+                                const sum_plan = Number(centsToAmount(target));
+                                setDrafts((current) => ({
+                                  ...current,
+                                  [item.id]: { ...current[item.id], month_plans, sum_plan },
+                                }));
+                                patchItemField.mutate({ id: item.id, body: { month_plans, sum_plan } });
+                              }}
+                              >
+                                Распределить по текущим весам
+                              </Button>
+                            </Stack>;
+                          })()}
                           {canEconomist && (local.sum_fact !== undefined || draftStatus !== 'on_review') && (() => {
                             const monthTotal = monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan)));
                             const approvedTotal = monthAmountToCents(String(factValue ?? 0));
@@ -2041,9 +2196,6 @@ function ItemsTable({
                           })()}
                         </Stack>
                       </TableCell>
-                      {trailingMonthPlanColumnSpan > 0 && (
-                        <TableCell colSpan={trailingMonthPlanColumnSpan} sx={{ p: 0, bgcolor: '#fff', borderBottom: 1, borderColor: 'divider' }} />
-                      )}
                     </TableRow>
                   )}
                 </Fragment>

@@ -1249,27 +1249,10 @@ class ApprovalService:
         if item.get("frozen") or item.get("fixed"):
             raise HTTPException(status_code=409, detail="Строка закрыта для редактирования")
         decision_payload = dict(payload)
-        month_plans = decision_payload.pop("month_plans", None)
-        normalized_plans = None
-        if month_plans is not None:
-            if not item.get("is_income"):
-                raise HTTPException(
-                    status_code=422,
-                    detail="Помесячный план доступен только для доходной строки",
-                )
-            normalized_plans, approved_total = BudgetItemService._validate_month_plans(
-                month_plans
-            )
-            decision_payload["sum_fact"] = approved_total
-        elif (
-            item.get("is_income")
-            and decision_payload.get("sum_fact") is not None
-            and BudgetItemService._decimal(decision_payload["sum_fact"])
-            != BudgetItemService._decimal(item["sum_plan"])
-        ):
+        if decision_payload.pop("month_plans", None) is not None:
             raise HTTPException(
                 status_code=422,
-                detail="Изменённую сумму дохода распределите по месяцам",
+                detail="Экономист меняет фактическую сумму; помесячный план изменяет ответственный модуля или ЦФО",
             )
         before = dict(item)
         after = repo.update(
@@ -1277,8 +1260,6 @@ class ApprovalService:
             item_id,
             BudgetItemService.normalize_decision(item, decision_payload),
         )
-        if normalized_plans is not None:
-            BudgetItemService._replace_month_plans(repo, item_id, normalized_plans)
         self._position_log(
             repo, user, position, "economist_item_decided",
             before=before, after=after, comment=payload.get("comment"),

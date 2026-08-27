@@ -4,12 +4,12 @@ from tests.test_api import auth, make_client
 from app.seed import DDS_LICENSE_ID, MODULE_ALPHA_ID
 
 
-def _income_payload(month_plans):
+def _income_payload(month_plans, sum_plan=None):
     return {
         "dds_id": DDS_LICENSE_ID,
         "is_income": True,
         "name": "Доход от услуг",
-        "sum_plan": "999.99",
+        **({"sum_plan": sum_plan} if sum_plan is not None else {}),
         "justification": "План поступлений",
         "month_plans": month_plans,
     }
@@ -30,6 +30,21 @@ def test_income_month_plans_are_saved_and_totalled(tmp_path):
     assert Decimal(str(item["sum_plan"])) == Decimal("81.00")
     listed = client.get(f"/requests/{request['id']}/items", headers=employee).json()[0]
     assert listed["month_plans"][0]["sum_plan"] == 1.25
+
+
+def test_rejects_conflicting_annual_and_monthly_plan_totals(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+
+    response = client.post(
+        f"/requests/{request['id']}/items",
+        json=_income_payload([{"month": 1, "sum_plan": "100.00"}], sum_plan="99.99"),
+        headers=employee,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Годовая сумма должна совпадать с суммой помесячного плана"
 
 
 def test_month_plan_validation_and_expense_default_distribution(tmp_path):
@@ -67,6 +82,17 @@ def test_month_plan_validation_and_expense_default_distribution(tmp_path):
     assert Decimal(str(adjusted.json()["month_plans"][0]["sum_plan"])) == Decimal("200.00")
     assert Decimal(str(adjusted.json()["month_plans"][1]["sum_plan"])) == Decimal("0.00")
 
+    conflicting_update = client.patch(
+        f"/items/{expense_body['id']}",
+        json={"sum_plan": "201.00", "month_plans": [{"month": 1, "sum_plan": "200.00"}]},
+        headers=employee,
+    )
+    assert conflicting_update.status_code == 422
+    reloaded = client.get(f"/requests/{request['id']}/items", headers=employee).json()
+    saved = next(row for row in reloaded if row["id"] == expense_body["id"])
+    assert Decimal(str(saved["sum_plan"])) == Decimal("200.00")
+    assert Decimal(str(saved["month_plans"][0]["sum_plan"])) == Decimal("200.00")
+
 
 def test_month_plans_update_and_type_change_keeps_distribution(tmp_path):
     client = make_client(tmp_path)
@@ -96,6 +122,21 @@ def test_month_plans_update_and_type_change_keeps_distribution(tmp_path):
     assert expense.status_code == 200
     assert len(expense.json()["month_plans"]) == 12
     assert Decimal(str(expense.json()["sum_plan"])) == Decimal("50.00")
+    assert sum(Decimal(str(plan["sum_plan"])) for plan in expense.json()["month_plans"]) == Decimal("50.00")
+
+    cents = client.patch(
+        f"/items/{item['id']}",
+        json={"sum_plan": "0.01"},
+        headers=employee,
+    )
+    assert cents.status_code == 200
+    assert [Decimal(str(plan["sum_plan"])) for plan in cents.json()["month_plans"]] == [
+        Decimal("0.01"), *[Decimal("0.00")] * 11,
+    ]
+
+    reloaded = client.get(f"/requests/{request['id']}/items", headers=employee).json()
+    saved = next(row for row in reloaded if row["id"] == item["id"])
+    assert saved["month_plans"] == cents.json()["month_plans"]
 
 
 def test_cfo_responsible_can_adjust_expense_month_plans_during_review(tmp_path):
@@ -109,9 +150,19 @@ def test_cfo_responsible_can_adjust_expense_month_plans_during_review(tmp_path):
     ).json()
     assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
 
+    annually_adjusted = client.patch(
+        f"/items/{item['id']}",
+        json={"sum_plan": "0.01"},
+        headers=employee,
+    )
+    assert annually_adjusted.status_code == 200
+    assert [Decimal(str(plan["sum_plan"])) for plan in annually_adjusted.json()["month_plans"]] == [
+        Decimal("0.01"), *[Decimal("0.00")] * 11,
+    ]
+
     adjusted = client.patch(
         f"/items/{item['id']}",
-        json={"month_plans": [{"month": 1, "sum_plan": "120.00"}]},
+        json={"sum_plan": "120.00", "month_plans": [{"month": 1, "sum_plan": "120.00"}]},
         headers=employee,
     )
 
@@ -121,7 +172,7 @@ def test_cfo_responsible_can_adjust_expense_month_plans_during_review(tmp_path):
     assert Decimal(str(adjusted.json()["month_plans"][1]["sum_plan"])) == Decimal("0.00")
 
 
-def test_economist_month_plan_changes_adjust_approved_amount(tmp_path):
+def test_economist_changes_fact_without_changing_monthly_plan(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
@@ -153,14 +204,14 @@ def test_economist_month_plan_changes_adjust_approved_amount(tmp_path):
         headers=economist,
     )
 
-    assert approved.status_code == 422
+    assert approved.status_code == 200
+    approved_body = approved.json()
+    assert Decimal(str(approved_body["sum_plan"])) == Decimal("300.00")
+    assert Decimal(str(approved_body["sum_fact"])) == Decimal("150.00")
 
-    adjusted = client.post(
+    rejected_plan_edit = client.post(
         f"/cfo-positions/{position_id}/items/{item['id']}/decision",
         json={"decision": "approved_with_changes", "comment": "Снижено", "month_plans": [{"month": 1, "sum_plan": "50.00"}, {"month": 2, "sum_plan": "100.00"}]},
         headers=economist,
     )
-    assert adjusted.status_code == 200
-    adjusted_body = adjusted.json()
-    assert Decimal(str(adjusted_body["sum_plan"])) == Decimal("300.00")
-    assert Decimal(str(adjusted_body["sum_fact"])) == Decimal("150.00")
+    assert rejected_plan_edit.status_code == 422

@@ -115,6 +115,15 @@ class BudgetItemService:
         ]
         return normalized, sum((row["sum_plan"] for row in normalized), Decimal("0"))
 
+    @classmethod
+    def _require_matching_sum_plan(cls, sum_plan: object | None, month_total: Decimal) -> None:
+        """Reject ambiguous payloads instead of silently picking one total."""
+        if sum_plan is not None and cls._decimal(sum_plan) != month_total:
+            raise HTTPException(
+                status_code=422,
+                detail="Годовая сумма должна совпадать с суммой помесячного плана",
+            )
+
     @staticmethod
     def _replace_month_plans(repo: Repository, item_id: str, month_plans: list[dict]) -> None:
         repo.delete_where("req_item_month_plans", {"req_item_id": item_id})
@@ -175,10 +184,12 @@ class BudgetItemService:
         if not name:
             raise HTTPException(status_code=400, detail="Укажите наименование строки")
         is_income = payload.get("is_income", False)
+        annual_sum = payload.get("sum_plan") if "sum_plan" in payload else None
         raw_plans = payload.get("month_plans") if "month_plans" in payload else None
         if raw_plans is None or (not is_income and not raw_plans):
             raw_plans = self._even_month_plans(payload.get("sum_plan", 0))
         plans, total = self._validate_month_plans(raw_plans)
+        self._require_matching_sum_plan(annual_sum, total)
         item = {
             "request_id": request_id,
             "cfo_position_id": None,
@@ -357,12 +368,13 @@ class BudgetItemService:
                     detail="При доработке нельзя менять тип или статью строки",
                 )
         else:
-            cfo_month_plan_edit = (
+            cfo_plan_edit = (
                 request.get("status") == RequestStatus.on_review
                 and not self.requests.cfo_review_completed(request["id"])
-                and set(patch) == {"month_plans"}
+                and not self.requests.returned_item_ids(request["id"])
+                and set(patch) in ({"sum_plan"}, {"month_plans"}, {"sum_plan", "month_plans"})
             )
-            if cfo_month_plan_edit:
+            if cfo_plan_edit:
                 self.permissions.require_cfo_request_access(user, request)
                 if item.get("fixed") or item.get("frozen"):
                     raise HTTPException(status_code=409, detail="Закрытую строку нельзя изменить")
@@ -388,15 +400,19 @@ class BudgetItemService:
         if "name" in normalized and not normalized["name"]:
             raise HTTPException(status_code=400, detail="Укажите наименование строки")
 
+        annual_sum = normalized.get("sum_plan")
         raw_plans = normalized.pop("month_plans", None)
         clear_plans = normalized.pop("clear_month_plans", False)
         plans: list[dict] | None = None
         if raw_plans is not None:
-            plans, normalized["sum_plan"] = self._validate_month_plans(raw_plans)
+            plans, month_total = self._validate_month_plans(raw_plans)
+            self._require_matching_sum_plan(annual_sum, month_total)
+            normalized["sum_plan"] = month_total
         elif "sum_plan" in normalized:
             plans = self._even_month_plans(normalized["sum_plan"])
         elif clear_plans:
             plans = self._zero_month_plans()
+            normalized["sum_plan"] = Decimal("0")
 
         return self._apply_item_update(user, item, request, normalized, plans=plans)
 
@@ -446,12 +462,23 @@ class BudgetItemService:
         if item.get("frozen") or item.get("fixed"):
             raise HTTPException(status_code=409, detail="Закрытая строка не рассматривается")
         before = dict(item)
-        normalized = self.normalize_decision(item, payload, require_change_comment=False)
+        decision_payload = dict(payload)
+        raw_plans = decision_payload.pop("month_plans", None)
+        plans: list[dict] | None = None
+        if raw_plans is not None:
+            plans, month_total = self._validate_month_plans(raw_plans)
+            self._require_matching_sum_plan(decision_payload.get("sum_plan"), month_total)
+            decision_payload["sum_plan"] = month_total
+        elif decision_payload.get("sum_plan") is not None:
+            plans = self._even_month_plans(decision_payload["sum_plan"])
+        normalized = self.normalize_decision(item, decision_payload, require_change_comment=False)
         if payload["decision"] in {ItemStatus.approved, ItemStatus.approved_with_changes}:
             # CFO approval is an intermediate review result.  The line gets its
             # accepted domain status only after the economist's decision.
             normalized["status"] = ItemStatus.on_review
         after = repo.update("req_items", item["id"], normalized)
+        if plans is not None:
+            self._replace_month_plans(repo, item["id"], plans)
         self.requests.recalculate_total(request["id"], repo=repo)
         self.requests.log(
             user, request["id"], "cfo_item_decided", stage="cfo_review",
@@ -611,6 +638,7 @@ class BudgetItemService:
                 "req_items", item_id,
                 {"status": ItemStatus.deleted, "sum_plan": Decimal("0"), "sum_fact": Decimal("0")},
             )
+            self._replace_month_plans(repo, item_id, self._zero_month_plans())
             self.requests.recalculate_total(item["request_id"], repo=repo)
             self.requests.log(
                 user, item["request_id"], "line_deleted", entity="req_item",
