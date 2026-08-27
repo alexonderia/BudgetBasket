@@ -125,6 +125,20 @@ describe('registry status visuals', () => {
     expect(presentation.primary.variant).toBe('revision');
   });
 
+  it('shows revision ahead of a handoff from another line in the group', () => {
+    const presentation = groupStatusPresentation({
+      requested_sum: 100, approved_sum: 100, rejected_sum: 0, pending_sum: 0,
+      difference: 0, total_rows: 2, approved_rows: 1, rejected_rows: 0,
+      revision_rows: 1, pending_rows: 1, requests_count: 1, modules_count: 1,
+      aggregate_status: 'in_progress', collecting_requests: 0, cfo_review_requests: 0,
+      cfo_review_actionable_requests: 0, cfo_review_completable_requests: 0,
+      in_approval_positions: 1, actionable_positions: 1, submission_positions: 1,
+    }, { ...baseStatus, label: 'На доработке' });
+
+    expect(presentation.primary.text).toBe('На доработке');
+    expect(presentation.primary.variant).toBe('revision');
+  });
+
   it('keeps the required completion action ahead of stored revision and rejection counts', () => {
     const presentation = groupStatusPresentation({
       requested_sum: 100, approved_sum: 0, rejected_sum: 100, pending_sum: 0,

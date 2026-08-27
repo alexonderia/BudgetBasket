@@ -274,32 +274,34 @@ class RequestService:
         unit_id = payload["unit_id"]
         self.permissions.require_employee_unit_access(user, unit_id)
         budget_year = date.today().year
-        existing = next(
-            (
-                request
-                for request in self.repo.load_all("requests")
-                if request.get("unit_id") == unit_id
-                and int(request.get("budget_year") or 0) == budget_year
-            ),
-            None,
-        )
-        if existing:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "Для модуля уже существует заявка текущего года",
-                    "request_id": existing["id"],
+        with self.repo.transaction() as repo:
+            existing = next(
+                (
+                    request
+                    for request in repo.load_all("requests")
+                    if request.get("unit_id") == unit_id
+                    and int(request.get("budget_year") or 0) == budget_year
+                    and request.get("status") != RequestStatus.cancelled
+                ),
+                None,
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Для модуля уже существует активная заявка текущего года",
+                        "request_id": existing["id"],
+                    },
+                )
+            created = repo.create(
+                "requests",
+                {
+                    "unit_id": unit_id,
+                    "budget_year": budget_year,
+                    "status": RequestStatus.draft,
                 },
             )
-        created = self.repo.create(
-            "requests",
-            {
-                "unit_id": unit_id,
-                "budget_year": budget_year,
-                "status": RequestStatus.draft,
-            },
-        )
-        self.log(user, created["id"], "request_created", after=created)
+            self.log(user, created["id"], "request_created", after=created, repo=repo)
         return self.public_request(created)
 
     def delete_request(self, user: dict, request_id: str) -> None:
@@ -484,6 +486,9 @@ class RequestService:
 
     def cancel(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
+        self.permissions.require_employee_unit_access(user, request["unit_id"])
+        if request.get("status") == RequestStatus.cancelled:
+            return self.public_request(request)
         self.permissions.require_employee_cancel_request(user, request)
         updated = self.repo.update("requests", request_id, {"status": RequestStatus.cancelled})
         self.log(user, request_id, "request_cancelled", before=request, after=updated)
@@ -492,10 +497,39 @@ class RequestService:
     def restore(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_employee_unit_access(user, request["unit_id"])
+        if request.get("status") == RequestStatus.draft:
+            return self.public_request(request)
         if request.get("status") != RequestStatus.cancelled:
             raise HTTPException(status_code=409, detail="Восстановить можно только отмененную заявку")
-        updated = self.repo.update("requests", request_id, {"status": RequestStatus.draft})
-        self.log(user, request_id, "request_restored", before=request, after=updated)
+        with self.repo.transaction() as repo:
+            locked = repo.lock_by_id("requests", request_id)
+            if not locked:
+                raise HTTPException(status_code=404, detail="Заявка не найдена")
+            if locked.get("status") == RequestStatus.draft:
+                return self.public_request(locked)
+            if locked.get("status") != RequestStatus.cancelled:
+                raise HTTPException(status_code=409, detail="Восстановить можно только отмененную заявку")
+            active_request = next(
+                (
+                    candidate
+                    for candidate in repo.load_all("requests")
+                    if candidate["id"] != locked["id"]
+                    and candidate.get("unit_id") == locked["unit_id"]
+                    and int(candidate.get("budget_year") or 0) == int(locked.get("budget_year") or 0)
+                    and candidate.get("status") != RequestStatus.cancelled
+                ),
+                None,
+            )
+            if active_request:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Нельзя восстановить заявку: для модуля уже существует активная заявка этого года",
+                        "request_id": active_request["id"],
+                    },
+                )
+            updated = repo.update("requests", request_id, {"status": RequestStatus.draft})
+            self.log(user, request_id, "request_restored", before=locked, after=updated, repo=repo)
         return self.public_request(updated)
 
     def _position_key(self, repo: Repository, cfo_id: str, request: dict, item: dict) -> tuple:

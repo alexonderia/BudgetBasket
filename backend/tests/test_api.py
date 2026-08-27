@@ -7,8 +7,9 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.factory import create_app
+from app.security import hash_password
 from app.services.file_guard_client import ProcessedFile
-from app.seed import DDS_LICENSE_ID, DDS_OPER_ID, MODULE_ALPHA_ID, DEPARTMENT_ID
+from app.seed import CFO_ID, DDS_LICENSE_ID, DDS_OPER_ID, EMPLOYEE_ID, MODULE_ALPHA_ID, DEPARTMENT_ID
 from tests.in_memory_repository import InMemoryRepository
 
 
@@ -534,6 +535,99 @@ def test_approval_register_marks_cfo_review_completable_after_all_lines_decided(
     module_after = next(group for group in register_after["groups"] if group["type"] == "module")
     assert module_after["aggregates"]["cfo_review_completable_requests"] == 0
     assert client.get("/cfo-positions", headers=employee).json()
+
+
+def test_cancel_restore_lifecycle_allows_new_request_and_is_idempotent(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    original = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    created_item = client.post(
+        f"/requests/{original['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Restore me", "sum_plan": 100},
+        headers=employee,
+    )
+    assert created_item.status_code == 200
+
+    cancelled = client.post(f"/requests/{original['id']}/cancel", headers=employee)
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert client.post(f"/requests/{original['id']}/cancel", headers=employee).status_code == 200
+    logs_after_cancel = client.get(f"/requests/{original['id']}/logs", headers=employee).json()
+    assert [entry["log"]["action"] for entry in logs_after_cancel].count("request_cancelled") == 1
+
+    replacement = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee)
+    assert replacement.status_code == 200
+    replacement_id = replacement.json()["id"]
+
+    blocked_restore = client.post(f"/requests/{original['id']}/restore", headers=employee)
+    assert blocked_restore.status_code == 409
+    assert blocked_restore.json()["detail"]["request_id"] == replacement_id
+
+    assert client.delete(f"/requests/{replacement_id}", headers=employee).status_code == 200
+    restored = client.post(f"/requests/{original['id']}/restore", headers=employee)
+    assert restored.status_code == 200
+    assert restored.json()["status"] == "draft"
+    assert len(client.get(f"/requests/{original['id']}/items", headers=employee).json()) == 1
+    assert client.post(f"/requests/{original['id']}/restore", headers=employee).status_code == 200
+    logs_after_restore = client.get(f"/requests/{original['id']}/logs", headers=employee).json()
+    assert [entry["log"]["action"] for entry in logs_after_restore].count("request_restored") == 1
+
+
+def test_cfo_responsible_cannot_view_another_modules_draft_before_submit(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    repo = client.app.state.repo
+    repo.create(
+        "users",
+        {
+            "id": "cfo-only-user",
+            "login": "cfo_only",
+            "password": hash_password("cfo_only"),
+            "role": "employee",
+        },
+    )
+    repo.save_all(
+        "units_responsibles",
+        [
+            {**row, "is_active": False}
+            if row.get("unit_id") == CFO_ID and row.get("user_id") == EMPLOYEE_ID
+            else row
+            for row in repo.load_all("units_responsibles")
+        ],
+    )
+    repo.create("units_responsibles", {"unit_id": CFO_ID, "user_id": "cfo-only-user", "is_active": True})
+    cfo_responsible = auth(client, "cfo_only", "cfo_only")
+
+    budget_request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    assert budget_request["status"] == "draft"
+    assert all(row["id"] != budget_request["id"] for row in client.get("/requests", headers=cfo_responsible).json())
+    assert client.get("/cfo/incoming-requests", headers=cfo_responsible).json() == []
+    assert client.get(f"/requests/{budget_request['id']}", headers=cfo_responsible).status_code == 403
+    draft_rows = client.get(
+        "/approval-register/rows",
+        params={"request_id": budget_request["id"]},
+        headers=cfo_responsible,
+    )
+    assert draft_rows.status_code == 200
+    assert draft_rows.json()["items"] == []
+
+    assert client.post(
+        f"/requests/{budget_request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "CFO-visible after submit", "sum_plan": 100},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(f"/requests/{budget_request['id']}/submit", headers=employee).status_code == 200
+
+    assert any(row["id"] == budget_request["id"] for row in client.get("/requests", headers=cfo_responsible).json())
+    assert any(row["id"] == budget_request["id"] for row in client.get("/cfo/incoming-requests", headers=cfo_responsible).json())
+    assert client.get(f"/requests/{budget_request['id']}", headers=cfo_responsible).status_code == 200
+    submitted_rows = client.get(
+        "/approval-register/rows",
+        params={"request_id": budget_request["id"]},
+        headers=cfo_responsible,
+    )
+    assert submitted_rows.status_code == 200
+    assert len(submitted_rows.json()["items"]) == 1
 
 
 def test_dashboard_article_cfo_returns_selected_article_breakdown(tmp_path):

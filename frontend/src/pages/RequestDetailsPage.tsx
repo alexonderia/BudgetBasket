@@ -1,4 +1,5 @@
 import AttachFileIcon from '@mui/icons-material/AttachFile';
+import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import Dialog from '@mui/material/Dialog';
@@ -1641,6 +1642,12 @@ function ItemsTable({
   });
   const groupTotals = groupFinancialTotals;
   const groupStatus = (groupItems: BudgetItem[]) => {
+    if (groupItems.length > 0 && groupItems.every((item) => item.status === 'deleted')) {
+      return { label: 'Удалена', color: 'default' as const };
+    }
+    if (!groupItems.some((item) => item.status !== 'deleted')) {
+      return { label: '', color: 'default' as const };
+    }
     const aggregateStatus = groupAggregateStatus(groupItems);
     const color = aggregateStatus === 'approved' ? 'success' : aggregateStatus === 'rejected' ? 'error' : aggregateStatus === 'no_data' ? 'default' : 'warning';
     return { label: AGGREGATE_DISPLAY_LABELS[aggregateStatus], color: color as 'success' | 'error' | 'warning' | 'default' };
@@ -1734,7 +1741,7 @@ function ItemsTable({
             content = (
               <Stack spacing={0.35} sx={{ minWidth: 0 }}>
                 <Stack direction="row" spacing={0.35} alignItems="center">
-                  <Chip size="small" label={status.label} color={status.color} variant="outlined" sx={{ height: 22, fontSize: 11, fontWeight: 600 }} />
+                  {status.label && <Chip size="small" label={status.label} color={status.color} variant="outlined" sx={{ height: 22, fontSize: 11, fontWeight: 600 }} />}
                   {groupFixed && groupFixedPresentation ? (
                     <Tooltip title="Окончательно зафиксировано ЗГД" arrow>
                       <Box component="span" sx={{ display: 'inline-flex' }}><StatusVisualBadge spec={groupFixedPresentation} iconOnly /></Box>
@@ -2127,6 +2134,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const toast = useAppToast();
   const detailsKey = ['request-details', id];
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyTab, setHistoryTab] = useState<'content' | 'approval'>('content');
@@ -2315,13 +2323,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
 
   const lifecycle = useMutation({
     mutationFn: (action: string) => api.post(`/requests/${id}/${action}`),
-    onSuccess: () => {
+    onSuccess: (_, action) => {
       queryClient.invalidateQueries({ queryKey: detailsKey });
       queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
       queryClient.invalidateQueries({ queryKey: ['step-requests'] });
       queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['requests'] });
+      if (action === 'cancel') {
+        setCancelOpen(false);
+        toast('Заявка отменена', 'success');
+      } else if (action === 'restore') {
+        toast('Заявка восстановлена в черновик', 'success');
+      }
     },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось изменить статус заявки'), 'error'),
   });
   const approveRequestAtStep = useMutation({
     mutationFn: () => api.post(`/steps/${approvalAction?.step.id}/requests/${id}/approve`),
@@ -2526,7 +2541,13 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     && !request.frozen
     && !itemsPending
     && allItems.length > 0;
-  const canCancel = user.role === 'employee' && request && request.status === 'draft' && !request.frozen;
+  const canCancel = user.role === 'employee'
+    && request?.status === 'draft'
+    && request.available_actions?.includes('cancel')
+    && !request.frozen;
+  const canRestore = user.role === 'employee'
+    && request?.status === 'cancelled'
+    && request.available_actions?.includes('restore');
   const canFinalize = false;
   const canApproveAllItems = false;
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
@@ -2612,12 +2633,24 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                     )}
                     {canCancel && (
                       <Button
-                        startIcon={<DeleteOutlineIcon />}
+                        startIcon={<CancelOutlinedIcon />}
                         variant="outlined"
                         color="error"
-                        onClick={() => lifecycle.mutate('cancel')}
+                        onClick={() => setCancelOpen(true)}
+                        disabled={lifecycle.isPending}
                       >
                         Отменить заявку
+                      </Button>
+                    )}
+                    {canRestore && (
+                      <Button
+                        startIcon={<RestartAltIcon />}
+                        variant="contained"
+                        color="warning"
+                        onClick={() => lifecycle.mutate('restore')}
+                        disabled={lifecycle.isPending}
+                      >
+                        Восстановить заявку
                       </Button>
                     )}
                     {canDelete && (
@@ -2968,6 +3001,17 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           if (!confirmAction) return;
           lifecycle.mutate(confirmAction, { onSuccess: () => setConfirmAction(null) });
         }}
+      />
+
+      <ConfirmDialog
+        open={cancelOpen}
+        title="Отменить заявку?"
+        description="Заявка будет переведена в статус «Отменена». Её можно будет восстановить, только пока для этого модуля не создана другая активная заявка текущего года."
+        confirmLabel="Отменить заявку"
+        confirmColor="error"
+        pending={lifecycle.isPending}
+        onClose={() => setCancelOpen(false)}
+        onConfirm={() => lifecycle.mutate('cancel')}
       />
 
       <ConfirmDialog

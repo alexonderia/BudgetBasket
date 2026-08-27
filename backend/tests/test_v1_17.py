@@ -29,6 +29,10 @@ def test_request_lines_chat_logs_and_budget_mode(tmp_path):
     assert deleted.json()["status"] == "deleted"
     assert deleted.json()["sum_plan"] == 0
     assert deleted.json()["sum_fact"] == 0
+    assert client.get(f"/requests/{request['id']}/summary", headers=employee).json()["planned_sum"] == 0
+    assert client.get(f"/requests/{request['id']}/items", headers=employee).json()[0]["status"] == "deleted"
+    delete_history = client.get(f"/requests/{request['id']}/logs", headers=employee).json()
+    assert any(entry["log"]["action"] == "line_deleted" for entry in delete_history)
 
     line = client.post(
         f"/requests/{request['id']}/items",

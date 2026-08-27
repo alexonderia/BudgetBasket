@@ -8,6 +8,9 @@ import {
   groupReadinessPercent,
   groupRegistryStatus,
   groupYourStepSummary,
+  groupHasWorkflowActions,
+  isGroupActionable,
+  isGroupSelectable,
   isRowActionable,
   orderedRegistryColumns,
   parseMoneyInput,
@@ -39,6 +42,32 @@ describe('registry display helpers', () => {
     expect(groupRegistryStatus(aggregates).label).toBe('Передайте экономисту');
   });
 
+  it('shows revision instead of a handoff when a group contains returned lines', () => {
+    expect(groupRegistryStatus({
+      ...sampleAggregates,
+      actionable_positions: 1,
+      submission_positions: 1,
+      revision_rows: 1,
+    }).label).toBe('На доработке');
+  });
+
+  it('does not expose workflow actions for a group with returned lines', () => {
+    const group = {
+      id: 'group', type: 'article' as const, name: 'Article', label: 'Article', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request'], can_load_rows: false,
+      aggregates: {
+        ...sampleAggregates,
+        actionable_positions: 1,
+        submission_positions: 1,
+        revision_rows: 1,
+      },
+    };
+    expect(groupYourStepSummary(group.aggregates)).toBe('На доработке');
+    expect(groupHasWorkflowActions(group)).toBe(false);
+    expect(isGroupActionable(group)).toBe(false);
+    expect(isGroupSelectable(group)).toBe(false);
+  });
+
   it('distinguishes economist completion from a line decision', () => {
     const aggregates = {
       ...sampleAggregates,
@@ -67,6 +96,7 @@ describe('registry display helpers', () => {
 
   it('keeps rejection distinct from revision', () => {
     expect(rowRegistryStatus({ ...sampleRow, status: 'rejected' }).label).toBe('Отклонено');
+    expect(rowRegistryStatus({ ...sampleRow, status: 'deleted', is_collecting: true, request_status: 'draft' }).label).toBe('Удалена');
     expect(rowRegistryStatus({ ...sampleRow, is_revision: true, is_revision_actionable: false }).label).toBe('На доработке');
     expect(rowRegistryStatus({
       ...sampleRow,

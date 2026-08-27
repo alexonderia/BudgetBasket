@@ -131,6 +131,9 @@ export function groupYourStepSummary(aggregates: RegisterAggregates) {
   if (decisions > 0) {
     return `К решению: ${decisions}`;
   }
+  if ((aggregates.revision_rows || 0) > 0) {
+    return 'На доработке';
+  }
   if (economistCompletionPositions > 0) {
     return `Согласовать и передать: ${economistCompletionPositions}`;
   }
@@ -180,16 +183,19 @@ export function isRowActionable(item: ApprovalRegisterRow, role?: User['role']) 
 }
 
 export function isGroupActionable(group: ApprovalRegisterGroup) {
+  const hasRevision = (group.aggregates.revision_rows || 0) > 0;
   return (group.type === 'article' || group.type === 'cfo')
     && (
       group.aggregates.cfo_review_actionable_requests > 0
       || group.aggregates.cfo_review_completable_requests > 0
-      || group.aggregates.actionable_positions > 0
+      || (!hasRevision && group.aggregates.actionable_positions > 0)
     );
 }
 
 export function isGroupSelectable(group: ApprovalRegisterGroup) {
-  return group.aggregates.cfo_review_actionable_requests > 0 || group.aggregates.actionable_positions > 0;
+  return group.aggregates.cfo_review_actionable_requests > 0 || (
+    !(group.aggregates.revision_rows || 0) && group.aggregates.actionable_positions > 0
+  );
 }
 
 export function canUseLineLevelWorkflowActions(role: User['role']) {
@@ -215,10 +221,7 @@ export function canEditApprovedAmount(role: User['role'], item: ApprovalRegister
 }
 
 export function groupHasCfoActions(group: ApprovalRegisterGroup) {
-  return group.aggregates.cfo_review_actionable_requests > 0 || (
-    (group.aggregates.revision_rows || 0) > 0
-    && group.aggregates.actionable_positions > 0
-  );
+  return group.aggregates.cfo_review_actionable_requests > 0;
 }
 
 export function groupHasCfoCompleteActions(group: ApprovalRegisterGroup) {
@@ -226,7 +229,7 @@ export function groupHasCfoCompleteActions(group: ApprovalRegisterGroup) {
 }
 
 export function groupHasWorkflowActions(group: ApprovalRegisterGroup) {
-  return group.aggregates.actionable_positions > 0;
+  return !(group.aggregates.revision_rows || 0) && group.aggregates.actionable_positions > 0;
 }
 
 export function workflowApproveLabel(role: User['role']) {
@@ -292,6 +295,14 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       tone: 'default',
       hint: 'Строка зафиксирована после финального согласования',
       shortHint: 'Изменения недоступны',
+    };
+  }
+  if (item.status === 'deleted') {
+    return {
+      label: 'Удалена',
+      tone: 'default',
+      hint: 'Строка удалена из заявки и сохранена в истории изменений',
+      shortHint: 'Удалена',
     };
   }
   const wasReviewedAfterRevision = Boolean(
@@ -461,6 +472,17 @@ export function groupRegistryStatus(aggregates: RegisterAggregates): RegistrySta
       tone: 'warning',
       hint: `${decisions} объектов ждут вашего решения`,
       shortHint: 'Можно принять решение',
+    };
+  }
+  // A returned line must be visible before a handoff from another line in the
+  // same aggregated group. Otherwise the user is incorrectly prompted to send
+  // the position to the economist while it is waiting for module revisions.
+  if ((aggregates.revision_rows || 0) > 0 && !(aggregates.cfo_review_completable_requests || 0)) {
+    return {
+      label: 'На доработке',
+      tone: 'warning',
+      hint: `${aggregates.revision_rows} строк возвращено на доработку`,
+      shortHint: 'Требуются исправления',
     };
   }
   if (submissionPositions > 0) {

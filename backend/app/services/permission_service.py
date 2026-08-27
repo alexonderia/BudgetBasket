@@ -200,7 +200,14 @@ class PermissionService:
             return {
                 item["id"]
                 for item in requests
-                if item.get("unit_id") in modules | cfo_modules
+                # A CFO responsible sees a module's request only after the
+                # author submits it for CFO review. Drafts remain local to
+                # employees responsible for that specific module.
+                if item.get("unit_id") in modules
+                or (
+                    item.get("unit_id") in cfo_modules
+                    and item.get("status") != RequestStatus.draft
+                )
             }
         if user.get("role") == "economist":
             modules = self.modules_for_cfos(self.economist_cfo_ids(user["id"]))

@@ -160,6 +160,12 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
         meta: 'Не отправлено на проверку',
         hint,
       });
+    case 'Удалена':
+      return withContext({
+        primary: { icon: BlockOutlinedIcon, text: 'Удалена', variant: 'muted', hint },
+        meta: 'Строка исключена из заявки',
+        hint,
+      });
     case 'Заявка отменена':
       return withContext({
         primary: { icon: BlockOutlinedIcon, text: 'Отменено', variant: 'muted', hint },
@@ -236,6 +242,15 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
         hint,
       },
       meta,
+      hint,
+    };
+  }
+
+  // Revision takes precedence over a handoff from another line in the group.
+  if ((aggregates.revision_rows || 0) > 0 && !(aggregates.cfo_review_completable_requests || 0)) {
+    return {
+      primary: { icon: RestartAltOutlinedIcon, text: 'На доработке', variant: 'revision', hint },
+      meta: `${aggregates.revision_rows} ${pluralRows(aggregates.revision_rows || 0)} возвращено`,
       hint,
     };
   }
