@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -36,6 +37,11 @@ _REASON_MESSAGES = {
     "UNSUPPORTED_EXCEL_FORMAT": "Старый формат Excel .xls не поддерживается. Сохраните файл как .xlsx.",
     "SANITIZED_FILE_INVALID": "Не удалось подтвердить безопасность обработанного Excel-файла.",
 }
+
+
+def _header_filename(name: str) -> str:
+    """Encode a UTF-8 filename for an HTTP header, which must be ASCII/Latin-1."""
+    return quote(name, safe="")
 
 
 def _response(
@@ -146,11 +152,13 @@ async def process_file(file: UploadFile = File(...)) -> Response:
         logger.exception("Внутренняя ошибка обработки файла")
         return _unavailable(500, "INTERNAL_ERROR")
 
+    output_name_header = _header_filename(processed.output_name)
+    original_name_header = _header_filename(processed.original_name)
     headers = {
-        "Content-Disposition": f'attachment; filename="{processed.output_name}"',
+        "Content-Disposition": f"attachment; filename=\"download\"; filename*=UTF-8''{output_name_header}",
         "X-File-Guard-Action": "sanitized" if processed.sanitized else "accepted",
-        "X-File-Guard-Original-Name": processed.original_name,
-        "X-File-Guard-Output-Name": processed.output_name,
+        "X-File-Guard-Original-Name": original_name_header,
+        "X-File-Guard-Output-Name": output_name_header,
         "X-File-Guard-Source-Sha256": processed.source_sha256,
         "X-File-Guard-Output-Sha256": processed.output_sha256,
         "X-File-Guard-Source-Mime": processed.source_mime_type,

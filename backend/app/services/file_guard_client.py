@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from urllib.parse import unquote
 
 import httpx
 from fastapi import HTTPException, UploadFile
@@ -77,7 +78,7 @@ class FileGuardClient:
             raise FileGuardRejectedError(message)
         headers = response.headers
         try:
-            output_name = _required_header(headers, "X-File-Guard-Output-Name")
+            output_name = _header_filename(_required_header(headers, "X-File-Guard-Output-Name"))
             output_sha256 = _required_header(headers, "X-File-Guard-Output-Sha256").lower()
             source_sha256 = _required_header(headers, "X-File-Guard-Source-Sha256").lower()
             output_mime = headers.get("content-type", "").split(";", 1)[0].lower()
@@ -90,7 +91,9 @@ class FileGuardClient:
             if len(content) > self.max_size_bytes:
                 raise ValueError("output too large")
             return ProcessedFile(
-                content=content, original_name=headers.get("X-File-Guard-Original-Name", upload.filename or "file"), output_name=output_name,
+                content=content,
+                original_name=_header_filename(headers.get("X-File-Guard-Original-Name", upload.filename or "file")),
+                output_name=output_name,
                 source_mime_type=headers.get("X-File-Guard-Source-Mime", upload.content_type or "application/octet-stream"), output_mime_type=output_mime,
                 source_size_bytes=0, output_size_bytes=len(content), source_sha256=source_sha256, output_sha256=output_sha256,
                 sanitized=action == "sanitized", removed_components=_csv_header(headers, "X-File-Guard-Removed"), warnings=_csv_header(headers, "X-File-Guard-Warnings"),
@@ -116,6 +119,11 @@ def _required_header(headers: httpx.Headers, name: str) -> str:
     if not value:
         raise ValueError(f"Missing {name}")
     return value
+
+
+def _header_filename(value: str) -> str:
+    """Decode RFC 3986-encoded file names received from file_guard."""
+    return unquote(value)
 
 
 def _csv_header(headers: httpx.Headers, name: str) -> list[str]:

@@ -4,10 +4,22 @@ type ValidationDetail = {
   msg?: string;
 };
 
+type MessageDetail = {
+  message?: string;
+};
+
+export function getApiErrorDetail(error: unknown): unknown {
+  return axios.isAxiosError(error) ? error.response?.data?.detail : undefined;
+}
+
 export function getApiErrorMessage(error: unknown, fallback: string): string {
   if (axios.isAxiosError(error)) {
-    const detail = error.response?.data?.detail;
+    const detail = getApiErrorDetail(error);
     if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail === 'object' && 'message' in detail) {
+      const message = (detail as MessageDetail).message;
+      if (typeof message === 'string' && message.trim()) return message;
+    }
     if (Array.isArray(detail)) {
       const messages = detail
         .map((entry) => {

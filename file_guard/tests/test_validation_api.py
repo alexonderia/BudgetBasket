@@ -268,3 +268,17 @@ def test_process_rebuilds_excel_without_executable_formulas(monkeypatch) -> None
     assert sanitized["Данные"]["B1"].data_type != "f"
     assert sanitized["Данные"]["B1"].value == "Внешняя ссылка"
     assert sanitized["Данные"]["A2"].hyperlink is None
+
+
+def test_process_accepts_cyrillic_filename_and_encodes_response_headers(monkeypatch) -> None:
+    patch_scanner(monkeypatch)
+
+    response = client.post(
+        PROCESS_URL,
+        files={"file": ("договор на услуги.pdf", valid_pdf(), "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["x-file-guard-original-name"] == "%D0%B4%D0%BE%D0%B3%D0%BE%D0%B2%D0%BE%D1%80%20%D0%BD%D0%B0%20%D1%83%D1%81%D0%BB%D1%83%D0%B3%D0%B8.pdf"
+    assert response.headers["x-file-guard-output-name"] == response.headers["x-file-guard-original-name"]
+    assert "filename*=UTF-8''%D0%B4" in response.headers["content-disposition"]

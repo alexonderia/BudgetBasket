@@ -50,12 +50,13 @@ import { downloadBlob } from '../utils/download';
 import { money, requestStatusLabels } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
+import { getApiErrorDetail, getApiErrorMessage } from '../utils/apiErrors';
 
-function getErrorMessage(error: unknown, fallback: string) {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (detail) return detail;
-  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
-  return detail || (error instanceof Error ? error.message : fallback);
+function existingRequestId(error: unknown): string | null {
+  const detail = getApiErrorDetail(error);
+  if (!detail || typeof detail !== 'object' || !('request_id' in detail)) return null;
+  const requestId = (detail as { request_id?: unknown }).request_id;
+  return typeof requestId === 'string' && requestId ? requestId : null;
 }
 
 type RequestTableColumn = 'unit' | 'status' | 'my_step' | 'planned' | 'approved' | 'items_count' | 'actions';
@@ -317,7 +318,7 @@ function RequestsListPage({ user }: { user: User }) {
       queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
       queryClient.invalidateQueries({ queryKey: ['step-requests'] });
     },
-    onError: (error) => toast(getErrorMessage(error, 'Не удалось передать пакет'), 'error'),
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось передать пакет'), 'error'),
   });
 
   const allModules = units.filter((unit) => unit.type === 'department' || unit.type === 'module');
@@ -406,7 +407,15 @@ function RequestsListPage({ user }: { user: User }) {
       navigate(`/requests/${response.data.id}`);
     },
     onError: (error) => {
-      setCreateError(getErrorMessage(error, 'Заявку не удалось создать'));
+      const requestId = existingRequestId(error);
+      if (requestId) {
+        setCreateError('');
+        queryClient.invalidateQueries({ queryKey: ['requests'] });
+        toast('Открыта существующая заявка текущего года', 'info');
+        navigate(`/requests/${requestId}`);
+        return;
+      }
+      setCreateError(getApiErrorMessage(error, 'Заявку не удалось создать'));
       toast('Не удалось создать заявку', 'error');
     },
   });
@@ -419,7 +428,7 @@ function RequestsListPage({ user }: { user: User }) {
       setDeleteTarget(null);
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось удалить заявку'), 'error');
+      toast(getApiErrorMessage(error, 'Не удалось удалить заявку'), 'error');
     },
   });
 
