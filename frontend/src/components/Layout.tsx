@@ -53,6 +53,7 @@ import { AUTH_TOKEN_KEY } from '../utils/session';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 import { AppBreadcrumbs, breadcrumblessPaths } from './AppBreadcrumbs';
 import { ChatInboxDrawer } from './ChatInboxDrawer';
+import { RequiredFieldLabel } from './RequiredFieldLabel';
 import { UserGuideDialog } from './UserGuideDialog';
 
 const expandedDrawerWidth = 280;
@@ -264,9 +265,12 @@ export function Layout({
   });
 
   const displayName = formatFullName(profile || user.profile || null, user.login);
-  const invalidProfileContact =
-    (!!profileForm.email && !EMAIL_RE.test(profileForm.email)) ||
-    (!!profileForm.phone && !PHONE_RE.test(profileForm.phone));
+  const profileFieldsMissing = !profileForm.last_name.trim() || !profileForm.name.trim() || !profileForm.email.trim() || !profileForm.phone.trim();
+  const invalidProfileLastName = Boolean(profileForm.last_name) && !profileForm.last_name.trim();
+  const invalidProfileName = Boolean(profileForm.name) && !profileForm.name.trim();
+  const invalidProfileEmail = Boolean(profileForm.email) && !EMAIL_RE.test(profileForm.email);
+  const invalidProfilePhone = Boolean(profileForm.phone) && !PHONE_RE.test(profileForm.phone);
+  const invalidProfileContact = invalidProfileEmail || invalidProfilePhone;
 
   const items = [
     { label: 'Заявки', to: '/requests', icon: <FolderIcon /> },
@@ -545,16 +549,20 @@ export function Layout({
               </Typography>
               <Stack spacing={1.75}>
                 <TextField
-                  label="Фамилия"
+                  label={<RequiredFieldLabel label="Фамилия" />}
                   value={profileForm.last_name}
                   onChange={(event) => setProfileForm((prev) => ({ ...prev, last_name: lettersOnly(event.target.value) }))}
+                  error={invalidProfileLastName}
+                  helperText={invalidProfileLastName ? 'Введите фамилию' : undefined}
                   fullWidth
                 />
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.75}>
                   <TextField
-                    label="Имя"
+                    label={<RequiredFieldLabel label="Имя" />}
                     value={profileForm.name}
                     onChange={(event) => setProfileForm((prev) => ({ ...prev, name: lettersOnly(event.target.value) }))}
+                    error={invalidProfileName}
+                    helperText={invalidProfileName ? 'Введите имя' : undefined}
                     fullWidth
                     autoFocus
                   />
@@ -576,20 +584,20 @@ export function Layout({
               </Typography>
               <Stack spacing={1.75}>
                 <TextField
-                  label="Электронная почта"
+                  label={<RequiredFieldLabel label="Электронная почта" />}
                   type="email"
                   value={profileForm.email}
                   onChange={(event) => setProfileForm((prev) => ({ ...prev, email: event.target.value }))}
-                  error={!!profileForm.email && !EMAIL_RE.test(profileForm.email)}
-                  helperText={profileForm.email && !EMAIL_RE.test(profileForm.email) ? 'Введите адрес в формате name@example.ru' : undefined}
+                  error={invalidProfileEmail}
+                  helperText={invalidProfileEmail ? 'Введите адрес в формате name@example.ru' : undefined}
                   fullWidth
                 />
                 <TextField
-                  label="Телефон"
+                  label={<RequiredFieldLabel label="Телефон" />}
                   value={profileForm.phone}
                   onChange={(event) => setProfileForm((prev) => ({ ...prev, phone: formatPhone(event.target.value) }))}
-                  error={!!profileForm.phone && !PHONE_RE.test(profileForm.phone)}
-                  helperText={profileForm.phone && !PHONE_RE.test(profileForm.phone) ? 'Формат: +7 (000) 000-00-00' : undefined}
+                  error={invalidProfilePhone}
+                  helperText={invalidProfilePhone ? 'Формат: +7 (000) 000-00-00' : undefined}
                   fullWidth
                 />
                 <TextField
@@ -605,7 +613,7 @@ export function Layout({
         </DialogContent>
         <DialogActions sx={{ px: 3, py: 2 }}>
           <Button onClick={() => setProfileOpen(false)}>Отмена</Button>
-          <Button variant="contained" onClick={() => saveProfile.mutate(profileForm)} disabled={saveProfile.isPending || invalidProfileContact}>
+          <Button variant="contained" onClick={() => saveProfile.mutate(profileForm)} disabled={saveProfile.isPending || profileFieldsMissing || invalidProfileLastName || invalidProfileName || invalidProfileContact}>
             Сохранить
           </Button>
         </DialogActions>

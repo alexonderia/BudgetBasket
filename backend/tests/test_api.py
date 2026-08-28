@@ -3,6 +3,8 @@ import zipfile
 import hashlib
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -53,11 +55,79 @@ def auth(client: TestClient, login: str, password: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
+def user_payload(login: str, role: str = "employee") -> dict[str, str]:
+    return {
+        "login": login,
+        "password": "password",
+        "role": role,
+        "last_name": "Тестов",
+        "name": "Тест",
+        "phone": "+7 (900) 123-45-67",
+        "email": f"{login}@example.test",
+    }
+
+
 def test_login_all_roles(tmp_path):
     client = make_client(tmp_path)
     assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).json()["user"]["role"] == "admin"
     assert client.post("/auth/login", json={"login": "economist", "password": "economist"}).json()["user"]["role"] == "economist"
     assert client.post("/auth/login", json={"login": "employee", "password": "employee"}).json()["user"]["role"] == "employee"
+
+
+def test_user_creation_requires_profile_contacts_and_valid_formats(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+
+    for field in ("last_name", "name", "phone", "email"):
+        payload = user_payload(f"missing-{field}")
+        payload.pop(field)
+        response = client.post("/users", json=payload, headers=admin)
+        assert response.status_code == 422
+        assert any(error["loc"] == ["body", field] for error in response.json()["detail"])
+
+    for field, value in (("last_name", "   "), ("email", "wrong-email"), ("phone", "+7 900 1234567")):
+        payload = user_payload(f"invalid-{field}")
+        payload[field] = value
+        response = client.post("/users", json=payload, headers=admin)
+        assert response.status_code == 422
+        assert any(error["loc"] == ["body", field] for error in response.json()["detail"])
+
+    created = client.post("/users", json=user_payload("complete-profile"), headers=admin)
+    assert created.status_code == 200
+    assert created.json()["profile"] == {
+        "user_id": created.json()["id"],
+        "name": "Тест",
+        "second_name": "",
+        "last_name": "Тестов",
+        "phone": "+7 (900) 123-45-67",
+        "email": "complete-profile@example.test",
+        "max_link": "",
+    }
+
+    duplicate = client.post("/users", json=user_payload("complete-profile"), headers=admin)
+    assert duplicate.status_code == 400
+    assert duplicate.json()["detail"] == "Логин уже используется"
+    assert len([user for user in client.app.state.repo.load_all("users") if user["login"] == "complete-profile"]) == 1
+
+
+def test_user_creation_rolls_back_when_profile_insert_fails(tmp_path, monkeypatch):
+    client = make_client(tmp_path)
+    repo = client.app.state.repo
+    service = client.app.state.user_service
+    admin = next(user for user in repo.load_all("users") if user["login"] == "admin")
+    original_insert = repo.insert
+
+    def fail_profile_insert(collection_name, item):
+        if collection_name == "profiles":
+            raise HTTPException(status_code=400, detail="Profile insert failed")
+        return original_insert(collection_name, item)
+
+    monkeypatch.setattr(repo, "insert", fail_profile_insert)
+
+    with pytest.raises(HTTPException, match="Profile insert failed"):
+        service.create_user(admin, user_payload("profile-failure"))
+
+    assert not any(user["login"] == "profile-failure" for user in repo.load_all("users"))
 
 
 def test_nsi_article_creates_default_category_and_request_uses_category(tmp_path):

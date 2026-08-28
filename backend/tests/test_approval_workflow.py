@@ -13,7 +13,7 @@ from app.seed import (
     MODULE_ALPHA_ID,
     ROOT_STEP_ID,
 )
-from tests.test_api import auth, make_client
+from tests.test_api import auth, make_client, user_payload
 
 
 def test_cfo_responsible_can_view_its_read_only_route(tmp_path):
@@ -44,7 +44,7 @@ def test_module_responsible_sees_only_its_route_branch(tmp_path):
     admin = auth(client, "admin", "admin")
     module_user = client.post(
         "/users",
-        json={"login": "module-branch-user", "password": "password", "role": "employee"},
+        json=user_payload("module-branch-user"),
         headers=admin,
     ).json()
     assert client.post(
@@ -1489,17 +1489,17 @@ def test_cfo_responsible_cannot_review_another_cfo(tmp_path):
     seeded_employee = auth(client, "employee", "employee")
     other_user = client.post(
         "/users",
-        json={"login": "other-employee", "password": "password", "role": "employee"},
+        json=user_payload("other-employee"),
         headers=admin,
     ).json()
     other_cfo_user = client.post(
         "/users",
-        json={"login": "other-cfo-employee", "password": "password", "role": "employee"},
+        json=user_payload("other-cfo-employee"),
         headers=admin,
     ).json()
     other_economist = client.post(
         "/users",
-        json={"login": "other-economist", "password": "password", "role": "economist"},
+        json=user_payload("other-economist", "economist"),
         headers=admin,
     ).json()
     other_employee = auth(client, "other-employee", "password")

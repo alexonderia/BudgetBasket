@@ -1,8 +1,9 @@
 from decimal import Decimal
+import re
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Role(StrEnum):
@@ -72,16 +73,56 @@ class LoginIn(StrictModel):
     password: str
 
 
+PHONE_RE = r"^\+7 \(\d{3}\) \d{3}-\d{2}-\d{2}$"
+EMAIL_RE = r"^[^\s@]+@[^\s@]+\.[^\s@]+$"
+
+
+def validate_required_text(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError("Поле обязательно для заполнения")
+    return value
+
+
+def validate_email(value: str) -> str:
+    value = validate_required_text(value)
+    if not re.fullmatch(EMAIL_RE, value):
+        raise ValueError("Укажите email в формате name@example.ru")
+    return value
+
+
+def validate_phone(value: str) -> str:
+    value = validate_required_text(value)
+    if not re.fullmatch(PHONE_RE, value):
+        raise ValueError("Укажите телефон в формате +7 (000) 000-00-00")
+    return value
+
+
 class UserCreate(StrictModel):
     login: str
     password: str
     role: Role
-    name: str | None = None
+    name: str
     second_name: str | None = None
-    last_name: str | None = None
-    phone: str | None = None
-    email: str | None = None
+    last_name: str
+    phone: str
+    email: str
     max_link: str | None = None
+
+    @field_validator("name", "last_name")
+    @classmethod
+    def required_profile_text(cls, value: str) -> str:
+        return validate_required_text(value)
+
+    @field_validator("email")
+    @classmethod
+    def profile_email(cls, value: str) -> str:
+        return validate_email(value)
+
+    @field_validator("phone")
+    @classmethod
+    def profile_phone(cls, value: str) -> str:
+        return validate_phone(value)
 
 
 class UserPatch(StrictModel):
@@ -95,6 +136,21 @@ class UserPatch(StrictModel):
     email: str | None = None
     max_link: str | None = None
 
+    @field_validator("name", "last_name")
+    @classmethod
+    def non_empty_profile_text(cls, value: str | None) -> str | None:
+        return validate_required_text(value) if value is not None else value
+
+    @field_validator("email")
+    @classmethod
+    def valid_profile_email(cls, value: str | None) -> str | None:
+        return validate_email(value) if value is not None else value
+
+    @field_validator("phone")
+    @classmethod
+    def valid_profile_phone(cls, value: str | None) -> str | None:
+        return validate_phone(value) if value is not None else value
+
 
 class ProfilePatch(StrictModel):
     name: str | None = None
@@ -103,6 +159,21 @@ class ProfilePatch(StrictModel):
     phone: str | None = None
     email: str | None = None
     max_link: str | None = None
+
+    @field_validator("name", "last_name")
+    @classmethod
+    def non_empty_profile_text(cls, value: str | None) -> str | None:
+        return validate_required_text(value) if value is not None else value
+
+    @field_validator("email")
+    @classmethod
+    def valid_profile_email(cls, value: str | None) -> str | None:
+        return validate_email(value) if value is not None else value
+
+    @field_validator("phone")
+    @classmethod
+    def valid_profile_phone(cls, value: str | None) -> str | None:
+        return validate_phone(value) if value is not None else value
 
 
 class UnitCreate(StrictModel):

@@ -5,7 +5,7 @@ from app.seed import (
     INVEST_PLATFORM_ID,
     MODULE_BETA_ID,
 )
-from tests.test_api import auth, make_client
+from tests.test_api import auth, make_client, user_payload
 
 
 def test_economist_is_assigned_once_at_cfo_and_can_serve_its_positions(tmp_path):
@@ -14,7 +14,7 @@ def test_economist_is_assigned_once_at_cfo_and_can_serve_its_positions(tmp_path)
     employee = auth(client, "employee", "employee")
     created = client.post(
         "/users",
-        json={"login": "cfo-economist", "password": "password", "role": "economist"},
+        json=user_payload("cfo-economist", "economist"),
         headers=admin,
     )
     viewer_id = created.json()["id"]
@@ -61,7 +61,7 @@ def test_economist_is_assigned_once_at_cfo_and_can_serve_its_positions(tmp_path)
 
     module_user = client.post(
         "/users",
-        json={"login": "beta-module-employee", "password": "password", "role": "employee"},
+        json=user_payload("beta-module-employee"),
         headers=admin,
     ).json()
     module_employee = auth(client, "beta-module-employee", "password")
@@ -112,7 +112,7 @@ def test_employee_responsibles_are_allowed_on_cfo_and_module_only(tmp_path):
     admin = auth(client, "admin", "admin")
     cfo_user = client.post(
         "/users",
-        json={"login": "cfo-responsible", "password": "password", "role": "employee"},
+        json=user_payload("cfo-responsible"),
         headers=admin,
     ).json()
     assert client.post(
@@ -132,7 +132,7 @@ def test_employee_responsibles_are_allowed_on_cfo_and_module_only(tmp_path):
     ).status_code == 409
     module_user = client.post(
         "/users",
-        json={"login": "module-responsible", "password": "password", "role": "employee"},
+        json=user_payload("module-responsible"),
         headers=admin,
     ).json()
     assert client.post(

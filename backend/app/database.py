@@ -51,7 +51,7 @@ profiles = Table(
     "profiles", metadata,
     Column("user_id", PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     Column("name", Text, nullable=False), Column("second_name", Text), Column("last_name", Text, nullable=False),
-    Column("phone", Text), Column("email", Text), Column("max_link", Text),
+    Column("phone", Text, nullable=False), Column("email", Text, nullable=False), Column("max_link", Text),
 )
 
 units = Table(

@@ -12,7 +12,7 @@ CREATE TABLE users (
 );
 CREATE TABLE profiles (
     user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    name text NOT NULL, second_name text, last_name text NOT NULL, phone text, email text, max_link text
+    name text NOT NULL, second_name text, last_name text NOT NULL, phone text NOT NULL, email text NOT NULL, max_link text
 );
 CREATE TABLE units (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(), parent_id uuid REFERENCES units(id) ON DELETE SET NULL,
