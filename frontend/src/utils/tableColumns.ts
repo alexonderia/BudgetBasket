@@ -142,6 +142,16 @@ function stringifyFilterValue(value: unknown) {
   return { key: String(value), label: String(value) };
 }
 
+function stringifyFilterValues(value: unknown) {
+  const values = Array.isArray(value) ? value : [value];
+  const unique = new Map<string, { key: string; label: string }>();
+  values.forEach((entry) => {
+    const option = stringifyFilterValue(entry);
+    unique.set(option.key, option);
+  });
+  return [...unique.values()];
+}
+
 function buildInitialVisibility<K extends string>(columns: Pick<TableColumnDefinition<unknown, K>, 'id' | 'defaultVisible'>[]) {
   return columns.reduce((accumulator, column) => {
     accumulator[column.id] = column.defaultVisible ?? true;
@@ -187,8 +197,8 @@ export function useTableColumnControls<T, K extends string>({
     if (!column || column.filterable === false) return true;
     const selectedValues = selectedFilterValues[columnId];
     if (!selectedValues || selectedValues.length === 0) return true;
-    const option = stringifyFilterValue(getColumnRawValue(column, row));
-    return selectedValues.includes(option.key);
+    const options = stringifyFilterValues(getColumnRawValue(column, row));
+    return options.some((option) => selectedValues.includes(option.key));
   };
 
   const filterOptions = useMemo(() => {
@@ -198,13 +208,14 @@ export function useTableColumnControls<T, K extends string>({
       const scopedRows = rows.filter((row) => columns.every((candidate) => rowMatchesColumnFilter(row, candidate.id, column.id)));
 
       for (const row of scopedRows) {
-        const option = stringifyFilterValue(getColumnRawValue(column, row));
-        const existing = optionMap.get(option.key);
-        if (existing) {
-          existing.count += 1;
-        } else {
-          optionMap.set(option.key, { value: option.key, label: option.label, count: 1 });
-        }
+        stringifyFilterValues(getColumnRawValue(column, row)).forEach((option) => {
+          const existing = optionMap.get(option.key);
+          if (existing) {
+            existing.count += 1;
+          } else {
+            optionMap.set(option.key, { value: option.key, label: option.label, count: 1 });
+          }
+        });
       }
 
       let options = [...optionMap.values()].sort((left, right) => compareValues(left.label, right.label));

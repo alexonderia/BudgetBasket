@@ -121,6 +121,32 @@
     margin-bottom: -2px;
   }
 
+  .app-main:has(.approval-register-page) .page-chrome .page-title {
+    font-size: 1.1rem;
+    letter-spacing: -0.02em;
+  }
+
+  .app-main:has(.approval-register-page) .page-actions {
+    gap: 6px;
+  }
+
+  .app-main:has(.approval-register-page) .page-actions .MuiButton-root {
+    height: 34px;
+    min-height: 34px;
+    min-width: 0;
+    padding-inline: 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .approval-register-page .approval-register-filters {
+    box-shadow: none;
+  }
+
+  .approval-register-page .approval-register-summary .MuiTypography-caption {
+    letter-spacing: 0;
+  }
+
   .approval-register-chrome-actions .MuiButton-root {
     height: 30px;
     min-height: 30px;
@@ -1733,6 +1759,7 @@
   .approval-graph-card .MuiTypography-caption {
     font-size: 13px;
     line-height: 1.3;
+    overflow-wrap: anywhere;
   }
 
   .approval-graph-card .MuiChip-root:not(.approval-graph-status) .MuiChip-label {
@@ -1860,45 +1887,13 @@
     font-size: 19px;
   }
 
-  .approval-assignee-display {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    min-width: 0;
-  }
-
-  .approval-assignee-display-field {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-    min-height: 40px;
-    padding: 0 12px;
-    border: 1px solid rgba(15, 23, 42, 0.16);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.82);
-  }
-
-  .approval-assignee-display-field .MuiTypography-root {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .approval-assignee-display-field .MuiSvgIcon-root:first-child {
-    flex: 0 0 auto;
-    color: #7c3aed;
-  }
-
-  .approval-assignee-display-field .MuiSvgIcon-root:last-child {
-    flex: 0 0 auto;
-    color: #64748b;
-  }
-
   .approval-graph-card .MuiInputBase-input,
   .approval-graph-card .MuiInputLabel-root,
   .approval-graph-card .MuiSelect-select {
     font-family: inherit;
     font-size: 14px;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .approval-graph-card .MuiInputLabel-root {

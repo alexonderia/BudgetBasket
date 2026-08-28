@@ -16,7 +16,7 @@ import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
-import { useMemo, useState, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { Fragment, useMemo, useState, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import type {
   TableColumnDefinition,
   TableFilterOption,
@@ -190,6 +190,8 @@ export function TableColumnHeader({
   onSelectAllFilterValues,
   onClearColumnFilter,
   onClearVisibleFilterValues,
+  formatFilterOptionLabel,
+  filterOptionSection,
   endAdornment,
 }: {
   label: ReactNode;
@@ -207,6 +209,8 @@ export function TableColumnHeader({
   onSelectAllFilterValues?: () => void;
   onClearColumnFilter?: () => void;
   onClearVisibleFilterValues?: () => void;
+  formatFilterOptionLabel?: (option: TableFilterOption) => string;
+  filterOptionSection?: (option: TableFilterOption) => string | null;
   endAdornment?: ReactNode;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
@@ -217,15 +221,17 @@ export function TableColumnHeader({
   const columnSorted = !!sortDirection;
   const menuActive = columnFiltered;
   const hasColumnControls = sortable || filterable;
+  const optionLabel = (option: TableFilterOption) => formatFilterOptionLabel?.(option) || option.label;
 
   const filterSummary = useMemo(() => {
     if (!columnFiltered) return 'Все значения';
     if (selectedValues.length === 0) return 'Нет выбранных значений';
     if (selectedValues.length === 1) {
-      return filterOptions.find((option) => option.value === selectedValues[0])?.label || '1 значение';
+      const option = filterOptions.find((entry) => entry.value === selectedValues[0]);
+      return option ? optionLabel(option) : '1 значение';
     }
     return `Выбрано: ${selectedValues.length}`;
-  }, [columnFiltered, filterOptions, selectedValues]);
+  }, [columnFiltered, filterOptions, formatFilterOptionLabel, selectedValues]);
 
   const openFilterMenu = (event: MouseEvent<HTMLElement>) => {
     event.stopPropagation();
@@ -335,51 +341,60 @@ export function TableColumnHeader({
               </Stack>
               <Stack spacing={0} sx={{ maxHeight: 280, overflowY: 'auto', border: '1px solid rgba(15, 23, 42, 0.08)', borderRadius: 1 }}>
                 {filterOptions.length > 0 ? (
-                  filterOptions.map((option) => {
+                  filterOptions.map((option, index) => {
                     const checked = selectedValues.includes(option.value);
-                    const lineCount = filterOptionLineCount(option.label);
+                    const labelText = optionLabel(option);
+                    const lineCount = filterOptionLineCount(labelText);
+                    const section = filterOptionSection?.(option);
+                    const previousSection = index > 0 ? filterOptionSection?.(filterOptions[index - 1]) : null;
                     return (
-                      <Box
-                        key={option.value}
-                        role="menuitemcheckbox"
-                        aria-checked={checked}
-                        tabIndex={0}
-                        onClick={() => onToggleFilterValue?.(option.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            onToggleFilterValue?.(option.value);
-                          }
-                        }}
-                        sx={{
-                          display: 'grid',
-                          gridTemplateColumns: '40px 64px minmax(0, 1fr)',
-                          alignItems: 'center',
-                          width: '100%',
-                          minHeight: Math.max(44, lineCount * 22 + 16),
-                          boxSizing: 'border-box',
-                          cursor: 'pointer',
-                          textAlign: 'left',
-                          py: 0.75,
-                          px: 1.5,
-                          '&:hover': { bgcolor: 'action.hover' },
-                          '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
-                        }}
-                      >
-                        <Checkbox edge="start" checked={checked} disableRipple sx={{ ml: -0.5 }} />
-                        <Typography
-                          variant="body2"
-                          color="text.secondary"
-                          sx={{ pr: 1, lineHeight: 1.25 }}
-                        >
-                          {option.count > 1 ? `${option.count} строк` : '1 строка'}
-                        </Typography>
-                        <Box sx={{ minWidth: 0 }}>
-                          <Typography variant="body2" sx={{ whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.25 }}>
-                            {option.label}
+                      <Fragment key={option.value}>
+                        {section && section !== previousSection && (
+                          <Typography variant="overline" color="text.secondary" sx={{ display: 'block', px: 1.5, pt: index ? 1.25 : 0.75, pb: 0.25, fontSize: 10, fontWeight: 700, lineHeight: 1.2 }}>
+                            {section}
                           </Typography>
+                        )}
+                        <Box
+                          role="menuitemcheckbox"
+                          aria-checked={checked}
+                          tabIndex={0}
+                          onClick={() => onToggleFilterValue?.(option.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              onToggleFilterValue?.(option.value);
+                            }
+                          }}
+                          sx={{
+                            display: 'grid',
+                            gridTemplateColumns: '40px 64px minmax(0, 1fr)',
+                            alignItems: 'center',
+                            width: '100%',
+                            minHeight: Math.max(44, lineCount * 22 + 16),
+                            boxSizing: 'border-box',
+                            cursor: 'pointer',
+                            textAlign: 'left',
+                            py: 0.75,
+                            px: 1.5,
+                            '&:hover': { bgcolor: 'action.hover' },
+                            '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
+                          }}
+                        >
+                          <Checkbox edge="start" checked={checked} disableRipple sx={{ ml: -0.5 }} />
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            sx={{ pr: 1, lineHeight: 1.25 }}
+                          >
+                            {option.count > 1 ? `${option.count} строк` : '1 строка'}
+                          </Typography>
+                          <Box sx={{ minWidth: 0 }}>
+                            <Typography variant="body2" sx={{ whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.25 }}>
+                              {labelText}
+                            </Typography>
+                          </Box>
                         </Box>
-                      </Box>
+                      </Fragment>
                     );
                   })
                 ) : (

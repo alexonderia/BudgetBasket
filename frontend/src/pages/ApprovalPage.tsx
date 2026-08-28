@@ -9,7 +9,6 @@ import FactCheckIcon from '@mui/icons-material/FactCheck';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import PhoneOutlinedIcon from '@mui/icons-material/PhoneOutlined';
-import PersonOutlineOutlinedIcon from '@mui/icons-material/PersonOutlineOutlined';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import UndoIcon from '@mui/icons-material/Undo';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
@@ -205,7 +204,7 @@ function ApprovalContactInfo({ user }: { user: User | null }) {
       <Typography variant="caption" color="text.secondary" fontWeight={700} noWrap>Контактная информация</Typography>
       <Stack className="approval-contact-row" direction="row" spacing={1} alignItems="center">
         <PhoneOutlinedIcon fontSize="small" />
-        <Typography variant="caption" noWrap>Телефон: {profile?.phone || 'не указан'}</Typography>
+        <Typography variant="caption" sx={{ overflowWrap: 'anywhere' }}>Телефон: {profile?.phone || 'не указан'}</Typography>
       </Stack>
       <Stack className="approval-contact-row" direction="row" spacing={1} alignItems="center">
         <EmailOutlinedIcon fontSize="small" />
@@ -217,13 +216,9 @@ function ApprovalContactInfo({ user }: { user: User | null }) {
 
 function ApprovalAssigneeDisplay({ label, user }: { label: string; user: User | null }) {
   return (
-    <Box className="approval-assignee-display">
+    <Box>
       <Typography variant="caption" color="text.secondary">{label}</Typography>
-      <Box className="approval-assignee-display-field">
-        <PersonOutlineOutlinedIcon fontSize="small" />
-        <Typography variant="body2" noWrap>{personName(user)}</Typography>
-        <KeyboardArrowDownIcon fontSize="small" />
-      </Box>
+      <Typography variant="body2" fontWeight={600} sx={{ overflowWrap: 'anywhere', lineHeight: 1.25 }}>{personName(user)}</Typography>
     </Box>
   );
 }
@@ -548,27 +543,54 @@ function ApprovalGraph({
       });
     }
     const nodeWidth = 280;
-    const cardHeight = 280;
-    const leafNodeHeight = cardHeight;
+    const minCardHeight = 236;
     const moduleCardWidth = nodeWidth;
-    const moduleCardHeight = cardHeight;
+    const textLines = (value: string | null | undefined, charactersPerLine = 32) => Math.max(
+      1,
+      Math.ceil((value || '').length / charactersPerLine),
+    );
+    const contactExtraHeight = (user: User | null) => {
+      const profile = user?.profile;
+      return (
+        Math.max(0, textLines(`Телефон: ${profile?.phone || 'не указан'}`, 34) - 1) * 17
+        + Math.max(0, textLines(`Эл. почта: ${profile?.email || 'не указана'}`, 30) - 1) * 17
+      );
+    };
+    const moduleCardHeightFor = (module: ModuleVisual) => (
+      minCardHeight
+      + Math.max(0, textLines(module.name, 25) - 1) * 22
+      + Math.max(0, textLines(personName(module.responsible), 31) - 1) * 17
+      + Math.max(0, module.request_statuses.length - 1) * 22
+      + contactExtraHeight(module.responsible)
+    );
     const nodeHeightFor = (step: ApprovalStep) => {
       const isViewerStep = Boolean(viewerUserId) && (
         step.unit_id ? step.responsible?.id === viewerUserId : step.user?.id === viewerUserId
       );
       const viewerMessageHeight = isViewerStep ? 28 : 0;
-      return cardHeight + viewerMessageHeight;
+      const title = step.unit_id
+        ? moduleName(step)
+        : step.is_economist_step ? 'Экономист' : step.user?.role === 'zgd' ? 'ЗГД' : 'Проверяющий';
+      const assignee = step.unit_id ? personName(step.responsible) : personName(step.user);
+      return (
+        minCardHeight
+        + Math.max(0, textLines(title, 25) - 1) * 22
+        + Math.max(0, textLines(stepStatusLabel(step), 28) - 1) * 20
+        + Math.max(0, textLines(assignee, 30) - 1) * 18
+        + contactExtraHeight(step.unit_id ? step.responsible : step.user)
+        + viewerMessageHeight
+      );
     };
     const nodeHeights = new Map(steps.map((step) => [step.id, nodeHeightFor(step)]));
     const horizontalGap = 112;
     const verticalGap = 28;
-    const rowSize = leafNodeHeight + verticalGap;
+    const rowSize = minCardHeight + verticalGap;
     const poolWidth = 72;
     const poolGap = 8;
     const poolLeft = 24;
     const graphLeft = poolLeft + poolWidth * 2 + poolGap * 2 + 28;
     const positions = new Map<string, { x: number; y: number }>();
-    const moduleCards: Array<{ module: ModuleVisual; stepId: string; x: number; y: number }> = [];
+    const moduleCards: Array<{ module: ModuleVisual; stepId: string; x: number; y: number; height: number }> = [];
     const leafColumn = (columns.get(0) || []).filter((step) => Boolean(step.unit_id));
     const cfoKey = (step: ApprovalStep) => [
       step.department?.name || step.unit_path[0] || '',
@@ -592,19 +614,27 @@ function ApprovalGraph({
       const currentGroup = cfoKey(step);
       if (previousLeafGroup && previousLeafGroup !== currentGroup) leafY += verticalGap;
       const modules = step.modules || [];
-      const modulesHeight = Math.max(moduleCardHeight, modules.length * moduleCardHeight + Math.max(0, modules.length - 1) * verticalGap);
+      const leafNodeHeight = nodeHeights.get(step.id) || minCardHeight;
+      const moduleHeights = modules.map(moduleCardHeightFor);
+      const modulesHeight = modules.length
+        ? moduleHeights.reduce((total, height) => total + height, 0) + Math.max(0, modules.length - 1) * verticalGap
+        : minCardHeight;
       const groupHeight = Math.max(leafNodeHeight, modulesHeight);
       positions.set(step.id, {
         x: graphLeft + nodeWidth + horizontalGap,
         y: leafY + (groupHeight - leafNodeHeight) / 2,
       });
+      let moduleY = leafY;
       modules.forEach((module, index) => {
+        const height = moduleHeights[index];
         moduleCards.push({
           module,
           stepId: step.id,
           x: graphLeft,
-          y: leafY + index * (moduleCardHeight + verticalGap),
+          y: moduleY,
+          height,
         });
+        moduleY += height + verticalGap;
       });
       previousLeafGroup = currentGroup;
       leafY += groupHeight + verticalGap;
@@ -637,7 +667,7 @@ function ApprovalGraph({
           x: graphLeft + (column + 1) * (nodeWidth + horizontalGap),
           y,
         });
-        columnY = y + (nodeHeights.get(step.id) || leafNodeHeight) + verticalGap;
+        columnY = y + (nodeHeights.get(step.id) || minCardHeight) + verticalGap;
       });
     });
     const lastReviewerColumn = Math.max(0, ...reviewerColumns.keys());
@@ -657,9 +687,9 @@ function ApprovalGraph({
       96,
       ...steps.map((step) => {
         const position = positions.get(step.id)!;
-        return position.y + (nodeHeights.get(step.id) || leafNodeHeight);
+        return position.y + (nodeHeights.get(step.id) || minCardHeight);
       }),
-      ...moduleCards.map((card) => card.y + moduleCardHeight),
+      ...moduleCards.map((card) => card.y + card.height),
     );
     const deepestStep = steps.reduce((current, step) => (
       (depth.get(step.id) || 0) > (depth.get(current.id) || 0) ? step : current
@@ -681,9 +711,9 @@ function ApprovalGraph({
     const longestRouteBottom = Math.max(
       ...longestChain.map((step) => {
         const position = positions.get(step.id)!;
-        return position.y + (nodeHeights.get(step.id) || leafNodeHeight);
+        return position.y + (nodeHeights.get(step.id) || minCardHeight);
       }),
-      ...moduleCards.map((card) => card.y + moduleCardHeight),
+      ...moduleCards.map((card) => card.y + card.height),
     );
     const longestRouteBounds = {
       x: poolLeft,
@@ -698,8 +728,8 @@ function ApprovalGraph({
       const relatedModules = moduleCards.filter((card) => card.stepId === step.id);
       const top = Math.min(position.y, ...relatedModules.map((card) => card.y));
       const bottom = Math.max(
-        position.y + (nodeHeights.get(step.id) || leafNodeHeight),
-        ...relatedModules.map((card) => card.y + moduleCardHeight),
+        position.y + (nodeHeights.get(step.id) || minCardHeight),
+        ...relatedModules.map((card) => card.y + card.height),
       );
       const height = bottom - top;
       const department = step.department?.name || step.unit_path[0] || 'Не указано';
@@ -728,7 +758,6 @@ function ApprovalGraph({
       poolGap,
       nodeWidth,
       moduleCardWidth,
-      moduleCardHeight,
       nodeHeights,
       reviewerArea: { x: graphLeft + 2 * (nodeWidth + horizontalGap) - 24, y: 48, width: nodeWidth + 48, height: maxY + 24 },
       width: zgdX + nodeWidth + 112,
@@ -911,7 +940,7 @@ function ApprovalGraph({
           const cfo = layout.positions.get(card.stepId);
           if (!cfo) return null;
           const x1 = card.x + layout.moduleCardWidth;
-          const y1 = card.y + layout.moduleCardHeight / 2;
+          const y1 = card.y + card.height / 2;
           const x2 = cfo.x;
           const y2 = cfo.y + (layout.nodeHeights.get(card.stepId) || 0) / 2;
           const bend = Math.max(32, (x2 - x1) / 2);
@@ -1008,18 +1037,17 @@ function ApprovalGraph({
               left: card.x,
               top: card.y,
               width: layout.moduleCardWidth,
-              height: layout.moduleCardHeight,
+              height: card.height,
               bgcolor: '#fff',
               borderColor: isViewerModuleResponsible ? '#2563EB' : '#60A5FA',
               boxShadow: isViewerModuleResponsible ? '0 0 0 3px rgba(37, 99, 235, 0.2), 0 8px 20px rgba(37, 99, 235, 0.16)' : undefined,
             }}
           >
-            <Stack spacing={1.1} sx={{ p: 2, height: '100%' }}>
+            <Stack spacing={0.75} sx={{ p: 1.5, height: '100%' }}>
               <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="space-between">
-                <Typography variant="subtitle2" fontWeight={800} noWrap>{card.module.name}</Typography>
+                <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.3 }}>{card.module.name}</Typography>
                 {isViewerModuleResponsible && <Chip label="Вы" size="small" color="primary" sx={{ height: 20, fontWeight: 700 }} />}
               </Stack>
-              <Typography variant="caption" color="text.secondary" noWrap>{personName(card.module.responsible)}</Typography>
               <Divider />
               <Stack direction="row" spacing={0.35} flexWrap="wrap" useFlexGap>
                 {card.module.request_statuses.map(({ status, count }) => (
@@ -1032,6 +1060,9 @@ function ApprovalGraph({
                 ))}
                 {!card.module.request_statuses.length && <Typography variant="caption" color="text.secondary">Заявок нет</Typography>}
               </Stack>
+              <Box sx={{ pt: 0.75 }}>
+                <ApprovalAssigneeDisplay label="Ответственный за модуль" user={card.module.responsible} />
+              </Box>
               <Divider />
               <ApprovalContactInfo user={card.module.responsible} />
             </Stack>
@@ -1207,8 +1238,8 @@ function ApprovalGraph({
                             }
                           }}
                         >
-                          <Typography variant="body2" noWrap>{personName(step.user)}</Typography>
-                          <KeyboardArrowDownIcon fontSize="small" />
+                          <Typography variant="body2" sx={{ overflowWrap: 'anywhere', lineHeight: 1.25 }}>{personName(step.user)}</Typography>
+                          {canEdit && <KeyboardArrowDownIcon fontSize="small" />}
                         </Box>
                         {canEdit && openReviewerStepId === step.id && (
                           <Paper className="approval-reviewer-select-menu" elevation={6}>

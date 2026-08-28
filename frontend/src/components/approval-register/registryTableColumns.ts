@@ -12,7 +12,7 @@ import {
 
 export type RegisterControlRow =
   | { kind: 'group'; group: ApprovalRegisterGroup }
-  | { kind: 'item'; item: ApprovalRegisterRow; groupId: string };
+  | { kind: 'item'; item: ApprovalRegisterRow; groupId: string; groupPath: ApprovalRegisterGroup[] };
 
 export const REGISTRY_COLUMN_MIN_WIDTHS: Record<RegistryColumnId, number> = {
   select: 40,
@@ -44,6 +44,21 @@ function groupAnalyticsValue(group: ApprovalRegisterGroup, key: AnalyticsFieldKe
   return field.value;
 }
 
+function contextualFilterValues(
+  row: RegisterControlRow,
+  itemValue: unknown,
+  groupValue: (group: ApprovalRegisterGroup) => unknown,
+) {
+  if (row.kind === 'group') return groupValue(row.group);
+  return [itemValue, ...row.groupPath.map(groupValue)];
+}
+
+function itemApprovedDisplayValue(item: ApprovalRegisterRow) {
+  const previous = item.status_context?.previous_step;
+  if (previous?.amount != null) return money(previous.amount);
+  return previous?.label || money(item.approved_sum);
+}
+
 function compareSortValues(
   left: string | number | boolean | null | undefined,
   right: string | number | boolean | null | undefined,
@@ -62,12 +77,18 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
     id: 'structure',
     label: 'Структура',
     getValue: (row) => (row.kind === 'group' ? groupStructureLabel(row.group) : row.item.name || '—'),
+    getFilterValue: (row) => contextualFilterValues(row, row.kind === 'item' ? row.item.name || '—' : '', groupStructureLabel),
     getSortValue: (row) => (row.kind === 'group' ? row.group.name : row.item.name || ''),
   },
   {
     id: 'requested',
     label: 'План, ₽',
     getValue: (row) => money(row.kind === 'group' ? row.group.aggregates.requested_sum : row.item.requested_sum),
+    getFilterValue: (row) => contextualFilterValues(
+      row,
+      row.kind === 'item' ? money(row.item.requested_sum) : '',
+      (group) => money(group.aggregates.requested_sum),
+    ),
     getSortValue: (row) => (row.kind === 'group' ? row.group.aggregates.requested_sum : row.item.requested_sum),
   },
   {
@@ -75,10 +96,13 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
     label: 'Факт, ₽',
     getValue: (row) => {
       if (row.kind === 'group') return money(row.group.aggregates.approved_sum);
-      const previous = row.item.status_context?.previous_step;
-      if (previous?.amount != null) return money(previous.amount);
-      return previous?.label || money(row.item.approved_sum);
+      return itemApprovedDisplayValue(row.item);
     },
+    getFilterValue: (row) => contextualFilterValues(
+      row,
+      row.kind === 'item' ? itemApprovedDisplayValue(row.item) : '',
+      (group) => money(group.aggregates.approved_sum),
+    ),
     getSortValue: (row) => {
       if (row.kind === 'group') return row.group.aggregates.approved_sum;
       const previous = row.item.status_context?.previous_step;
@@ -90,6 +114,11 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
     id: 'rejected',
     label: 'Корректировка, ₽',
     getValue: (row) => money(row.kind === 'group' ? row.group.aggregates.difference : row.item.approved_sum - row.item.requested_sum),
+    getFilterValue: (row) => contextualFilterValues(
+      row,
+      row.kind === 'item' ? money(row.item.approved_sum - row.item.requested_sum) : '',
+      (group) => money(group.aggregates.difference),
+    ),
     getSortValue: (row) => (row.kind === 'group' ? row.group.aggregates.difference : row.item.approved_sum - row.item.requested_sum),
   },
   {
@@ -99,6 +128,11 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
       row.kind === 'group'
         ? groupPreviousStepSummary(row.group.aggregates)
         : row.item.status_context?.previous_step?.label || '—'
+    ),
+    getFilterValue: (row) => contextualFilterValues(
+      row,
+      row.kind === 'item' ? row.item.status_context?.previous_step?.label || '—' : '',
+      (group) => groupPreviousStepSummary(group.aggregates),
     ),
     getSortValue: (row) => (
       row.kind === 'group'
@@ -115,6 +149,13 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
       if (your?.amount != null) return `${money(your.amount)} · ${your.label}`;
       return your?.label || '—';
     },
+    getFilterValue: (row) => contextualFilterValues(
+      row,
+      row.kind === 'item'
+        ? row.item.status_context?.your_step?.label || '—'
+        : '',
+      (group) => groupYourStepSummary(group.aggregates),
+    ),
     getSortValue: (row) => (
       row.kind === 'group'
         ? groupYourStepSummary(row.group.aggregates)
@@ -128,6 +169,11 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
       row.kind === 'group'
         ? groupRegistryStatus(row.group.aggregates).label
         : rowRegistryStatus(row.item).label
+    ),
+    getFilterValue: (row) => contextualFilterValues(
+      row,
+      row.kind === 'item' ? `row:${rowRegistryStatus(row.item).label}` : '',
+      (group) => `group:${groupRegistryStatus(group.aggregates).label}`,
     ),
     getSortValue: (row) => (
       row.kind === 'group'
@@ -162,6 +208,11 @@ export const REGISTRY_TABLE_COLUMN_DEFINITIONS: TableColumnDefinition<RegisterCo
     getValue: (row: RegisterControlRow) => (
       row.kind === 'group' ? groupAnalyticsValue(row.group, key) || '—' : row.item[key] || '—'
     ),
+    getFilterValue: (row: RegisterControlRow) => contextualFilterValues(
+      row,
+      row.kind === 'item' ? row.item[key] || '—' : '',
+      (group) => groupAnalyticsValue(group, key) || '—',
+    ),
     getSortValue: (row: RegisterControlRow) => (
       row.kind === 'group' ? groupAnalyticsValue(row.group, key) : row.item[key] || ''
     ),
@@ -179,8 +230,46 @@ export function buildRegisterControlRows(
   loadedItems: ReadonlyArray<{ item: ApprovalRegisterRow; groupId: string }>,
 ): RegisterControlRow[] {
   const rows: RegisterControlRow[] = flattenRegisterGroups(groups).map((group) => ({ kind: 'group', group }));
+  const pathsById = new Map<string, ApprovalRegisterGroup[]>();
+  const groupPaths: ApprovalRegisterGroup[][] = [];
+  const visit = (nodes: ApprovalRegisterGroup[], path: ApprovalRegisterGroup[] = []) => {
+    nodes.forEach((group) => {
+      const nextPath = [...path, group];
+      pathsById.set(group.id, nextPath);
+      groupPaths.push(nextPath);
+      visit(group.children, nextPath);
+    });
+  };
+  visit(groups);
+
+  const entityId = (group: ApprovalRegisterGroup) => {
+    if (group.type === 'article') return group.article_id;
+    if (group.type === 'category') return group.category_id;
+    if (group.type === 'module') return group.module_id;
+    const prefix = `${group.type}:`;
+    const segment = group.id.split('/').find((part) => part.startsWith(prefix));
+    return segment?.slice(prefix.length) || '';
+  };
+  const pathMatchesItem = (path: ApprovalRegisterGroup[], item: ApprovalRegisterRow) => path.every((group) => {
+    const id = entityId(group);
+    if (group.type === 'cfo') return id === item.cfo_id;
+    if (group.type === 'article') return id === item.article_id;
+    if (group.type === 'category') return id === item.category_id;
+    if (group.type === 'module') return id === item.module_id;
+    return group.type !== 'request' || id === item.request_id;
+  });
+
   loadedItems.forEach(({ item, groupId }) => {
-    rows.push({ kind: 'item', item, groupId });
+    const suppliedPath = pathsById.get(groupId);
+    const groupPath = groupPaths
+      .filter((path) => pathMatchesItem(path, item))
+      .sort((left, right) => right.length - left.length)[0]
+      || suppliedPath
+      || [];
+    // A category in the CFO view loads details itself, but its module children
+    // still need to participate in filtered aggregates and statuses.
+    const detailGroup = [...groupPath].reverse().find((group) => group.can_load_rows);
+    rows.push({ kind: 'item', item, groupId: detailGroup?.id || groupPath.at(-1)?.id || groupId, groupPath });
   });
   return rows;
 }
@@ -189,6 +278,7 @@ export function computeRegisterVisibility(
   groups: ApprovalRegisterGroup[],
   filteredRows: RegisterControlRow[],
   hasColumnFilters: boolean,
+  allRows: RegisterControlRow[] = filteredRows,
 ) {
   if (!hasColumnFilters) {
     return { visibleGroupIds: null as Set<string> | null, visibleItemIds: null as Set<string> | null };
@@ -197,10 +287,12 @@ export function computeRegisterVisibility(
   const visibleGroupIds = new Set<string>();
   const visibleItemIds = new Set<string>();
   const parentById = new Map<string, string | undefined>();
+  const groupById = new Map<string, ApprovalRegisterGroup>();
 
   const walkParents = (nodes: ApprovalRegisterGroup[], parentId?: string) => {
     nodes.forEach((group) => {
       parentById.set(group.id, parentId);
+      groupById.set(group.id, group);
       walkParents(group.children, group.id);
     });
   };
@@ -214,9 +306,24 @@ export function computeRegisterVisibility(
     }
   };
 
+  const includeDescendants = (groupId: string) => {
+    const group = groupById.get(groupId);
+    if (!group) return;
+    visibleGroupIds.add(group.id);
+    group.children.forEach((child) => includeDescendants(child.id));
+  };
+
   filteredRows.forEach((row) => {
     if (row.kind === 'group') {
       includeAncestors(row.group.id);
+      includeDescendants(row.group.id);
+      // A matching aggregate row represents its whole expanded branch.
+      // Keep loaded details visible instead of showing an empty branch.
+      allRows.forEach((candidate) => {
+        if (candidate.kind === 'item' && candidate.groupPath.some((group) => group.id === row.group.id)) {
+          visibleItemIds.add(candidate.item.id);
+        }
+      });
       return;
     }
     visibleItemIds.add(row.item.id);
@@ -229,13 +336,78 @@ export function computeRegisterVisibility(
 export function filterRegisterGroups(
   groups: ApprovalRegisterGroup[],
   visibleGroupIds: Set<string> | null,
+  visibleItems: Extract<RegisterControlRow, { kind: 'item' }>[] = [],
 ): ApprovalRegisterGroup[] {
   if (!visibleGroupIds) return groups;
   return groups.flatMap((group) => {
-    const children = filterRegisterGroups(group.children, visibleGroupIds);
+    const children = filterRegisterGroups(group.children, visibleGroupIds, visibleItems);
     if (!visibleGroupIds.has(group.id) && !children.length) return [];
-    return [{ ...group, children }];
+    const rows = visibleItems
+      .filter((row) => row.groupPath.some((entry) => entry.id === group.id))
+      .map((row) => row.item);
+    const analytics = group.analytics ? {
+      can_edit: group.analytics.can_edit && rows.length === group.aggregates.total_rows,
+      fields: ANALYTICS_FIELD_KEYS.reduce((fields, key) => {
+        const values = [...new Set(rows.map((row) => String(row[key] || '').trim()).filter(Boolean))];
+        fields[key] = {
+          value: values.length === 1 ? values[0] : '',
+          mixed: values.length > 1,
+        };
+        return fields;
+      }, {} as Record<AnalyticsFieldKey, { value: string; mixed: boolean }>),
+    } : undefined;
+    return [{
+      ...group,
+      source_aggregates: group.source_aggregates || group.aggregates,
+      aggregates: aggregateRegisterRows(group.aggregates, rows),
+      analytics,
+      children,
+    }];
   });
+}
+
+export function aggregateRegisterRows(base: ApprovalRegisterGroup['aggregates'], rows: ApprovalRegisterRow[]): ApprovalRegisterGroup['aggregates'] {
+  const approvedRows = rows.filter((row) => row.status === 'approved' || row.status === 'approved_with_changes');
+  const rejectedRows = rows.filter((row) => row.status === 'rejected');
+  const pendingRows = rows.filter((row) => !approvedRows.includes(row) && !rejectedRows.includes(row));
+  const requestedSum = rows.reduce((sum, row) => sum + Number(row.requested_sum || 0), 0);
+  const approvedSum = approvedRows.reduce((sum, row) => sum + Number(row.approved_sum || 0), 0);
+  const countDistinct = (values: Array<string | null | undefined>) => new Set(values.filter(Boolean)).size;
+  const aggregateStatus: ApprovalRegisterGroup['aggregates']['aggregate_status'] = !rows.length
+    ? 'no_data'
+    : approvedRows.length === rows.length
+      ? 'approved'
+      : rejectedRows.length === rows.length
+        ? 'rejected'
+        : !pendingRows.length
+          ? 'partially_approved'
+          : !approvedRows.length && !rejectedRows.length
+            ? 'on_review'
+            : 'in_progress';
+  return {
+    ...base,
+    requested_sum: requestedSum,
+    approved_sum: approvedSum,
+    rejected_sum: rejectedRows.reduce((sum, row) => sum + Number(row.requested_sum || 0), 0),
+    pending_sum: pendingRows.reduce((sum, row) => sum + Number(row.requested_sum || 0), 0),
+    difference: approvedSum - requestedSum,
+    total_rows: rows.length,
+    approved_rows: approvedRows.length,
+    rejected_rows: rejectedRows.length,
+    revision_rows: rows.filter((row) => row.is_revision).length,
+    pending_rows: pendingRows.length,
+    requests_count: countDistinct(rows.map((row) => row.request_id)),
+    modules_count: countDistinct(rows.map((row) => row.module_id)),
+    aggregate_status: aggregateStatus,
+    collecting_requests: countDistinct(rows.filter((row) => row.is_collecting).map((row) => row.request_id)),
+    cfo_review_requests: countDistinct(rows.filter((row) => row.is_cfo_review).map((row) => row.request_id)),
+    cfo_review_actionable_requests: countDistinct(rows.filter((row) => row.is_cfo_review_actionable).map((row) => row.request_id)),
+    cfo_review_completable_requests: countDistinct(rows.filter((row) => row.is_cfo_review_completable).map((row) => row.request_id)),
+    in_approval_positions: countDistinct(rows.filter((row) => row.is_in_approval).map((row) => row.position_id)),
+    actionable_positions: countDistinct(rows.filter((row) => row.is_position_actionable).map((row) => row.position_id)),
+    submission_positions: countDistinct(rows.filter((row) => row.is_position_submission_actionable).map((row) => row.position_id)),
+    economist_completion_positions: countDistinct(rows.filter((row) => row.is_economist_completion_actionable).map((row) => row.position_id)),
+  };
 }
 
 export function sortRegisterGroups(
@@ -273,8 +445,8 @@ export function sortRegisterItems(
   if (!column || column.sortable === false) return items;
 
   return [...items].sort((left, right) => {
-    const leftRow: RegisterControlRow = { kind: 'item', item: left, groupId: '' };
-    const rightRow: RegisterControlRow = { kind: 'item', item: right, groupId: '' };
+    const leftRow: RegisterControlRow = { kind: 'item', item: left, groupId: '', groupPath: [] };
+    const rightRow: RegisterControlRow = { kind: 'item', item: right, groupId: '', groupPath: [] };
     const leftValue = column.getSortValue ? column.getSortValue(leftRow) : column.getValue(leftRow);
     const rightValue = column.getSortValue ? column.getSortValue(rightRow) : column.getValue(rightRow);
     const result = compareSortValues(

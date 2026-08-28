@@ -38,6 +38,11 @@ def test_cfo_responsible_can_view_its_read_only_route(tmp_path):
         assert branch.status_code == 200
         assert expected_step_id in {step["id"] for step in branch.json()}
 
+    zgd_route = client.get("/approval-route", headers=auth(client, "zgd", "zgd")).json()
+    zgd_ids = [step["id"] for step in zgd_route]
+    assert set(zgd_ids) >= {LEAF_STEP_ID, ECONOMIST_STEP_ID, APPROVER_STEP_ID, ROOT_STEP_ID}
+    assert zgd_ids.index(LEAF_STEP_ID) < zgd_ids.index(ECONOMIST_STEP_ID) < zgd_ids.index(APPROVER_STEP_ID) < zgd_ids.index(ROOT_STEP_ID)
+
 
 def test_module_responsible_sees_only_its_route_branch(tmp_path):
     client = make_client(tmp_path)

@@ -733,19 +733,52 @@ class ApprovalService:
             return []
         by_id = {step["id"]: step for step in all_steps}
         # Edges point from the next approval stage (parent) to the previous one
-        # (child).  Follow only parents from a viewer's entry step: this keeps
-        # the route progressing towards final approval without pulling sibling
-        # CFO branches back in through a shared economist or reviewer.
+        # (child).  A ZGD is a root, so its graph must be expanded down through
+        # children.  Other viewers enter at a leaf/current step and follow
+        # parents towards the next stage without pulling sibling branches.
         pending = list(relevant)
         while pending:
             step = by_id.get(pending.pop())
             if not step:
                 continue
-            for parent_id in step.get("parent_step_ids", []):
-                if parent_id not in relevant:
-                    relevant.add(parent_id)
-                    pending.append(parent_id)
-        result = [step for step in all_steps if step["id"] in relevant]
+            linked_ids = (
+                step.get("child_step_ids", [])
+                if user.get("role") == "zgd"
+                else step.get("parent_step_ids", [])
+            )
+            for linked_id in linked_ids:
+                if linked_id not in relevant:
+                    relevant.add(linked_id)
+                    pending.append(linked_id)
+
+        # Return a stable child-to-parent order for the vertical route.  This
+        # preserves every branch while keeping the visual flow from the first
+        # responsible stage to the final stage (ZGD).
+        by_id = {step["id"]: step for step in all_steps}
+        ordered: list[dict] = []
+        visited: set[str] = set()
+
+        def append_branch(step_id: str) -> None:
+            if step_id in visited or step_id not in relevant:
+                return
+            visited.add(step_id)
+            step = by_id.get(step_id)
+            if not step:
+                return
+            for child_id in step.get("child_step_ids", []):
+                append_branch(child_id)
+            ordered.append(step)
+
+        roots = [
+            step["id"] for step in all_steps
+            if step["id"] in relevant
+            and not any(parent_id in relevant for parent_id in step.get("parent_step_ids", []))
+        ]
+        for step_id in roots:
+            append_branch(step_id)
+        for step in all_steps:
+            append_branch(step["id"])
+        result = ordered
         if user.get("role") == "employee" and not directly_responsible_cfo_ids:
             result = [
                 {

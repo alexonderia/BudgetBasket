@@ -68,6 +68,23 @@ describe('registry display helpers', () => {
     expect(isGroupSelectable(group)).toBe(false);
   });
 
+  it('limits group selection to actions available to the current role', () => {
+    const workflowOnlyGroup = {
+      id: 'group', type: 'article' as const, name: 'Article', label: 'Article', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request'], can_load_rows: false,
+      aggregates: { ...sampleAggregates, actionable_positions: 1 },
+    };
+    const cfoCompletionGroup = {
+      ...workflowOnlyGroup,
+      aggregates: { ...sampleAggregates, cfo_review_completable_requests: 1 },
+    };
+
+    expect(isGroupSelectable(workflowOnlyGroup, 'employee')).toBe(false);
+    expect(isGroupSelectable(workflowOnlyGroup, 'economist')).toBe(true);
+    expect(isGroupSelectable(cfoCompletionGroup, 'employee')).toBe(true);
+    expect(isGroupSelectable(cfoCompletionGroup, 'economist')).toBe(false);
+  });
+
   it('distinguishes economist completion from a line decision', () => {
     const aggregates = {
       ...sampleAggregates,

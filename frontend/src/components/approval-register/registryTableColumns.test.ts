@@ -4,6 +4,7 @@ import {
   buildRegisterControlRows,
   computeRegisterVisibility,
   filterRegisterGroups,
+  REGISTRY_TABLE_COLUMN_DEFINITIONS,
   sortRegisterGroups,
   sortRegisterItems,
 } from './registryTableColumns';
@@ -104,6 +105,107 @@ describe('registryTableColumns', () => {
     const filtered = filterRegisterGroups(groups, visibleGroupIds);
     expect(filtered).toHaveLength(1);
     expect(filtered[0].children).toHaveLength(1);
+  });
+
+  it('keeps loaded detail rows when a parent aggregate matches a filter', () => {
+    const child = makeGroup('article:child', 'Дочерняя');
+    const parent = makeGroup('article:parent', 'Родитель', [child]);
+    const rows = buildRegisterControlRows([parent], [{ item: makeItem('line-1', 'Строка'), groupId: child.id }]);
+    const parentRow = rows.find((row) => row.kind === 'group' && row.group.id === parent.id)!;
+    const { visibleGroupIds, visibleItemIds } = computeRegisterVisibility([parent], [parentRow], true, rows);
+
+    expect(visibleGroupIds?.has(child.id)).toBe(true);
+    expect(visibleItemIds?.has('line-1')).toBe(true);
+  });
+
+  it('binds shared article categories to the matching CFO branch', () => {
+    const categoryA = { ...makeGroup('/cfo:cfo-1/article:article-1/category:category-1', 'Категория'), type: 'category' as const, article_id: 'article-1', category_id: 'category-1', can_load_rows: true };
+    const categoryB = { ...makeGroup('/cfo:cfo-2/article:article-1/category:category-1', 'Категория'), type: 'category' as const, article_id: 'article-1', category_id: 'category-1', can_load_rows: true };
+    const articleA = { ...makeGroup('/cfo:cfo-1/article:article-1', 'Статья', [categoryA]), article_id: 'article-1' };
+    const articleB = { ...makeGroup('/cfo:cfo-2/article:article-1', 'Статья', [categoryB]), article_id: 'article-1' };
+    const cfoA = { ...makeGroup('/cfo:cfo-1', 'ЦФО 1', [articleA]), type: 'cfo' as const };
+    const cfoB = { ...makeGroup('/cfo:cfo-2', 'ЦФО 2', [articleB]), type: 'cfo' as const };
+    const item = { ...makeItem('line-2', 'Строка второго ЦФО'), cfo_id: 'cfo-2', cfo_name: 'ЦФО 2' };
+
+    const rows = buildRegisterControlRows([cfoA, cfoB], [{ item, groupId: categoryA.id }]);
+    const itemRow = rows.find((row) => row.kind === 'item')!;
+
+    expect(itemRow.kind === 'item' && itemRow.groupId).toBe(categoryB.id);
+    expect(itemRow.kind === 'item' && itemRow.groupPath.map((group) => group.id)).toEqual([
+      cfoB.id,
+      articleB.id,
+      categoryB.id,
+    ]);
+  });
+
+  it('keeps a category as the detail scope but includes its module in aggregates', () => {
+    const module = { ...makeGroup('/cfo:cfo-1/article:article-1/category:category-1/module:module-1', 'Модуль'), type: 'module' as const, module_id: 'module-1' };
+    const category = { ...makeGroup('/cfo:cfo-1/article:article-1/category:category-1', 'Категория', [module]), type: 'category' as const, article_id: 'article-1', category_id: 'category-1', can_load_rows: true };
+    const article = { ...makeGroup('/cfo:cfo-1/article:article-1', 'Статья', [category]), article_id: 'article-1' };
+    const cfo = { ...makeGroup('/cfo:cfo-1', 'ЦФО 1', [article]), type: 'cfo' as const };
+    const item = { ...makeItem('line-1', 'Строка'), article_id: 'article-1' };
+
+    const itemRow = buildRegisterControlRows([cfo], [{ item, groupId: category.id }]).find((row) => row.kind === 'item')!;
+
+    expect(itemRow.kind === 'item' && itemRow.groupId).toBe(category.id);
+    expect(itemRow.kind === 'item' && itemRow.groupPath.at(-1)?.id).toBe(module.id);
+    const filtered = filterRegisterGroups([cfo], new Set([cfo.id, article.id, category.id, module.id]), itemRow.kind === 'item' ? [itemRow] : []);
+    expect(filtered[0].children[0].children[0].children[0].aggregates.total_rows).toBe(1);
+  });
+
+  it('uses hierarchy values when combining structure and line filters', () => {
+    const category = { ...makeGroup('/cfo:cfo-1/article:article-1/category:category-1', 'Категория'), type: 'category' as const, article_id: 'article-1', category_id: 'category-1', can_load_rows: true };
+    const article = { ...makeGroup('/cfo:cfo-1/article:article-1', 'Статья', [category]), article_id: 'article-1' };
+    const cfo = { ...makeGroup('/cfo:cfo-1', 'ЦФО 1', [article]), type: 'cfo' as const };
+    const item = { ...makeItem('line-1', 'Строка'), article_id: 'article-1' };
+    const itemRow = buildRegisterControlRows([cfo], [{ item, groupId: category.id }]).find((row) => row.kind === 'item')!;
+    const structure = REGISTRY_TABLE_COLUMN_DEFINITIONS.find((column) => column.id === 'structure')!;
+
+    expect(structure.getFilterValue?.(itemRow)).toEqual([
+      'Строка',
+      'ЦФО 1 · Статья',
+      'Статья · Статья',
+      'Категория · Статья',
+    ]);
+  });
+
+  it('keeps group and row statuses as separate filter values', () => {
+    const child = { ...makeGroup('article:child', 'Р”РѕС‡РµСЂРЅСЏСЏ'), can_load_rows: true };
+    const parent = makeGroup('article:parent', 'Р РѕРґРёС‚РµР»СЊ', [child]);
+    const rows = buildRegisterControlRows([parent], [{ item: makeItem('line-1', 'РЎС‚СЂРѕРєР°'), groupId: child.id }]);
+    const itemRow = rows.find((row) => row.kind === 'item')!;
+    const groupRow = rows.find((row) => row.kind === 'group' && row.group.id === parent.id)!;
+    const status = REGISTRY_TABLE_COLUMN_DEFINITIONS.find((column) => column.id === 'status')!;
+
+    expect(status.getFilterValue?.(groupRow)).toMatch(/^group:/);
+    expect(status.getFilterValue?.(itemRow)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^row:/),
+      expect.stringMatching(/^group:/),
+    ]));
+  });
+
+  it('recalculates every visible aggregate from the same detail rows', () => {
+    const child = { ...makeGroup('article:child', 'Дочерняя'), can_load_rows: true };
+    const parent = {
+      ...makeGroup('article:parent', 'Родитель', [child]),
+      analytics: {
+        can_edit: true,
+        fields: { analytics_1: { value: '', mixed: true } },
+      },
+    };
+    const item = makeItem('line-1', 'Строка');
+    item.requested_sum = 10;
+    item.analytics_1 = 'Только видимое значение';
+    const itemRow = buildRegisterControlRows([parent], [{ item, groupId: child.id }]).find((row) => row.kind === 'item')!;
+    const visibleIds = new Set([parent.id, child.id]);
+    const filtered = filterRegisterGroups([parent], visibleIds, itemRow.kind === 'item' ? [itemRow] : []);
+
+    expect(filtered[0].aggregates.total_rows).toBe(1);
+    expect(filtered[0].aggregates.requested_sum).toBe(10);
+    expect(filtered[0].source_aggregates?.total_rows).toBe(2);
+    expect(filtered[0].children[0].aggregates.requested_sum).toBe(10);
+    expect(filtered[0].analytics?.fields.analytics_1).toEqual({ value: 'Только видимое значение', mixed: false });
+    expect(filtered[0].analytics?.can_edit).toBe(false);
   });
 
   it('sorts item rows by requested sum', () => {

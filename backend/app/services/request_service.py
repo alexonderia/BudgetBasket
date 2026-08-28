@@ -2144,7 +2144,15 @@ class RequestService:
                 result.append(payload)
             return result
 
-        return {"view": view, "groups": serialize(roots), "aggregates": self._register_aggregates(entries)}
+        # The register keeps row details lazy in the UI, but table filters and the
+        # summary must be available before a branch is expanded.  Return the same
+        # filtered row set once for those calculations.
+        return {
+            "view": view,
+            "groups": serialize(roots),
+            "aggregates": self._register_aggregates(entries),
+            "summary_items": entries,
+        }
 
     @staticmethod
     def _register_group_analytics(entries: list[dict]) -> dict:
@@ -2271,12 +2279,18 @@ class RequestService:
         bridge deliberately derives positions from the same visible entries as
         the UI, so a reviewer cannot act on a hidden CFO/article.
         """
-        field_by_group_type = {"cfo": "cfo_id", "article": "article_id", "category": "category_id", "module": "module_id"}
+        field_by_group_type = {
+            "cfo": "cfo_id",
+            "article": "article_id",
+            "category": "category_id",
+            "module": "module_id",
+            "request": "request_id",
+        }
         field = field_by_group_type.get(group_type)
         if not field:
             raise HTTPException(
                 status_code=422,
-                detail="Групповое согласование доступно только для ЦФО, статьи, категории или модуля",
+                detail="Неизвестный уровень реестра для группового согласования",
             )
         position_ids = {
             entry["position_id"]
@@ -2304,6 +2318,7 @@ class RequestService:
             "article": "article_id",
             "category": "category_id",
             "module": "module_id",
+            "request": "request_id",
         }
         field = field_by_group_type.get(group_type)
         if not field:
@@ -2330,6 +2345,7 @@ class RequestService:
             "article": "article_id",
             "category": "category_id",
             "module": "module_id",
+            "request": "request_id",
         }
         field = field_by_group_type.get(group_type)
         if not field:

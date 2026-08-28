@@ -192,7 +192,11 @@ export function isGroupActionable(group: ApprovalRegisterGroup) {
     );
 }
 
-export function isGroupSelectable(group: ApprovalRegisterGroup) {
+export function isGroupSelectable(group: ApprovalRegisterGroup, role?: User['role']) {
+  if (role === 'employee') {
+    return groupHasCfoActions(group) || groupHasCfoCompleteActions(group);
+  }
+  if (role) return groupHasWorkflowActions(group);
   return group.aggregates.cfo_review_actionable_requests > 0 || (
     !(group.aggregates.revision_rows || 0) && group.aggregates.actionable_positions > 0
   );

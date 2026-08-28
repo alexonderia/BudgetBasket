@@ -287,6 +287,8 @@ def test_approval_register_groups_visible_lines_and_paginates_module_rows(tmp_pa
     assert register.status_code == 200
     body = register.json()
     assert body["aggregates"]["total_rows"] >= 26
+    assert len(body["summary_items"]) == body["aggregates"]["total_rows"]
+    assert sum(item["requested_sum"] for item in body["summary_items"]) == body["aggregates"]["requested_sum"]
     assert body["aggregates"]["collecting_requests"] >= 1
     assert body["aggregates"]["actionable_positions"] == 0
     article = next(group for group in body["groups"] if group["aggregates"]["total_rows"] >= 26)

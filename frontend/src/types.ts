@@ -151,6 +151,8 @@ export interface ApprovalRegisterGroup {
   category_id: string;
   request_ids: string[];
   aggregates: RegisterAggregates;
+  /** Original aggregate before filters in table columns were applied. */
+  source_aggregates?: RegisterAggregates;
   children: ApprovalRegisterGroup[];
   can_load_rows: boolean;
   analytics?: RegisterGroupAnalytics;
@@ -160,6 +162,7 @@ export interface ApprovalRegisterResponse {
   view: 'cfo' | 'category' | 'article' | 'module' | 'request';
   groups: ApprovalRegisterGroup[];
   aggregates: RegisterAggregates;
+  summary_items?: ApprovalRegisterRow[];
 }
 
 export interface RegisterLineStatusDecision {
@@ -236,6 +239,7 @@ export interface ApprovalRegisterRow {
   position_id: string | null;
   is_in_approval: boolean;
   is_approval_actionable: boolean;
+  is_position_actionable?: boolean;
   is_position_submission_actionable?: boolean;
   is_economist_completion_actionable?: boolean;
   approval_stage: string | null;
