@@ -3,7 +3,7 @@ from typing import Annotated
 from io import BytesIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.dependencies import current_user
@@ -481,6 +481,7 @@ def approval_register(
     analytics_3: str | None = None,
     analytics_4: str | None = None,
     analytics_5: str | None = None,
+    group_by: Annotated[list[str] | None, Query(alias="group_by[]")] = None,
 ):
     return request.app.state.request_service.approval_register(
         user, view, budget_year=budget_year, cfo_id=cfo_id,
@@ -492,6 +493,7 @@ def approval_register(
         analytics_3=analytics_3,
         analytics_4=analytics_4,
         analytics_5=analytics_5,
+        group_by=group_by,
     )
 
 
@@ -519,7 +521,7 @@ def approval_register_rows(
 ):
     if page < 1:
         raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
-    if not any([module_id, article_id, category_id, cfo_id, request_id]):
+    if not any([module_id, article_id, category_id, cfo_id, request_id, analytics_1, analytics_2, analytics_3, analytics_4, analytics_5]):
         raise HTTPException(
             status_code=422,
             detail="Укажите область строк: module_id, article_id, category_id, cfo_id или request_id",

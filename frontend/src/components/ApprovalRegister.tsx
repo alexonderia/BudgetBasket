@@ -107,7 +107,7 @@ import { RegisterHistoryDrawer } from './request-history/RegisterHistoryDrawer';
 import { ANALYTICS_FIELD_KEYS, ANALYTICS_FIELD_LABELS, EMPTY_ANALYTICS_FILTERS, buildRegisterFilterParams, canEditItemAnalytics, type AnalyticsFieldKey } from '../utils/analyticsFields';
 import { EditableAnalyticsCell } from './EditableAnalyticsCell';
 import { GroupAnalyticsCell } from './GroupAnalyticsCell';
-import type { ApprovalRegisterGroup, ApprovalRegisterResponse, ApprovalRegisterRow, ApprovalRegisterRowsResponse, ApprovalStep, BudgetItem, FileAttachment, ItemStatus, RegisterAggregates, RequestLog, User } from '../types';
+import type { ApprovalRegisterGroup, ApprovalRegisterResponse, ApprovalRegisterRow, ApprovalRegisterRowsResponse, ApprovalStep, BudgetItem, FileAttachment, ItemStatus, RegisterAggregates, RegisterAnalyticsSummary, RegisterGroupingLevel, RequestLog, User } from '../types';
 import { money, requestStatusLabels } from '../utils/labels';
 import { buildRegisterHref, registerDrillFromSearchParams } from '../utils/dashboardNavigation';
 import { filterFieldSx } from '../utils/responsive';
@@ -130,6 +130,29 @@ function defaultRegisterView(user: User): RegistryView {
   if (user.role === 'employee') return 'cfo';
   if (['economist', 'approver', 'zgd'].includes(user.role)) return 'cfo';
   return 'module';
+}
+
+const GROUPING_PRESETS: Record<RegistryView, RegisterGroupingLevel[]> = {
+  cfo: ['cfo', 'article', 'category', 'module'],
+  category: ['category', 'module'],
+  article: ['article', 'category', 'module'],
+  module: ['module', 'article', 'category'],
+  request: ['request'],
+};
+const GROUPING_LEVELS: RegisterGroupingLevel[] = [
+  'cfo', 'article', 'category', 'module', 'request', ...ANALYTICS_FIELD_KEYS,
+];
+const GROUPING_LEVEL_LABELS: Record<RegisterGroupingLevel, string> = {
+  cfo: 'ЦФО', article: 'Статья', category: 'Категория', module: 'Модуль', request: 'Заявка',
+  ...ANALYTICS_FIELD_LABELS,
+};
+
+function normalizedGrouping(value: unknown): RegisterGroupingLevel[] | undefined {
+  if (!Array.isArray(value) || !value.length) return undefined;
+  const levels = value.filter((level): level is RegisterGroupingLevel => (
+    typeof level === 'string' && GROUPING_LEVELS.includes(level as RegisterGroupingLevel)
+  ));
+  return levels.length === value.length && levels.length === new Set(levels).size ? levels : undefined;
 }
 const DRILL_FILTER_KEYS = ['cfoId', 'articleId', 'requestStatus'] as const;
 
@@ -278,7 +301,7 @@ function topLevelSelectedGroups(groups: ApprovalRegisterGroup[], parents: Map<st
 function readPreferences(
   userId: string,
   role?: User['role'],
-): { view?: RegistryView; filters?: RegistryFilters; order: RegistryColumnId[]; visibility: Record<RegistryColumnId, boolean>; widths: Record<RegistryColumnId, number> } {
+): { view?: RegistryView; groupBy?: RegisterGroupingLevel[]; filters?: RegistryFilters; order: RegistryColumnId[]; visibility: Record<RegistryColumnId, boolean>; widths: Record<RegistryColumnId, number> } {
   const roleVisibility = defaultRegistryColumnVisibility(role);
   try {
     const userKey = preferencesStorageKey(userId);
@@ -287,7 +310,7 @@ function readPreferences(
     if (!raw && !legacyRaw) return { order: DEFAULT_COLUMN_ORDER, visibility: roleVisibility, widths: DEFAULT_COLUMN_WIDTHS };
     const parsed: unknown = JSON.parse(raw || legacyRaw || '');
     if (!parsed || typeof parsed !== 'object') return { order: DEFAULT_COLUMN_ORDER, visibility: roleVisibility, widths: DEFAULT_COLUMN_WIDTHS };
-    const value = parsed as { view?: RegistryView; filters?: Partial<RegistryFilters>; order?: RegistryColumnId[]; visibility?: Partial<Record<RegistryColumnId, boolean>>; widths?: Partial<Record<RegistryColumnId, number>> };
+    const value = parsed as { view?: RegistryView; groupBy?: unknown; filters?: Partial<RegistryFilters>; order?: RegistryColumnId[]; visibility?: Partial<Record<RegistryColumnId, boolean>>; widths?: Partial<Record<RegistryColumnId, number>> };
     const migratedFromLegacy = !localStorage.getItem(userKey) && Boolean(raw);
     const view = value.view;
     const mergedVisibility = { ...roleVisibility, ...value.visibility };
@@ -304,6 +327,7 @@ function readPreferences(
     }
     return {
       view,
+      groupBy: normalizedGrouping(value.groupBy),
       filters: value.filters ? { ...EMPTY_FILTERS, ...value.filters, cfoId: '', articleId: '', requestStatus: '' } : undefined,
       order: value.order?.filter((id): id is RegistryColumnId => DEFAULT_COLUMN_ORDER.includes(id)) || DEFAULT_COLUMN_ORDER,
       visibility: applyWorkflowColumnVisibility(mergedVisibility, role),
@@ -334,7 +358,14 @@ function RegistryStatusLegend({ compact = false }: { compact?: boolean }) {
 }
 
 function registerRowScopeParams(group: ApprovalRegisterGroup, paging: { page: number; page_size: number; request_id?: string }) {
-  const scope: Record<string, string | number | undefined> = { ...paging };
+  const scope: Record<string, string | number | undefined> = {
+    ...Object.fromEntries(Object.entries(group.scope || {}).map(([key, value]) => [
+      key,
+      key.startsWith('analytics_') && value === '' ? '__empty__' : value,
+    ])),
+    ...paging,
+  };
+  if (group.scope) return scope;
   if (group.type === 'cfo') {
     const cfoId = groupEntityId(group);
     if (cfoId) scope.cfo_id = cfoId;
@@ -346,6 +377,22 @@ function registerRowScopeParams(group: ApprovalRegisterGroup, paging: { page: nu
     scope.module_id = group.module_id;
   }
   return scope;
+}
+
+function isAnalyticsGroup(group: ApprovalRegisterGroup): group is ApprovalRegisterGroup & { type: AnalyticsFieldKey } {
+  return ANALYTICS_FIELD_KEYS.includes(group.type as AnalyticsFieldKey);
+}
+
+function groupMatchesRow(group: ApprovalRegisterGroup, item: ApprovalRegisterRow) {
+  if (group.scope) {
+    return Object.entries(group.scope).every(([key, value]) => String(item[key as keyof ApprovalRegisterRow] || '') === value);
+  }
+  if (isAnalyticsGroup(group)) return (item[group.type] || '') === (group.group_value || '');
+  if (group.type === 'cfo') return groupEntityId(group) === item.cfo_id;
+  if (group.type === 'article') return item.article_id === group.article_id;
+  if (group.type === 'category') return item.category_id === group.category_id;
+  if (group.type === 'module') return item.module_id === group.module_id;
+  return group.type !== 'request' || groupEntityId(group) === item.request_id;
 }
 
 async function postRowDecision(row: ApprovalRegisterRow, decision: RowDecision, comment: string, amount?: number) {
@@ -454,6 +501,8 @@ function RegistryFilterBar({
   onReset,
   onSave,
   availableViews,
+  groupBy,
+  onGroupByChange,
   analyticsFilterOptions = {},
   drillLabels,
 }: {
@@ -464,10 +513,13 @@ function RegistryFilterBar({
   onReset: () => void;
   onSave: () => void;
   availableViews: RegistryView[];
+  groupBy: RegisterGroupingLevel[];
+  onGroupByChange: (levels: RegisterGroupingLevel[]) => void;
   analyticsFilterOptions?: Partial<Record<AnalyticsFieldKey, string[]>>;
   drillLabels?: { cfoName?: string; articleName?: string };
 }) {
   const [moreFiltersAnchor, setMoreFiltersAnchor] = useState<HTMLElement | null>(null);
+  const [groupingAnchor, setGroupingAnchor] = useState<HTMLElement | null>(null);
   const analyticsKeys = ANALYTICS_FIELD_KEYS.filter((key) => (analyticsFilterOptions[key] || []).length > 0);
   const primaryAnalyticsKey = analyticsKeys[0];
   const additionalAnalyticsKeys = analyticsKeys.slice(1);
@@ -481,6 +533,13 @@ function RegistryFilterBar({
     || filters.requestStatus
     || ANALYTICS_FIELD_KEYS.some((key) => filters[key]),
   );
+  const moveGroupingLevel = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= groupBy.length) return;
+    const next = [...groupBy];
+    [next[index], next[target]] = [next[target], next[index]];
+    onGroupByChange(next);
+  };
   return (
     <Paper variant="outlined" className="approval-register-filters" sx={{ px: 1, py: 0.75, borderColor: 'rgba(15, 23, 42, 0.08)', borderRadius: 1.5, bgcolor: '#F8FAFC' }}>
       <Stack direction={{ xs: 'column', xl: 'row' }} spacing={0.75} alignItems={{ xl: 'center' }} justifyContent="space-between">
@@ -488,6 +547,9 @@ function RegistryFilterBar({
           <TextField select size="small" value={view} onChange={(event) => onViewChange(event.target.value as RegistryView)} inputProps={{ 'aria-label': 'Группировка реестра' }} sx={{ ...filterFieldSx(128), maxWidth: { lg: 128 } }}>
             {availableViews.map((key) => <MenuItem key={key} value={key} dense>{key === 'cfo' ? 'По ЦФО' : REGISTRY_VIEW_LABELS[key]}</MenuItem>)}
           </TextField>
+          <Button size="small" variant="outlined" color="inherit" onClick={(event) => setGroupingAnchor(event.currentTarget)} sx={{ height: 34, whiteSpace: 'nowrap' }}>
+            Уровни · {groupBy.length}
+          </Button>
           <TextField
             size="small"
             placeholder="Поиск по строке, статье, модулю или заявке"
@@ -529,6 +591,21 @@ function RegistryFilterBar({
               {(analyticsFilterOptions[key] || []).map((value) => <MenuItem key={value} value={value} dense>{value}</MenuItem>)}
             </TextField>
           </Box>
+        ))}
+      </Menu>
+      <Menu anchorEl={groupingAnchor} open={!!groupingAnchor} onClose={() => setGroupingAnchor(null)} PaperProps={{ sx: { p: 1, minWidth: 285 } }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', px: 1, pb: 0.75 }}>Порядок группировки</Typography>
+        {groupBy.map((level, index) => (
+          <Stack key={level} direction="row" alignItems="center" spacing={0.25} sx={{ px: 0.5, py: 0.2 }}>
+            <Typography variant="body2" sx={{ flex: 1, fontSize: 13 }}>{index + 1}. {GROUPING_LEVEL_LABELS[level]}</Typography>
+            <Button size="small" disabled={index === 0} onClick={() => moveGroupingLevel(index, -1)} sx={{ minWidth: 28, px: 0.25 }}>↑</Button>
+            <Button size="small" disabled={index === groupBy.length - 1} onClick={() => moveGroupingLevel(index, 1)} sx={{ minWidth: 28, px: 0.25 }}>↓</Button>
+            <Button size="small" color="inherit" disabled={groupBy.length === 1} onClick={() => onGroupByChange(groupBy.filter((item) => item !== level))} sx={{ minWidth: 28, px: 0.25 }}>×</Button>
+          </Stack>
+        ))}
+        <Divider sx={{ my: 0.75 }} />
+        {GROUPING_LEVELS.filter((level) => !groupBy.includes(level)).map((level) => (
+          <MenuItem key={level} dense onClick={() => onGroupByChange([...groupBy, level])}>+ {GROUPING_LEVEL_LABELS[level]}</MenuItem>
         ))}
       </Menu>
       {hasActiveFilters ? (
@@ -645,6 +722,65 @@ function RegistrySummary({ aggregates }: { aggregates: RegisterAggregates }) {
           </Stack>
           <LinearProgress variant="determinate" value={readiness} sx={{ height: 4, borderRadius: 99, bgcolor: '#E2E8F0', '& .MuiLinearProgress-bar': { borderRadius: 99, bgcolor: '#2563EB' } }} />
         </Stack>
+      </Stack>
+    </Paper>
+  );
+}
+
+function AnalyticsSummaryList({ summary }: { summary: RegisterAnalyticsSummary[] }) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  if (!summary.length) return null;
+  const toggle = (field: string) => setCollapsed((current) => {
+    const next = new Set(current);
+    if (next.has(field)) next.delete(field);
+    else next.add(field);
+    return next;
+  });
+  return (
+    <Paper variant="outlined" sx={{ borderColor: 'rgba(15, 23, 42, 0.08)', borderRadius: 1.5, overflow: 'hidden', bgcolor: '#fff' }}>
+      <Box sx={{ px: 1.5, py: 0.9, borderBottom: '1px solid rgba(15, 23, 42, 0.08)', bgcolor: '#F8FAFC' }}>
+        <Typography variant="subtitle2" fontWeight={700}>Сводка по аналитикам</Typography>
+      </Box>
+      <Stack divider={<Divider flexItem />}>
+        {summary.map((section) => {
+          const isCollapsed = collapsed.has(section.field);
+          return (
+          <Box key={section.field} sx={{ overflowX: 'auto' }}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 1, pt: 0.45 }}>
+              <Typography variant="body2" fontWeight={700} sx={{ px: 0.5, py: 0.55 }}>{section.label} · {section.values.length}</Typography>
+              <IconButton size="small" onClick={() => toggle(section.field)} aria-label={isCollapsed ? `Развернуть ${section.label}` : `Свернуть ${section.label}`}>
+                {isCollapsed ? <ChevronRightIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+              </IconButton>
+            </Stack>
+            {!isCollapsed && <Table size="small" aria-label={`Сводка ${section.label}`} sx={{ minWidth: 650 }}>
+              <TableHead>
+                <TableRow sx={{ '& th': { py: 0.45, fontSize: 11, fontWeight: 700, color: 'text.secondary', bgcolor: '#FAFAFA' } }}>
+                  <TableCell>Значение</TableCell>
+                  <TableCell align="right">План, ₽</TableCell>
+                  <TableCell align="right">Согласовано, ₽</TableCell>
+                  <TableCell align="right">Строк</TableCell>
+                  <TableCell>Наибольшая нагрузка ЦФО</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {section.values.map((item) => (
+                  <TableRow key={item.value} hover sx={{ '& td': { py: 0.55, fontSize: 12 } }}>
+                    <TableCell sx={{ fontWeight: 600 }}>{item.value}</TableCell>
+                    <TableCell align="right">{money(item.aggregates.requested_sum)}</TableCell>
+                    <TableCell align="right">{money(item.aggregates.approved_sum)}</TableCell>
+                    <TableCell align="right">{item.aggregates.total_rows}</TableCell>
+                    <TableCell>
+                      <Typography variant="body2" sx={{ fontSize: 12 }}>{item.top_cfo.cfo_name}</Typography>
+                      <Typography variant="caption" color="text.secondary">{money(item.top_cfo.requested_sum)} · {item.top_cfo.total_rows} стр.</Typography>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            }
+          </Box>
+          );
+        })}
       </Stack>
     </Paper>
   );
@@ -1756,14 +1892,7 @@ function TreeRows({
     const groupSelectable = isGroupSelectable(group, user.role);
     const descendants = collectDescendantGroups(group);
     const selectedChildGroup = descendants.some((entry) => entry.id !== group.id && selectedGroupIds.has(entry.id));
-    const selectedChildRow = selectedRows.some((item) => (
-      group.type === 'cfo' ? groupEntityId(group) === item.cfo_id
-        : group.type === 'article' ? item.article_id === group.article_id
-          : group.type === 'category' ? item.category_id === group.category_id
-            : group.type === 'module' ? item.module_id === group.module_id
-              : group.type === 'request' ? item.request_id === groupEntityId(group)
-                : false
-    ));
+    const selectedChildRow = selectedRows.some((item) => groupMatchesRow(group, item));
     const groupChecked = selectedGroupIds.has(group.id);
     const groupIndeterminate = !groupChecked && (selectedChildGroup || selectedChildRow);
     const groupCells: Partial<Record<RegistryColumnId, React.ReactNode>> = {
@@ -1796,7 +1925,9 @@ function TreeRows({
       files: '—',
       actions: null,
       ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
-        if ((group.type === 'article' || group.type === 'category') && group.analytics) {
+        if (isAnalyticsGroup(group)) {
+          result[key] = key === group.type ? group.name : '—';
+        } else if ((group.type === 'article' || group.type === 'category') && group.analytics) {
           result[key] = (
             <GroupAnalyticsCell
               group={group}
@@ -1952,11 +2083,15 @@ export function ApprovalRegister({
   const defaultView = useMemo(() => defaultRegisterView(user), [user]);
   const [searchParams, setSearchParams] = useSearchParams();
   const [storedPreferences] = useState(() => readPreferences(user.id, user.role));
-  const [view, setView] = useState<RegistryView>(() => {
+  const initialView = (() => {
     const storedView = storedPreferences.view
       || (sessionStorage.getItem(registerViewStorageKey(user.id)) as RegistryView);
     return storedView && availableViews.includes(storedView) ? storedView : defaultView;
-  });
+  })();
+  const [view, setView] = useState<RegistryView>(initialView);
+  const [groupBy, setGroupBy] = useState<RegisterGroupingLevel[]>(
+    () => storedPreferences.groupBy || GROUPING_PRESETS[initialView],
+  );
   const [filters, setFilters] = useState<RegistryFilters>(() => storedPreferences.filters || EMPTY_FILTERS);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [preferences, setPreferences] = useState(() => ({ order: storedPreferences.order, visibility: storedPreferences.visibility, widths: storedPreferences.widths }));
@@ -2015,14 +2150,14 @@ export function ApprovalRegister({
   useEffect(() => {
     localStorage.setItem(
       preferencesStorageKey(user.id),
-      JSON.stringify({ version: 1, view, filters: filtersForPersistence(filters), ...preferences }),
+      JSON.stringify({ version: 2, view, groupBy, filters: filtersForPersistence(filters), ...preferences }),
     );
-  }, [filters, preferences, user.id, view]);
-  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  }, [filters, groupBy, preferences, user.id, view]);
+  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, groupBy, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isLoading, error, isFetching } = useQuery({
-    queryKey: ['approval-register', requestId, view, effectiveFilters],
+    queryKey: ['approval-register', requestId, view, groupBy, effectiveFilters],
     queryFn: async ({ signal }) => (await api.get<ApprovalRegisterResponse>('/approval-register', {
-      params: buildRegisterFilterParams(effectiveFilters, { view, request_id: requestId }),
+      params: buildRegisterFilterParams(effectiveFilters, { view, request_id: requestId, group_by: groupBy }),
       signal,
     })).data,
   });
@@ -2031,7 +2166,7 @@ export function ApprovalRegister({
     setExpanded((current) => (
       current.size > 0 ? current : new Set(collectDefaultExpandedGroupIds(data.groups, view))
     ));
-  }, [data?.groups, view, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  }, [data?.groups, view, groupBy, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   useEffect(() => {
     if (!data?.groups?.length || !filters.articleId) return;
     const matches: ApprovalRegisterGroup[] = [];
@@ -2597,10 +2732,13 @@ export function ApprovalRegister({
       onReset={resetRegisterFilters}
       onSave={saveCurrentFilter}
       availableViews={availableViews}
+      groupBy={groupBy}
+      onGroupByChange={setGroupBy}
       analyticsFilterOptions={analyticsFilterOptions}
       drillLabels={drillLabels}
     />
     {summaryAggregates && !approvalMode && <RegistrySummary aggregates={summaryAggregates} />}
+    {!approvalMode && <AnalyticsSummaryList summary={data?.analytics_summary || []} />}
     {approvalMode && hasSelection && (
       <SelectionBar
         selectionRoots={selectionRoots}

@@ -251,11 +251,19 @@ export function buildRegisterControlRows(
     return segment?.slice(prefix.length) || '';
   };
   const pathMatchesItem = (path: ApprovalRegisterGroup[], item: ApprovalRegisterRow) => path.every((group) => {
+    if (group.scope) {
+      return Object.entries(group.scope).every(([key, value]) => (
+        String(item[key as keyof ApprovalRegisterRow] || '') === value
+      ));
+    }
     const id = entityId(group);
     if (group.type === 'cfo') return id === item.cfo_id;
     if (group.type === 'article') return id === item.article_id;
     if (group.type === 'category') return id === item.category_id;
     if (group.type === 'module') return id === item.module_id;
+    if (ANALYTICS_FIELD_KEYS.includes(group.type as AnalyticsFieldKey)) {
+      return String(item[group.type as AnalyticsFieldKey] || '') === group.group_value;
+    }
     return group.type !== 'request' || id === item.request_id;
   });
 

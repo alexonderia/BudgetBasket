@@ -141,14 +141,20 @@ export interface RegisterGroupAnalytics {
   fields: Record<string, RegisterGroupAnalyticsField>;
 }
 
+export type RegisterGroupingLevel = 'cfo' | 'category' | 'article' | 'module' | 'request'
+  | 'analytics_1' | 'analytics_2' | 'analytics_3' | 'analytics_4' | 'analytics_5';
+
 export interface ApprovalRegisterGroup {
   id: string;
-  type: 'cfo' | 'category' | 'article' | 'module' | 'request';
+  type: RegisterGroupingLevel;
   name: string;
   label: string;
+  group_value?: string;
   module_id: string;
   article_id: string;
   category_id: string;
+  /** Exact server-side filter scope of this grouping branch. */
+  scope?: Partial<Record<RegisterGroupingLevel, string>>;
   request_ids: string[];
   aggregates: RegisterAggregates;
   /** Original aggregate before filters in table columns were applied. */
@@ -158,10 +164,24 @@ export interface ApprovalRegisterGroup {
   analytics?: RegisterGroupAnalytics;
 }
 
+export interface RegisterAnalyticsSummaryValue {
+  value: string;
+  aggregates: RegisterAggregates;
+  top_cfo: { cfo_id: string; cfo_name: string; requested_sum: number; total_rows: number };
+}
+
+export interface RegisterAnalyticsSummary {
+  field: 'analytics_1' | 'analytics_2' | 'analytics_3' | 'analytics_4' | 'analytics_5';
+  label: string;
+  values: RegisterAnalyticsSummaryValue[];
+}
+
 export interface ApprovalRegisterResponse {
   view: 'cfo' | 'category' | 'article' | 'module' | 'request';
+  group_by?: RegisterGroupingLevel[];
   groups: ApprovalRegisterGroup[];
   aggregates: RegisterAggregates;
+  analytics_summary?: RegisterAnalyticsSummary[];
   summary_items?: ApprovalRegisterRow[];
 }
 

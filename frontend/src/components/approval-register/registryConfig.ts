@@ -183,6 +183,7 @@ export function isRowActionable(item: ApprovalRegisterRow, role?: User['role']) 
 }
 
 export function isGroupActionable(group: ApprovalRegisterGroup) {
+  if (Object.keys(group.scope || {}).some((key) => key.startsWith('analytics_'))) return false;
   const hasRevision = (group.aggregates.revision_rows || 0) > 0;
   return (group.type === 'article' || group.type === 'cfo')
     && (
@@ -193,6 +194,7 @@ export function isGroupActionable(group: ApprovalRegisterGroup) {
 }
 
 export function isGroupSelectable(group: ApprovalRegisterGroup, role?: User['role']) {
+  if (Object.keys(group.scope || {}).some((key) => key.startsWith('analytics_'))) return false;
   if (role === 'employee') {
     return groupHasCfoActions(group) || groupHasCfoCompleteActions(group);
   }

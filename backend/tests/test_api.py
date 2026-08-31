@@ -406,6 +406,100 @@ def test_approval_register_analytics_fields_and_filters(tmp_path):
     assert items[0]["analytics_1"] == "Проект А"
 
 
+def test_approval_register_groups_by_analytics_with_filtered_aggregates_and_pagination(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    for index in range(26):
+        result = client.post(
+            f"/requests/{request['id']}/items",
+            json={
+                "dds_id": DDS_LICENSE_ID,
+                "name": f"Project line {index}",
+                "sum_plan": 10,
+                "analytics_1": "Проект А",
+            },
+            headers=employee,
+        )
+        assert result.status_code == 200
+    assert client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Unfilled line", "sum_plan": 40},
+        headers=employee,
+    ).status_code == 200
+
+    group_by = ["cfo", "article", "analytics_1", "category"]
+    register = client.get(
+        "/approval-register",
+        params=[("request_id", request["id"]), *(("group_by[]", value) for value in group_by)],
+        headers=employee,
+    )
+    assert register.status_code == 200
+    body = register.json()
+    assert body["group_by"] == group_by
+    assert body["aggregates"]["total_rows"] == 27
+    assert body["aggregates"]["requested_sum"] == 300
+    analytics_1_summary = next(item for item in body["analytics_summary"] if item["field"] == "analytics_1")
+    project_summary = next(item for item in analytics_1_summary["values"] if item["value"] == "Проект А")
+    assert project_summary["aggregates"]["requested_sum"] == 260
+    assert project_summary["aggregates"]["total_rows"] == 26
+    assert project_summary["top_cfo"]["requested_sum"] == 260
+
+    def find_group(groups, group_type, name=None):
+        for group in groups:
+            if group["type"] == group_type and (name is None or group["name"] == name):
+                return group
+            found = find_group(group.get("children", []), group_type, name)
+            if found:
+                return found
+        return None
+
+    project_group = find_group(body["groups"], "analytics_1", "Проект А")
+    empty_group = find_group(body["groups"], "analytics_1", "Не заполнено")
+    assert project_group["aggregates"]["total_rows"] == 26
+    assert project_group["aggregates"]["requested_sum"] == 260
+    assert project_group["scope"]["analytics_1"] == "Проект А"
+    assert empty_group["aggregates"]["total_rows"] == 1
+
+    filtered = client.get(
+        "/approval-register",
+        params=[
+            ("request_id", request["id"]),
+            ("analytics_1", "Проект А"),
+            *(("group_by[]", value) for value in group_by),
+        ],
+        headers=employee,
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["aggregates"]["total_rows"] == 26
+    assert filtered.json()["aggregates"]["requested_sum"] == 260
+    assert filtered.json()["analytics_summary"][0]["values"][0]["aggregates"]["total_rows"] == 26
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"analytics_1": "Проект А", "page": 2, "page_size": 25},
+        headers=employee,
+    )
+    assert rows.status_code == 200
+    assert rows.json()["pagination"]["total_items"] == 26
+    assert len(rows.json()["items"]) == 1
+
+    unfilled_rows = client.get(
+        "/approval-register/rows",
+        params={"analytics_1": "__empty__", "page_size": 25},
+        headers=employee,
+    )
+    assert unfilled_rows.status_code == 200
+    assert any(item["name"] == "Unfilled line" for item in unfilled_rows.json()["items"])
+
+    invalid = client.get(
+        "/approval-register",
+        params=[("group_by[]", "cfo"), ("group_by[]", "cfo")],
+        headers=employee,
+    )
+    assert invalid.status_code == 422
+
+
 def test_approval_register_analytics_fields_and_filters(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -19,6 +20,15 @@ from app.services.permission_service import PermissionService
 
 
 ANALYTICS_FIELDS = tuple(f"analytics_{index}" for index in range(1, 6))
+EMPTY_ANALYTICS_GROUP_VALUE = "__empty__"
+REGISTER_GROUP_LEVELS = ("cfo", "article", "category", "module", "request", *ANALYTICS_FIELDS)
+DEFAULT_REGISTER_GROUPS = {
+    "cfo": ("cfo", "article", "category", "module"),
+    "category": ("category", "module"),
+    "article": ("article", "category", "module"),
+    "module": ("module", "article", "category"),
+    "request": ("request",),
+}
 
 
 class RequestService:
@@ -1647,12 +1657,12 @@ class RequestService:
         analytics_5: str | None = None,
     ) -> list[dict]:
         analytics_filters = {
-            field: str(value or "").strip()
+            field: "" if value == EMPTY_ANALYTICS_GROUP_VALUE else str(value or "").strip()
             for field, value in zip(
                 ANALYTICS_FIELDS,
                 (analytics_1, analytics_2, analytics_3, analytics_4, analytics_5),
             )
-            if str(value or "").strip()
+            if value == EMPTY_ANALYTICS_GROUP_VALUE or str(value or "").strip()
         }
         visible = self.permissions.visible_request_ids(user)
         requests = {item["id"]: item for item in self.repo.load_all("requests")}
@@ -2087,32 +2097,91 @@ class RequestService:
             "economist_completion_positions": len(economist_completion_positions),
         }
 
-    def approval_register(self, user: dict, view: str = "cfo", **filters) -> dict:
-        levels_by_view = {
-            "cfo": ("cfo", "article", "category", "module"),
-            "category": ("category", "module"),
-            "article": ("article", "category", "module"),
-            "module": ("module", "article", "category"),
-            "request": ("request",),
-        }
-        if view not in levels_by_view:
+    def _register_analytics_summary(self, entries: list[dict]) -> list[dict]:
+        """Aggregate populated analytics after all register filters are applied."""
+        result: list[dict] = []
+        for field in ANALYTICS_FIELDS:
+            values: dict[str, list[dict]] = {}
+            for entry in entries:
+                value = str(entry.get(field) or "").strip()
+                if value:
+                    values.setdefault(value, []).append(entry)
+            if not values:
+                continue
+
+            rows = []
+            for value, value_entries in values.items():
+                cfo_loads: dict[str, dict] = {}
+                for entry in value_entries:
+                    cfo_id = entry["cfo_id"]
+                    load = cfo_loads.setdefault(cfo_id, {
+                        "cfo_id": cfo_id,
+                        "cfo_name": entry["cfo_name"],
+                        "requested_sum": 0.0,
+                        "total_rows": 0,
+                    })
+                    load["requested_sum"] += entry["requested_sum"]
+                    load["total_rows"] += 1
+                top_cfo = max(
+                    cfo_loads.values(),
+                    key=lambda item: (item["requested_sum"], item["total_rows"], item["cfo_name"].casefold()),
+                )
+                rows.append({
+                    "value": value,
+                    "aggregates": self._register_aggregates(value_entries),
+                    "top_cfo": top_cfo,
+                })
+            result.append({
+                "field": field,
+                "label": f"Аналитика {field[-1]}",
+                "values": sorted(
+                    rows,
+                    key=lambda item: (-item["aggregates"]["requested_sum"], item["value"].casefold()),
+                ),
+            })
+        return result
+
+    def approval_register(self, user: dict, view: str = "cfo", group_by: list[str] | None = None, **filters) -> dict:
+        if view not in DEFAULT_REGISTER_GROUPS:
             raise HTTPException(status_code=422, detail="Неизвестное представление реестра")
+        levels = tuple(group_by or DEFAULT_REGISTER_GROUPS[view])
+        if not levels or len(levels) != len(set(levels)) or any(level not in REGISTER_GROUP_LEVELS for level in levels):
+            raise HTTPException(status_code=422, detail="Укажите уникальные допустимые уровни группировки")
+
         entries = self._sort_register_entries(self._register_entries(user, **filters))
-        labels = {"cfo": "ЦФО", "category": "Категория", "article": "Статья / инвестпроект", "module": "Модуль", "request": "Заявка"}
+        labels = {
+            "cfo": "ЦФО", "category": "Категория", "article": "Статья / инвестпроект",
+            "module": "Модуль", "request": "Заявка",
+            **{field: f"Аналитика {field[-1]}" for field in ANALYTICS_FIELDS},
+        }
         roots: dict[str, dict] = {}
         for entry in entries:
             branch = roots
             parent_key = ""
-            for level in levels_by_view[view]:
-                value_id = entry["request_id"] if level == "request" else entry[f"{level}_id"]
-                key = f"{parent_key}/{level}:{value_id}"
+            parent_scope: dict[str, str] = {}
+            for level in levels:
+                is_analytics = level in ANALYTICS_FIELDS
+                value = (
+                    str(entry.get(level) or "").strip()
+                    if is_analytics
+                    else entry["request_id"] if level == "request" else entry[f"{level}_id"]
+                )
+                key = f"{parent_key}/{level}:{quote(value or '__empty__', safe='')}"
+                scope = {**parent_scope, level: value}
                 node = branch.setdefault(key, {
                     "id": key,
                     "type": level,
-                    "name": f"Заявка №{entry['request_id'][:8]}" if level == "request" else entry[f"{level}_name"],
+                    "group_value": value if is_analytics else None,
+                    "name": (
+                        "Не заполнено" if is_analytics and not value
+                        else value if is_analytics
+                        else f"Заявка №{entry['request_id'][:8]}" if level == "request"
+                        else entry[f"{level}_name"]
+                    ),
                     "module_id": entry["module_id"],
                     "article_id": entry["article_id"],
                     "category_id": entry["category_id"],
+                    "scope": scope,
                     "request_ids": set(),
                     "entries": [],
                     "children": {},
@@ -2121,19 +2190,19 @@ class RequestService:
                 node["request_ids"].add(entry["request_id"])
                 branch = node["children"]
                 parent_key = key
+                parent_scope = scope
 
         def serialize(nodes: dict[str, dict]) -> list[dict]:
             result = []
             for node in sorted(nodes.values(), key=lambda item: (item["name"].casefold(), item["id"])):
                 children = serialize(node["children"])
-                if view == "cfo":
-                    can_load_rows = node["type"] == "category"
-                else:
-                    can_load_rows = not children
+                can_load_rows = node["type"] == "category" if levels == DEFAULT_REGISTER_GROUPS["cfo"] else not children
                 payload = {
                     "id": node["id"], "type": node["type"], "name": node["name"],
+                    "group_value": node["group_value"],
                     "module_id": node["module_id"], "article_id": node["article_id"],
-                    "category_id": node["category_id"], "request_ids": sorted(node["request_ids"]),
+                    "category_id": node["category_id"], "scope": node["scope"],
+                    "request_ids": sorted(node["request_ids"]),
                     "aggregates": self._register_aggregates(node["entries"]),
                     "children": children,
                     "can_load_rows": can_load_rows,
@@ -2144,13 +2213,12 @@ class RequestService:
                 result.append(payload)
             return result
 
-        # The register keeps row details lazy in the UI, but table filters and the
-        # summary must be available before a branch is expanded.  Return the same
-        # filtered row set once for those calculations.
         return {
             "view": view,
+            "group_by": list(levels),
             "groups": serialize(roots),
             "aggregates": self._register_aggregates(entries),
+            "analytics_summary": self._register_analytics_summary(entries),
             "summary_items": entries,
         }
 
@@ -2441,7 +2509,7 @@ class RequestService:
             raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
         if page_size not in {25, 50, 100, 200}:
             raise HTTPException(status_code=422, detail="Допустимый размер страницы: 25, 50, 100 или 200")
-        scope_keys = ("module_id", "article_id", "category_id", "cfo_id", "request_id")
+        scope_keys = ("module_id", "article_id", "category_id", "cfo_id", "request_id", *ANALYTICS_FIELDS)
         if request_id:
             filters = {**filters, "request_id": request_id}
         if not any(filters.get(key) for key in scope_keys):
@@ -2455,7 +2523,7 @@ class RequestService:
         items = self._slice_register_page(entries, pagination["page"], page_size)
         group_meta = {
             key: filters.get(key)
-            for key in ("module_id", "article_id", "category_id", "cfo_id", "request_id")
+            for key in ("module_id", "article_id", "category_id", "cfo_id", "request_id", *ANALYTICS_FIELDS)
             if filters.get(key)
         }
         return {
