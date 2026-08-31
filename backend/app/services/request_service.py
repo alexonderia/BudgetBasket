@@ -2167,7 +2167,12 @@ class RequestService:
                     else entry["request_id"] if level == "request" else entry[f"{level}_id"]
                 )
                 key = f"{parent_key}/{level}:{quote(value or '__empty__', safe='')}"
-                scope = {**parent_scope, level: value}
+                scope_key = (
+                    level if is_analytics
+                    else "request_id" if level == "request"
+                    else f"{level}_id"
+                )
+                scope = {**parent_scope, scope_key: value}
                 node = branch.setdefault(key, {
                     "id": key,
                     "type": level,

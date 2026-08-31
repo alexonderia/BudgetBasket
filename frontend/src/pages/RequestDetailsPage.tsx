@@ -75,9 +75,7 @@ import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinitio
 import { normalizePositiveAmount } from '../utils/validation';
 import { AUTH_TOKEN_KEY } from '../utils/session';
 import { ANALYTICS_FIELD_KEYS, ANALYTICS_FIELD_LABELS, analyticsFieldValue, canEditItemAnalytics, type AnalyticsFieldKey } from '../utils/analyticsFields';
-import { EditableAnalyticsCell } from '../components/EditableAnalyticsCell';
 import { InlineEditMoneyCell, InlineEditTextCell } from '../components/inlineEdit';
-import { getApiErrorMessage } from '../utils/apiErrors';
 import { requestWorkflowRequirement, stepAssignee, workflowPersonName, workflowStageLabel } from '../utils/workflowPresentation';
 
 const UPLOAD_ACCEPT = '.pdf,.png,.jpg,.jpeg,.xlsx,.docx,.zip';
@@ -163,6 +161,21 @@ const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
   files: 72,
   actions: 72,
   ...ANALYTICS_COLUMN_WIDTHS,
+};
+
+const PENDING_TABLE_CHANGE_SX = {
+  bgcolor: 'rgba(245, 158, 11, 0.12)',
+  boxShadow: 'inset 3px 0 0 #f59e0b',
+};
+
+const PENDING_FIELD_CHANGE_SX = {
+  '& .MuiOutlinedInput-root': {
+    bgcolor: 'rgba(245, 158, 11, 0.16)',
+    '& fieldset': { borderColor: '#f59e0b', borderWidth: 2 },
+    '&:hover fieldset': { borderColor: '#d97706', borderWidth: 2 },
+    '&.Mui-focused fieldset': { borderColor: '#d97706', borderWidth: 2 },
+  },
+  '& .MuiInputLabel-root': { color: '#b45309' },
 };
 
 function itemRequestedAmount(item: BudgetItem) {
@@ -380,12 +393,19 @@ function reviewValidationError(item: BudgetItem, draft: Partial<BudgetItem>) {
   return '';
 }
 
+function itemValuesEqual(value: unknown, original: unknown) {
+  if (Array.isArray(value) && Array.isArray(original)) {
+    return JSON.stringify(value) === JSON.stringify(original);
+  }
+  return value === original;
+}
+
 function hasEffectiveItemChanges(item: BudgetItem, draft: Partial<BudgetItem>) {
-  return Object.entries(draft).some(([field, value]) => {
-    const original = item[field as keyof BudgetItem];
-    if (typeof value === 'number' && typeof original === 'number') return value !== original;
-    return value !== original;
-  });
+  return Object.entries(draft).some(([field, value]) => !itemValuesEqual(value, item[field as keyof BudgetItem]));
+}
+
+function hasChangedItemField(item: BudgetItem, draft: Partial<BudgetItem>, field: keyof BudgetItem) {
+  return Object.hasOwn(draft, field) && !itemValuesEqual(draft[field], item[field]);
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
@@ -1006,6 +1026,103 @@ function requestItemStatusPresentation(item: BudgetItem) {
   return rowStatusPresentation(rowRegistryStatus(registerItem), registerItem);
 }
 
+function RequestItemMonthPlanEditor({
+  isIncome,
+  plans,
+  savedPlans,
+  sumPlan,
+  editable,
+  onChange,
+}: {
+  isIncome: boolean;
+  plans: BudgetItem['month_plans'];
+  savedPlans: BudgetItem['month_plans'] | undefined;
+  sumPlan: number;
+  editable: boolean;
+  onChange: (plans: BudgetItem['month_plans']) => void;
+}) {
+  const [lockedMonths, setLockedMonths] = useState<Set<number>>(new Set());
+  const monthPlans = completeMonthPlans(plans);
+  const monthValues = monthPlans.map((plan) => String(plan.sum_plan));
+  const monthErrors = monthValues.map(monthAmountError);
+  const annualTotal = monthPlansTotal(monthValues);
+  const planTarget = monthAmountError(String(sumPlan)) ? null : monthAmountToCents(String(sumPlan));
+  const planDifference = planTarget === null ? null : planTarget - annualTotal;
+
+  const changeMonth = (month: number, value: string) => {
+    onChange(monthPlans.map((plan) => (
+      plan.month === month ? { ...plan, sum_plan: normalizeMonthAmount(value) } : plan
+    )));
+  };
+  const redistributeByCurrentWeights = () => {
+    if (planTarget === null) return;
+    const next = redistributeUnlockedMonthPlans(monthPlans, planTarget, lockedMonths);
+    if (next) onChange(next);
+  };
+
+  return (
+    <Box component="section" sx={{ width: '100%' }}>
+      <Typography variant="subtitle1" sx={{ mb: 0.5 }}>
+        {isIncome ? 'План поступлений по месяцам' : 'План расходов по месяцам'}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.25 }}>
+        Годовая сумма распределяется поровну на 12 месяцев. После ручной корректировки используйте кнопку, чтобы распределить разницу с планом по текущим весам.
+      </Typography>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', lg: 'repeat(4, 1fr)' }, gap: 1.25 }}>
+        {MONTH_NAMES.map((month, index) => {
+          const value = monthValues[index];
+          const savedValue = String(savedPlans?.find((plan) => plan.month === index + 1)?.sum_plan ?? '0');
+          const changed = !itemValuesEqual(value, savedValue);
+          return (
+            <Box key={month} sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.25 }}>
+              <TextField
+                label={month}
+                size="small"
+                inputProps={{ inputMode: 'decimal' }}
+                value={value}
+                error={!!monthErrors[index]}
+                helperText={monthErrors[index] || undefined}
+                disabled={!editable}
+                onChange={(event) => changeMonth(index + 1, event.target.value)}
+                sx={{ flex: 1, ...(changed ? PENDING_FIELD_CHANGE_SX : {}) }}
+              />
+              <Tooltip title={lockedMonths.has(index + 1) ? 'Месяц зафиксирован: не менять при распределении' : 'Зафиксировать месяц при распределении'}>
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label={lockedMonths.has(index + 1) ? `Снять фиксацию: ${month}` : `Зафиксировать: ${month}`}
+                    disabled={!editable}
+                    onClick={() => setLockedMonths((current) => {
+                      const next = new Set(current);
+                      if (next.has(index + 1)) next.delete(index + 1);
+                      else next.add(index + 1);
+                      return next;
+                    })}
+                    sx={{ mt: 0.5 }}
+                  >
+                    {lockedMonths.has(index + 1) ? <LockOutlinedIcon fontSize="small" color="primary" /> : <LockOpenOutlinedIcon fontSize="small" />}
+                  </IconButton>
+                </span>
+              </Tooltip>
+            </Box>
+          );
+        })}
+      </Box>
+      <Typography variant="subtitle1" sx={{ mt: 1.5 }}>Итого за год: {annualTotalLabel(annualTotal)}</Typography>
+      {planDifference !== null && planDifference !== 0n && (
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} sx={{ mt: 1 }}>
+          <Typography variant="body2" color={planDifference > 0n ? 'success.main' : 'error.main'}>
+            Разница с планом: {annualTotalLabel(planDifference < 0n ? -planDifference : planDifference)}
+          </Typography>
+          <Button size="small" variant="outlined" disabled={!editable || annualTotal === 0n || monthErrors.some(Boolean)} onClick={redistributeByCurrentWeights}>
+            Распределить разницу по текущим весам
+          </Button>
+        </Stack>
+      )}
+    </Box>
+  );
+}
+
 function ItemsTable({
   title,
   kind,
@@ -1218,7 +1335,7 @@ function ItemsTable({
         return;
       }
       if (column.id === 'actions') {
-        values[column.id] = [column.label, 'Сохранить', 'Удалить'];
+        values[column.id] = [column.label, 'Удалить'];
         return;
       }
       if (column.id === 'files') {
@@ -1267,12 +1384,6 @@ function ItemsTable({
     />
   );
 
-  const patchItemField = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Partial<BudgetItem> }) => api.patch(`/items/${id}`, body),
-    onSuccess: () => refresh(),
-    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось сохранить строку'), 'error'),
-  });
-
   const renderItemCell = (
     columnId: ItemTableColumn,
     item: BudgetItem,
@@ -1283,11 +1394,13 @@ function ItemsTable({
     inactiveCatalogSelection: boolean,
     catalogId: string | null,
     validationError: string | null,
-    hasDraftChanges: boolean,
     planFactDifference: number | null,
     stagedFiles: File[],
     pendingDeletedFileIds: number[],
   ) => {
+    const pendingCellSx = (field: keyof BudgetItem) => (
+      hasChangedItemField(item, local, field) ? PENDING_TABLE_CHANGE_SX : {}
+    );
     switch (columnId) {
       case 'select':
         return (
@@ -1309,16 +1422,19 @@ function ItemsTable({
         );
       case 'structure':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2, pl: 2.5 })}>
+          <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2, pl: 2.5, ...pendingCellSx('name') })}>
             <Stack direction="row" spacing={0.25} alignItems="center" sx={{ minWidth: 0 }}>
             <Box sx={{ minWidth: 0, flex: 1 }}>
               {canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id) && !isDeleted ? (
                 <InlineEditTextCell
-                  value={item.name}
+                  value={local.name ?? item.name}
                   editable
                   ariaLabel="Название строки"
                   title="Нажмите, чтобы изменить название строки"
-                  onCommit={(name) => patchItemField.mutate({ id: item.id, body: { name } })}
+                  onCommit={(name) => setDrafts((current) => ({
+                    ...current,
+                    [item.id]: { ...current[item.id], name },
+                  }))}
                 />
               ) : (
                 <Typography variant="body2" title={item.name || '—'} sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -1350,22 +1466,25 @@ function ItemsTable({
         );
       case 'justification':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+          <TableCell key={columnId} sx={bodyCellSx(columnId, pendingCellSx('justification'))}>
             {canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id) && !isDeleted ? (
               <InlineEditTextCell
-                value={item.justification}
+                value={local.justification ?? item.justification}
                 editable
                 multiline
                 ariaLabel="Обоснование"
                 title="Нажмите, чтобы изменить обоснование"
-                onCommit={(justification) => patchItemField.mutate({ id: item.id, body: { justification } })}
+                onCommit={(justification) => setDrafts((current) => ({
+                  ...current,
+                  [item.id]: { ...current[item.id], justification },
+                }))}
               />
             ) : (item.justification || '—')}
           </TableCell>
         );
       case 'requested':
         return (
-          <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2 })}>
+          <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2, ...pendingCellSx('sum_plan') })}>
             {((canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id)) || canCfoEditMonthPlans(item)) && !isDeleted ? (
               <InlineEditMoneyCell
                 value={Number(local.sum_plan ?? item.sum_plan)}
@@ -1384,7 +1503,6 @@ function ItemsTable({
                     ...current,
                     [item.id]: { ...current[item.id], sum_plan, month_plans },
                   }));
-                  patchItemField.mutate({ id: item.id, body: { sum_plan } });
                 }}
               />
             ) : (
@@ -1394,7 +1512,7 @@ function ItemsTable({
         );
       case 'status':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2 })}>
+          <TableCell key={columnId} sx={bodyCellSx(columnId, { py: 0.2, ...pendingCellSx('status') })}>
             {canEconomist && !isDeleted ? (
               <TextField
                 select
@@ -1429,7 +1547,7 @@ function ItemsTable({
         );
       case 'approved':
         return (
-          <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2 })}>
+          <TableCell key={columnId} align="right" sx={bodyCellSx(columnId, { py: 0.2, ...pendingCellSx('sum_fact') })}>
             {canEmployeeEditItem(item) && cfoRevisionItemIds.has(item.id) && !isDeleted ? (
               <InlineEditMoneyCell
                 value={Number(local.sum_fact ?? item.sum_fact ?? 0)}
@@ -1483,7 +1601,7 @@ function ItemsTable({
         );
       case 'comment':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+          <TableCell key={columnId} sx={bodyCellSx(columnId, pendingCellSx('comment'))}>
             {canEconomist && !isDeleted ? (
               <TextField
                 size="small"
@@ -1501,19 +1619,23 @@ function ItemsTable({
       case 'analytics_3':
       case 'analytics_4':
       case 'analytics_5': {
-        const value = item[columnId] ?? '';
+        const value = local[columnId] ?? item[columnId] ?? '';
         const useInlineEditor = canEmployeeEditItem(item)
           && !cfoRevisionItemIds.has(item.id)
           && canEditItemAnalytics(item)
           && !isDeleted;
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+          <TableCell key={columnId} sx={bodyCellSx(columnId, pendingCellSx(columnId))}>
             {useInlineEditor ? (
-              <EditableAnalyticsCell
-                itemId={item.id}
-                field={columnId}
+              <InlineEditTextCell
                 value={value}
                 editable
+                ariaLabel={ANALYTICS_FIELD_LABELS[columnId]}
+                title={`Нажмите, чтобы изменить «${ANALYTICS_FIELD_LABELS[columnId]}»`}
+                onCommit={(analyticsValue) => setDrafts((current) => ({
+                  ...current,
+                  [item.id]: { ...current[item.id], [columnId]: analyticsValue },
+                }))}
               />
             ) : value || '—'}
           </TableCell>
@@ -1521,7 +1643,7 @@ function ItemsTable({
       }
       case 'files':
         return (
-          <TableCell key={columnId} sx={bodyCellSx(columnId)}>
+          <TableCell key={columnId} sx={bodyCellSx(columnId, stagedFiles.length > 0 || pendingDeletedFileIds.length > 0 ? PENDING_TABLE_CHANGE_SX : {})}>
             <ItemFilesCell
               kind={kind}
               itemId={item.id}
@@ -1546,7 +1668,7 @@ function ItemsTable({
                   [item.id]: (current[item.id] || []).filter((id) => id !== fileId),
                 }))
               }
-              disabled={saveStagedFileChanges.isPending || isDeleted}
+              disabled={saveTableChanges.isPending || isDeleted}
             />
           </TableCell>
         );
@@ -1554,22 +1676,10 @@ function ItemsTable({
         return (
           <TableCell key={columnId} sx={bodyCellSx(columnId)}>
             <Stack direction="row" spacing={0.5} justifyContent="flex-start" alignItems="center">
-              {(canEconomist || (canEmployeeEditItem(item) && cfoRevisionItemIds.has(item.id))) && !isDeleted ? (
-                <Tooltip title={validationError || 'Сохранить изменения строки'}>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    onClick={() => patch.mutate({ id: item.id, body: drafts[item.id] || {} })}
-                    disabled={!hasDraftChanges || !!validationError || patch.isPending}
-                    aria-label="Сохранить"
-                  >
-                    Сохранить
-                  </Button>
-                </Tooltip>
-              ) : canEmployeeCreateItems && !isDeleted ? (
+              {canEmployeeCreateItems && !isDeleted && (
                 <>
                   <FileAttachAction
-                    disabled={saveStagedFileChanges.isPending}
+                    disabled={saveTableChanges.isPending}
                     onUpload={(file) => stageFile(item.id, file)}
                   />
                   <Tooltip title="Перераспределить в другую статью или категорию">
@@ -1577,7 +1687,7 @@ function ItemsTable({
                       size="small"
                       color="primary"
                       onClick={() => setRedistributionTarget(item)}
-                      disabled={saveStagedFileChanges.isPending}
+                      disabled={saveTableChanges.isPending}
                       aria-label="Перераспределить строку"
                     >
                       <SwapHorizIcon fontSize="small" />
@@ -1589,7 +1699,7 @@ function ItemsTable({
                         size="small"
                         color="error"
                         onClick={() => setDeleteTarget(item)}
-                        disabled={saveStagedFileChanges.isPending}
+                        disabled={saveTableChanges.isPending}
                         aria-label="Удалить строку"
                       >
                         <DeleteOutlineIcon fontSize="small" />
@@ -1597,7 +1707,7 @@ function ItemsTable({
                     </Tooltip>
                   )}
                 </>
-              ) : null}
+              )}
             </Stack>
           </TableCell>
         );
@@ -1625,26 +1735,57 @@ function ItemsTable({
     ...sx,
   });
 
-  const patch = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Partial<BudgetItem> }) => api.patch(`/items/${id}`, body),
-    onSuccess: (_data, variables) => {
-      setDrafts((current) => {
-        const next = { ...current };
-        delete next[variables.id];
-        return next;
-      });
-      setAutoFitSnapshots((current) => {
-        const next = { ...current };
-        delete next[variables.id];
-        return next;
-      });
+  const hasPendingFileChanges = Object.values(stagedFilesByItem).some((files) => files.length > 0)
+    || Object.values(pendingDeletedFileIdsByItem).some((fileIds) => fileIds.length > 0);
+  const changedItemDrafts = items.flatMap((item) => {
+    const draft = drafts[item.id];
+    return draft && hasEffectiveItemChanges(item, draft) ? [{ item, draft }] : [];
+  });
+  const tableDraftValidationError = changedItemDrafts
+    .map(({ item, draft }) => reviewValidationError(item, draft))
+    .find(Boolean) || null;
+  const saveTableChanges = useMutation({
+    mutationFn: async () => {
+      for (const { item, draft } of changedItemDrafts) {
+        await api.patch(`/items/${item.id}`, draft);
+      }
+      const itemIds = new Set([
+        ...Object.keys(stagedFilesByItem),
+        ...Object.keys(pendingDeletedFileIdsByItem),
+      ]);
+      for (const itemId of itemIds) {
+        for (const file of stagedFilesByItem[itemId] || []) {
+          const form = new FormData();
+          form.append('file', file);
+          await api.post(`/items/${itemId}/files`, form);
+        }
+        for (const fileId of pendingDeletedFileIdsByItem[itemId] || []) {
+          await api.delete(`/items/${itemId}/files/${fileId}`);
+        }
+      }
+    },
+    onSuccess: () => {
+      setDrafts({});
+      setAutoFitSnapshots({});
+      setWeightTargets({});
+      setStagedFilesByItem({});
+      setPendingDeletedFileIdsByItem({});
       refresh();
-      toast('Строка сохранена', 'success');
+      queryClient.invalidateQueries({ queryKey: ['item-files', kind] });
+      toast('Изменения таблицы сохранены', 'success');
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось сохранить строку'), 'error');
+      refresh();
+      toast(getErrorMessage(error, 'Не удалось сохранить изменения таблицы'), 'error');
     },
   });
+  const cancelTableChanges = () => {
+    setDrafts({});
+    setAutoFitSnapshots({});
+    setWeightTargets({});
+    setStagedFilesByItem({});
+    setPendingDeletedFileIdsByItem({});
+  };
 
   const deleteItem = useMutation({
     mutationFn: (itemId: string) => api.delete(`/items/${itemId}`),
@@ -1670,39 +1811,6 @@ function ItemsTable({
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось перераспределить строку'), 'error'),
   });
-
-  const hasPendingFileChanges = Object.values(stagedFilesByItem).some((files) => files.length > 0)
-    || Object.values(pendingDeletedFileIdsByItem).some((fileIds) => fileIds.length > 0);
-  const saveStagedFileChanges = useMutation({
-    mutationFn: async () => {
-      const itemIds = new Set([
-        ...Object.keys(stagedFilesByItem),
-        ...Object.keys(pendingDeletedFileIdsByItem),
-      ]);
-      for (const itemId of itemIds) {
-        for (const file of stagedFilesByItem[itemId] || []) {
-          const form = new FormData();
-          form.append('file', file);
-          await api.post(`/items/${itemId}/files`, form);
-        }
-        for (const fileId of pendingDeletedFileIdsByItem[itemId] || []) {
-          await api.delete(`/items/${itemId}/files/${fileId}`);
-        }
-      }
-    },
-    onSuccess: () => {
-      setStagedFilesByItem({});
-      setPendingDeletedFileIdsByItem({});
-      refresh();
-      queryClient.invalidateQueries({ queryKey: ['item-files', kind] });
-      toast('Файлы сохранены', 'success');
-    },
-    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось сохранить файлы'), 'error'),
-  });
-  const cancelStagedFileChanges = () => {
-    setStagedFilesByItem({});
-    setPendingDeletedFileIdsByItem({});
-  };
 
   const approveArticleItems = useMutation({
     mutationFn: (target: ArticleApprovalTarget) => api.post(
@@ -1913,24 +2021,28 @@ function ItemsTable({
                 Свернуть все
               </Button>
             </>}
-            {items.some((item) => canEmployeeEditFiles(item)) && hasPendingFileChanges && (
+            {(changedItemDrafts.length > 0 || hasPendingFileChanges) && (
               <>
-                <Button
-                  size="small"
-                  color="primary"
-                  startIcon={<SaveOutlinedIcon sx={{ fontSize: 16 }} />}
-                  onClick={() => saveStagedFileChanges.mutate()}
-                  disabled={saveStagedFileChanges.isPending}
-                  sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
-                >
-                  Сохранить файлы
-                </Button>
+                <Tooltip title={tableDraftValidationError || 'Сохранить все изменения таблицы'}>
+                  <span>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<SaveOutlinedIcon sx={{ fontSize: 16 }} />}
+                      onClick={() => saveTableChanges.mutate()}
+                      disabled={!!tableDraftValidationError || saveTableChanges.isPending}
+                      sx={{ textTransform: 'none', fontWeight: 600, minWidth: 0, px: 1, fontSize: 13 }}
+                    >
+                      Сохранить
+                    </Button>
+                  </span>
+                </Tooltip>
                 <Button
                   size="small"
                   color="inherit"
                   startIcon={<CloseIcon sx={{ fontSize: 16 }} />}
-                  onClick={cancelStagedFileChanges}
-                  disabled={saveStagedFileChanges.isPending}
+                  onClick={cancelTableChanges}
+                  disabled={saveTableChanges.isPending}
                   sx={{ textTransform: 'none', fontWeight: 500, minWidth: 0, px: 0.75, fontSize: 13 }}
                 >
                   Отменить
@@ -1959,7 +2071,7 @@ function ItemsTable({
             {request.available_actions?.includes('edit_revision')
               ? 'На доработке доступны только строки, возвращённые ответственным ЦФО.'
               : canEmployeeCreateItems
-              ? 'Нажмите на значение в ячейке, чтобы изменить строку. Изменения сохраняются автоматически.'
+              ? 'Нажмите на значение в ячейке, чтобы изменить строку. Сохраните или отмените все изменения кнопками над таблицей.'
               : 'Строки заявки показаны в режиме просмотра.'}
           </Typography>
         )}
@@ -1977,7 +2089,7 @@ function ItemsTable({
           </Stack>
         </Paper>
       )}
-      {canEmployeeCreateItems && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || saveStagedFileChanges.isPending} />}
+      {canEmployeeCreateItems && <AddItemForm kind={kind} isIncome={isIncome} requestId={request.id} catalog={catalog} disabled={disabledForEmployee || saveTableChanges.isPending} />}
       <TableContainer
         className="request-items-table"
         component={Paper}
@@ -2055,7 +2167,6 @@ function ItemsTable({
               const local = drafts[item.id] || {};
               const isDeleted = item.status === 'deleted';
               const draftStatus = local.status || item.status;
-              const hasDraftChanges = hasEffectiveItemChanges(item, local);
               const catalogId = kind === 'dds' ? item.dds_id : item.invest_id;
               const inactiveCatalogSelection = isInactiveCatalogSelection(catalog, catalogId);
               const stagedFiles = stagedFilesByItem[item.id] || [];
@@ -2086,7 +2197,6 @@ function ItemsTable({
                       inactiveCatalogSelection,
                       catalogId ?? null,
                       validationError,
-                      hasDraftChanges,
                       planFactDifference,
                       stagedFiles,
                       pendingDeletedFileIds,
@@ -2096,6 +2206,20 @@ function ItemsTable({
                     <TableRow>
                       <TableCell colSpan={monthPlanColumnSpan} sx={{ py: 0.8, px: 1.25, bgcolor: '#fff', borderBottom: 1, borderColor: 'divider' }}>
                         <Stack spacing={0.75}>
+                          <Box sx={{ width: '100%', maxWidth: { xs: 'calc(100vw - 32px)', lg: 'calc(100vw - 390px)' } }}>
+                            <RequestItemMonthPlanEditor
+                              isIncome={item.is_income}
+                              plans={visibleMonthPlans}
+                              savedPlans={item.month_plans}
+                              sumPlan={Number(local.sum_plan ?? item.sum_plan)}
+                              editable={(canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id)) || canCfoEditMonthPlans(item)}
+                              onChange={(month_plans) => setDrafts((current) => ({
+                                ...current,
+                                [item.id]: { ...current[item.id], month_plans },
+                              }))}
+                            />
+                          </Box>
+                          <Box sx={{ display: 'none' }}>
                           <Stack direction="row" alignItems="baseline" spacing={0.5}>
                             <Typography variant="body2" fontWeight={700} sx={{ fontSize: 13 }}>
                               {item.is_income ? 'План поступлений по месяцам' : 'План расходов по месяцам'}
@@ -2104,11 +2228,22 @@ function ItemsTable({
                               · {money(Number(monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan))) / 100n))}
                             </Typography>
                           </Stack>
-                          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', md: 'repeat(6, minmax(0, 1fr))' }, gap: 0.55 }}>
+                          <Box sx={{
+                            width: '100%',
+                            // The item table may be wider than the viewport because of
+                            // user-selected columns. Keep the monthly plan inside the
+                            // visible application area instead of extending the scroll.
+                            maxWidth: { xs: 'calc(100vw - 32px)', lg: 'calc(100vw - 390px)' },
+                            display: 'grid',
+                            gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))', md: 'repeat(6, minmax(0, 1fr))' },
+                            gap: 0.55,
+                          }}>
                             {MONTH_NAMES.map((month, index) => {
                               const plan = visibleMonthPlans.find((entry) => entry.month === index + 1);
+                              const savedPlan = (item.month_plans || []).find((entry) => entry.month === index + 1);
+                              const monthPlanChanged = Number(plan?.sum_plan ?? 0) !== Number(savedPlan?.sum_plan ?? 0);
                               const displayAmount = tableMoney(Number(plan?.sum_plan ?? 0));
-                              return <Box key={month} sx={{ minWidth: 0, minHeight: 31, px: 0.7, py: 0.35, borderRadius: 1.25, bgcolor: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 0.5, boxShadow: '0 1px 2px rgba(15, 23, 42, 0.03)' }}>
+                              return <Box key={month} sx={{ minWidth: 0, minHeight: 31, px: 0.7, py: 0.35, borderRadius: 1.25, bgcolor: monthPlanChanged ? PENDING_TABLE_CHANGE_SX.bgcolor : '#fff', boxShadow: monthPlanChanged ? PENDING_TABLE_CHANGE_SX.boxShadow : '0 1px 2px rgba(15, 23, 42, 0.03)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 0.5 }}>
                                 <Typography variant="caption" color="text.secondary" noWrap sx={{ flex: '0 0 34px', fontSize: 12 }}>
                                   {month.slice(0, 3)}
                                 </Typography>
@@ -2127,15 +2262,10 @@ function ItemsTable({
                                           ? { ...entry, sum_plan: normalizeMonthAmount(next) }
                                           : entry
                                       ));
-                                      const sum_plan = Number(centsToAmount(monthPlansTotal(nextPlans.map((entry) => String(entry.sum_plan)))));
                                       setDrafts((current) => ({
                                         ...current,
-                                        [item.id]: { ...current[item.id], month_plans: nextPlans, sum_plan },
+                                        [item.id]: { ...current[item.id], month_plans: nextPlans },
                                       }));
-                                      patchItemField.mutate({
-                                        id: item.id,
-                                        body: { month_plans: nextPlans, sum_plan },
-                                      });
                                     }}
                                   />
                                 ) : <Typography variant="caption" fontWeight={600} noWrap sx={{ display: 'block', fontSize: 12, fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{displayAmount}</Typography>}
@@ -2145,42 +2275,61 @@ function ItemsTable({
                           </Box>
                           {(() => {
                             const currentTotal = monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan)));
+                            const planTotal = monthAmountToCents(String(local.sum_plan ?? item.sum_plan ?? 0));
+                            const difference = planTotal - currentTotal;
+                            if (difference === 0n) return null;
+                            return (
+                              <Typography variant="body2" color={difference > 0n ? 'success.main' : 'error.main'}>
+                                Разница с планом: {annualTotalLabel(difference < 0n ? -difference : difference)}
+                              </Typography>
+                            );
+                          })()}
+                          {(() => {
+                            const currentTotal = monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan)));
                             const canEditPlan = ((canEmployeeEditItem(item) && !cfoRevisionItemIds.has(item.id)) || canCfoEditMonthPlans(item));
                             if (!canEditPlan || currentTotal === 0n) return null;
                             const targetValue = weightTargets[item.id] ?? String(local.sum_plan ?? item.sum_plan);
                             const targetError = monthAmountError(targetValue);
-                            return <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ sm: 'center' }} sx={{ alignSelf: 'flex-start' }}>
-                              <TextField
-                                size="small"
-                                label="Сумма для распределения"
-                                inputProps={{ inputMode: 'decimal' }}
-                                value={targetValue}
-                                error={!!targetError}
-                                helperText={targetError || undefined}
-                                onChange={(event) => setWeightTargets((current) => ({
-                                  ...current,
-                                  [item.id]: normalizeMonthAmount(event.target.value),
-                                }))}
-                              />
-                              <Button
-                                size="small"
-                                variant="outlined"
-                                disabled={!!targetError}
-                                onClick={() => {
-                                const target = monthAmountToCents(targetValue);
-                                const month_plans = redistributeMonthPlans(visibleMonthPlans, target);
-                                const sum_plan = Number(centsToAmount(target));
-                                setDrafts((current) => ({
-                                  ...current,
-                                  [item.id]: { ...current[item.id], month_plans, sum_plan },
-                                }));
-                                patchItemField.mutate({ id: item.id, body: { month_plans, sum_plan } });
-                              }}
-                              >
-                                Распределить по текущим весам
-                              </Button>
+                            const targetDifference = targetError ? null : monthAmountToCents(targetValue) - currentTotal;
+                            return <Stack spacing={0.45} sx={{ alignSelf: 'flex-start' }}>
+                              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ sm: 'center' }}>
+                                <TextField
+                                  size="small"
+                                  label="Сумма для распределения"
+                                  inputProps={{ inputMode: 'decimal' }}
+                                  value={targetValue}
+                                  error={!!targetError}
+                                  helperText={targetError || undefined}
+                                  onChange={(event) => setWeightTargets((current) => ({
+                                    ...current,
+                                    [item.id]: normalizeMonthAmount(event.target.value),
+                                  }))}
+                                />
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  disabled={!!targetError}
+                                  onClick={() => {
+                                  const target = monthAmountToCents(targetValue);
+                                  const month_plans = redistributeMonthPlans(visibleMonthPlans, target);
+                                  const sum_plan = Number(centsToAmount(target));
+                                  setDrafts((current) => ({
+                                    ...current,
+                                    [item.id]: { ...current[item.id], month_plans, sum_plan },
+                                  }));
+                                }}
+                                >
+                                  Распределить по текущим весам
+                                </Button>
+                              </Stack>
+                              {targetDifference !== null && targetDifference !== 0n && (
+                                <Typography variant="body2" color={targetDifference > 0n ? 'success.main' : 'error.main'}>
+                                  Разница с суммой для распределения: {annualTotalLabel(targetDifference < 0n ? -targetDifference : targetDifference)}
+                                </Typography>
+                              )}
                             </Stack>;
                           })()}
+                          </Box>
                           {canEconomist && (local.sum_fact !== undefined || draftStatus !== 'on_review') && (() => {
                             const monthTotal = monthPlansTotal(visibleMonthPlans.map((plan) => String(plan.sum_plan)));
                             const approvedTotal = monthAmountToCents(String(factValue ?? 0));
