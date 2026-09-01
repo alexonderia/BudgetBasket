@@ -62,6 +62,23 @@ class CatalogService:
         if duplicate:
             raise HTTPException(status_code=400, detail="Запись с таким наименованием уже существует")
 
+    def _children(self, collection: str, article_id: str) -> list[dict]:
+        return [
+            item for item in self.repo.load_all(collection)
+            if self._same_id(item.get("parent_id"), article_id)
+        ]
+
+    def _create_default_category(self, collection: str, article: dict) -> dict | None:
+        """Create the fallback only while the article has no child categories."""
+        if self._children(collection, article["id"]):
+            return None
+        return self.repo.create(collection, {
+            "parent_id": article["id"],
+            "name": article["name"],
+            "is_active": article["is_active"],
+            "unit_id": article["unit_id"],
+        })
+
     def _validate_parent_article(self, collection: str, parent_id: str | None, unit_id: str | None) -> None:
         if not parent_id:
             return
@@ -105,7 +122,12 @@ class CatalogService:
                 parent = by_id.get(item.get("parent_id"))
                 if needle not in f"{item.get('name', '')} {parent.get('name', '') if parent else ''}".lower():
                     continue
-            result.append(item)
+            impact = self.delete_impact(collection, item)
+            result.append({
+                **item,
+                "can_delete": impact is None,
+                "delete_block_reason": impact,
+            })
         return result
 
     def create_catalog(self, user: dict, collection: str, payload: dict) -> dict:
@@ -126,13 +148,28 @@ class CatalogService:
 
         require_role(user, "admin")
         self._ensure_unique_item(collection, parent_id=None, unit_id=unit_id, name=item["name"])
+        create_default_category = payload.get("create_default_category", True)
         with self.repo.transaction() as repo:
             article = repo.create(collection, item)
-            repo.create(collection, {
-                "parent_id": article["id"], "name": article["name"],
-                "is_active": article["is_active"], "unit_id": article["unit_id"],
-            })
+            if create_default_category:
+                children = [
+                    entry for entry in repo.load_all(collection)
+                    if self._same_id(entry.get("parent_id"), article["id"])
+                ]
+                if not children:
+                    repo.create(collection, {
+                        "parent_id": article["id"], "name": article["name"],
+                        "is_active": article["is_active"], "unit_id": article["unit_id"],
+                    })
         return article
+
+    def ensure_default_category(self, user: dict, collection: str, article_id: str) -> dict:
+        article = self.repo.get_by_id(collection, article_id)
+        if not article or article.get("parent_id"):
+            raise HTTPException(status_code=404, detail="Статья или инвест-проект не найден")
+        self._require_category_manager(user, article.get("unit_id"))
+        category = self._create_default_category(collection, article)
+        return {"created": bool(category), "item": category}
 
     def update_catalog(self, user: dict, collection: str, item_id: str, patch: dict) -> dict:
         current = self.repo.get_by_id(collection, item_id)
@@ -168,14 +205,20 @@ class CatalogService:
         )
         return self.repo.update(collection, item_id, allowed)
 
+    def delete_impact(self, collection: str, target: dict) -> str | None:
+        reference_field = "dds_id" if collection == "dds_catalog" else "invest_id"
+        if any(item.get(reference_field) == target["id"] for item in self.repo.load_all("req_items")):
+            return "Нельзя удалить: запись используется в заявках. Деактивируйте её, чтобы сохранить историю."
+        if self._children(collection, target["id"]):
+            return "Нельзя удалить: у статьи или проекта есть категории."
+        return None
+
     def delete_catalog(self, user: dict, collection: str, item_id: str) -> None:
         require_role(user, "admin")
         target = self.repo.get_by_id(collection, item_id)
         if not target:
             raise HTTPException(status_code=404, detail="Запись не найдена")
-        reference_field = "dds_id" if collection == "dds_catalog" else "invest_id"
-        if any(item.get(reference_field) == item_id for item in self.repo.load_all("req_items")):
-            raise HTTPException(status_code=400, detail="Нельзя удалить запись, пока она используется в заявках")
-        if any(item.get("parent_id") == item_id for item in self.repo.load_all(collection)):
-            raise HTTPException(status_code=400, detail="Нельзя удалить статью или проект, пока в нём есть категории")
+        impact = self.delete_impact(collection, target)
+        if impact:
+            raise HTTPException(status_code=409, detail=impact)
         self.repo.delete(collection, item_id)

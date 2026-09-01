@@ -153,7 +153,7 @@ class ExcelService:
         ws.append(["Операционные расходы", "Операционные расходы", "", "да"])
         ws.append(["Операционные расходы", "Подписки", "", "да"])
         note["A1"] = "Структура НСИ: статья / инвест-проект → категория."
-        note["A2"] = "Если категория не указана, будет создана одноимённая категория."
+        note["A2"] = "Если категория не указана, одноимённая категория будет создана только у статьи без других категорий."
         note["A3"] = "Повторяющаяся статья создаёт дополнительные категории под той же статьёй."
         note["A4"] = None
         note["A5"] = None
@@ -347,15 +347,22 @@ class ExcelService:
                     ),
                     None,
                 )
-                existing = self._find_leaf(
-                    collection,
-                    name=item["category"] or item["name"],
-                    parent_id=parent["id"] if parent else None,
-                    unit_id=item["unit_id"],
-                )
-                action = "update" if existing else "create"
-                updated += int(bool(existing))
-                created += int(not existing)
+                category_name = item["category"]
+                children = [entry for entry in catalog if parent and entry.get("parent_id") == parent["id"]]
+                # A blank category asks for a fallback only while the article
+                # has no children. This matches manual creation exactly.
+                if not category_name and children:
+                    action = "skip"
+                else:
+                    existing = self._find_leaf(
+                        collection,
+                        name=category_name or item["name"],
+                        parent_id=parent["id"] if parent else None,
+                        unit_id=item["unit_id"],
+                    )
+                    action = "update" if existing else "create"
+                    updated += int(bool(existing))
+                    created += int(not existing)
                 preview_rows.append({**item, "action": action})
             return {
                 "preview": True,
@@ -375,6 +382,13 @@ class ExcelService:
                 unit_id=item["unit_id"],
                 is_active=True,
             )
+            children = [
+                entry for entry in self.repo.load_all(collection)
+                if entry.get("parent_id") == parent["id"]
+            ]
+            # Do not append an article-name fallback after any category exists.
+            if not item["category"] and children:
+                continue
             payload = {
                 "name": item["category"] or item["name"],
                 "parent_id": parent["id"],
@@ -383,7 +397,7 @@ class ExcelService:
             }
             existing = self._find_leaf(
                 collection,
-                name=item["name"],
+                name=payload["name"],
                 parent_id=payload["parent_id"],
                 unit_id=item["unit_id"],
             )

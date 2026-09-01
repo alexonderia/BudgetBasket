@@ -19,9 +19,14 @@ import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
+import FormControl from '@mui/material/FormControl';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import FormHelperText from '@mui/material/FormHelperText';
 import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
+import Radio from '@mui/material/Radio';
+import RadioGroup from '@mui/material/RadioGroup';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
@@ -201,6 +206,7 @@ function UnitFormDialog({
   const level = mode.kind === 'create-root' ? 1 : mode.level;
   const canAssignResponsible = level === 2 || level === 3;
   const canAssignEconomist = level === 2;
+  const modeChangeBlocked = Boolean(isEdit && mode.unit.has_requests);
 
   const title = isEdit
     ? `Редактировать: ${mode.unit.name}`
@@ -236,10 +242,22 @@ function UnitFormDialog({
 
           <TextField label="Название" value={name} onChange={(event) => setName(event.target.value)} fullWidth autoFocus />
           <Alert severity="info">Годовой бюджет рассчитывается автоматически из одобренных строк закрытых заявок.</Alert>
-          <TextField select label="Тип строк заявки" value={usesInvestProjects ? 'invest' : 'dds'} onChange={(event) => setUsesInvestProjects(event.target.value === 'invest')} fullWidth>
-            <MenuItem value="dds">Статьи ДДС</MenuItem>
-            <MenuItem value="invest">Инвестиционные проекты</MenuItem>
-          </TextField>
+          <FormControl component="fieldset" fullWidth>
+            <Typography variant="subtitle2" component="legend">Тип строк заявки</Typography>
+            <RadioGroup
+              row
+              value={usesInvestProjects ? 'invest' : 'dds'}
+              onChange={(event) => setUsesInvestProjects(event.target.value === 'invest')}
+            >
+              <FormControlLabel value="dds" control={<Radio />} label="Статьи ДДС" disabled={modeChangeBlocked} />
+              <FormControlLabel value="invest" control={<Radio />} label="Инвест-проекты" disabled={modeChangeBlocked} />
+            </RadioGroup>
+            <FormHelperText>
+              {modeChangeBlocked
+                ? 'Нельзя сменить режим: для модуля уже создана заявка, в том числе на согласовании.'
+                : 'Режим взаимоисключающий: для строк заявок доступен только один тип.'}
+            </FormHelperText>
+          </FormControl>
           {mode.kind === 'create-child' && canAssignResponsible && (
             <>
               <Divider />

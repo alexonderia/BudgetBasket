@@ -330,6 +330,11 @@ def delete_dds(request: Request, item_id: str, user: User):
     return {"ok": True}
 
 
+@router.post("/catalog/dds/{item_id}/default-category")
+def ensure_dds_default_category(request: Request, item_id: str, user: User):
+    return request.app.state.catalog_service.ensure_default_category(user, "dds_catalog", item_id)
+
+
 @router.get("/catalog/invests")
 def invest_catalog(
     request: Request,
@@ -356,6 +361,11 @@ def update_invest(request: Request, item_id: str, payload: CatalogPatch, user: U
 def delete_invest(request: Request, item_id: str, user: User):
     request.app.state.catalog_service.delete_catalog(user, "invests_catalog", item_id)
     return {"ok": True}
+
+
+@router.post("/catalog/invests/{item_id}/default-category")
+def ensure_invest_default_category(request: Request, item_id: str, user: User):
+    return request.app.state.catalog_service.ensure_default_category(user, "invests_catalog", item_id)
 
 
 @router.get("/catalog/{kind}/import-template")

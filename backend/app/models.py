@@ -208,6 +208,8 @@ class CatalogCreate(StrictModel):
     unit_id: str | None = None
     name: str
     is_active: bool = True
+    # Explicit-category flows disable this fallback to avoid A -> A beside A -> B.
+    create_default_category: bool = True
 
 
 class CatalogPatch(StrictModel):

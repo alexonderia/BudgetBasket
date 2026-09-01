@@ -30,6 +30,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { InlineEditSelectCell, InlineEditTextCell } from '../components/inlineEdit';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
 import type { CatalogItem, Unit, User } from '../types';
 import { filterFieldSx } from '../utils/responsive';
@@ -41,7 +42,7 @@ type ImportPreview = {
   created: number;
   updated: number;
   errors: string[];
-  rows: Array<{ row: number; name: string; category: string | null; unit_name: string; action?: 'create' | 'update' }>;
+  rows: Array<{ row: number; name: string; category: string | null; unit_name: string; action?: 'create' | 'update' | 'skip' }>;
 };
 type ManualNsiRow = { id: string; article: string; category: string; unit_id: string; is_active: boolean };
 
@@ -96,16 +97,27 @@ function ImportDialog({ open, kind, departmentId, departments, catalog, onClose,
       let updated = 0;
       for (const row of prepared) {
         const articleName = row.article.trim();
-        const categoryName = row.category.trim() || articleName;
+        const categoryName = row.category.trim();
         let article = currentCatalog.find((item) => !item.parent_id && item.unit_id === row.unit_id && item.name.trim().toLocaleLowerCase() === articleName.toLocaleLowerCase());
         const articleCreated = !article;
         if (!article) {
-          article = (await api.post<CatalogItem>(meta.path, { name: articleName, unit_id: row.unit_id, is_active: row.is_active })).data;
+          article = (await api.post<CatalogItem>(meta.path, {
+            name: articleName,
+            unit_id: row.unit_id,
+            is_active: row.is_active,
+            // The fallback is intentional only for a blank Category cell.
+            create_default_category: !categoryName,
+          })).data;
           currentCatalog.push(article);
           created += 1;
         }
+        if (!categoryName) {
+          const result = (await api.post<{ created: boolean }>(`${meta.path}/${article.id}/default-category`)).data;
+          created += Number(result.created && !articleCreated);
+          continue;
+        }
         let category = currentCatalog.find((item) => item.parent_id === article!.id && item.name.trim().toLocaleLowerCase() === categoryName.toLocaleLowerCase());
-        if (!category && !(articleCreated && categoryName === article.name)) {
+        if (!category) {
           category = (await api.post<CatalogItem>(meta.path, { parent_id: article.id, name: categoryName, unit_id: row.unit_id, is_active: row.is_active })).data;
           currentCatalog.push(category);
           created += 1;
@@ -131,13 +143,13 @@ function ImportDialog({ open, kind, departmentId, departments, catalog, onClose,
     </DialogTitle>
     <DialogContent dividers><Stack spacing={2}>
       <Box><Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>Статьи и категории</Typography><Box sx={{ overflowX: 'auto' }}><Table size="small"><TableHead><TableRow><TableCell>{meta.article}</TableCell><TableCell>Категория</TableCell><TableCell>Объединение</TableCell><TableCell>Активна</TableCell><TableCell width={56} /></TableRow></TableHead><TableBody>
-        {rows.map((row) => <TableRow key={row.id}><TableCell><TextField size="small" fullWidth value={row.article} onChange={(event) => setRows((items) => items.map((item) => item.id === row.id ? { ...item, article: event.target.value } : item))} /></TableCell><TableCell><TextField size="small" fullWidth placeholder="По умолчанию — как статья" value={row.category} onChange={(event) => setRows((items) => items.map((item) => item.id === row.id ? { ...item, category: event.target.value } : item))} /></TableCell><TableCell><TextField select size="small" fullWidth value={row.unit_id} onChange={(event) => setRows((items) => items.map((item) => item.id === row.id ? { ...item, unit_id: event.target.value } : item))}>{departments.map((department) => <MenuItem key={department.id} value={department.id}>{department.name}</MenuItem>)}</TextField></TableCell><TableCell><TextField select size="small" fullWidth value={row.is_active ? 'yes' : 'no'} onChange={(event) => setRows((items) => items.map((item) => item.id === row.id ? { ...item, is_active: event.target.value === 'yes' } : item))}><MenuItem value="yes">Да</MenuItem><MenuItem value="no">Нет</MenuItem></TextField></TableCell><TableCell><IconButton size="small" disabled={rows.length === 1} onClick={() => setRows((items) => items.filter((item) => item.id !== row.id))}><DeleteOutlineIcon fontSize="small" /></IconButton></TableCell></TableRow>)}
+        {rows.map((row) => <TableRow key={row.id}><TableCell><TextField size="small" fullWidth value={row.article} onChange={(event) => setRows((items) => items.map((item) => item.id === row.id ? { ...item, article: event.target.value } : item))} /></TableCell><TableCell><TextField size="small" fullWidth placeholder="Пусто — одноимённая, если нет других" value={row.category} onChange={(event) => setRows((items) => items.map((item) => item.id === row.id ? { ...item, category: event.target.value } : item))} /></TableCell><TableCell><TextField select size="small" fullWidth value={row.unit_id} onChange={(event) => setRows((items) => items.map((item) => item.id === row.id ? { ...item, unit_id: event.target.value } : item))}>{departments.map((department) => <MenuItem key={department.id} value={department.id}>{department.name}</MenuItem>)}</TextField></TableCell><TableCell><TextField select size="small" fullWidth value={row.is_active ? 'yes' : 'no'} onChange={(event) => setRows((items) => items.map((item) => item.id === row.id ? { ...item, is_active: event.target.value === 'yes' } : item))}><MenuItem value="yes">Да</MenuItem><MenuItem value="no">Нет</MenuItem></TextField></TableCell><TableCell><IconButton size="small" disabled={rows.length === 1} onClick={() => setRows((items) => items.filter((item) => item.id !== row.id))}><DeleteOutlineIcon fontSize="small" /></IconButton></TableCell></TableRow>)}
       </TableBody></Table></Box><Button sx={{ mt: 1 }} startIcon={<AddIcon />} variant="outlined" onClick={() => setRows((items) => [...items, emptyManualRow(departmentId)])}>Добавить строку</Button></Box>
       {file && <Typography variant="body2" color="text.secondary">Файл: {file.name}</Typography>}
       {previewImport.isPending && <Typography color="text.secondary">Подготовка предварительного просмотра…</Typography>}
       {preview && <><Alert severity={preview.errors.length ? 'warning' : 'info'}>Импорт завершён: в таблицу ниже подставлено {preview.rows.length} строк. Будет создано: {preview.created}; обновлено: {preview.updated}.{preview.errors.length > 0 && ` Ошибки: ${preview.errors.join('; ')}`}</Alert>
         <Box><Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>Предпросмотр импорта</Typography><Box sx={{ maxHeight: 320, overflow: 'auto' }}><Table size="small"><TableHead><TableRow><TableCell>Статья / проект</TableCell><TableCell>Категория</TableCell><TableCell>Объединение</TableCell><TableCell>Действие</TableCell></TableRow></TableHead><TableBody>
-          {preview.rows.map((row) => <TableRow key={row.row}><TableCell>{row.name}</TableCell><TableCell>{row.category || row.name}</TableCell><TableCell>{row.unit_name || 'По умолчанию'}</TableCell><TableCell>{row.action === 'update' ? 'Обновить' : 'Создать'}</TableCell></TableRow>)}
+          {preview.rows.map((row) => <TableRow key={row.row}><TableCell>{row.name}</TableCell><TableCell>{row.category || row.name}</TableCell><TableCell>{row.unit_name || 'По умолчанию'}</TableCell><TableCell>{row.action === 'update' ? 'Обновить' : row.action === 'skip' ? 'Без изменений' : 'Создать'}</TableCell></TableRow>)}
         </TableBody></Table></Box></Box>
       </>}
     </Stack></DialogContent>
@@ -181,6 +193,7 @@ export default function CatalogsPage({ user }: { user: User }) {
   const [departmentId, setDepartmentId] = useState('');
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<CategoryRow | null>(null);
   const meta = META[kind];
   const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
   const departments = useMemo(() => units.filter((unit) => unit.type === 'department' || !unit.parent_id), [units]);
@@ -205,6 +218,15 @@ export default function CatalogsPage({ user }: { user: User }) {
     onSuccess: () => { toast('Категория обновлена', 'success'); queryClient.invalidateQueries({ queryKey: [meta.path] }); },
     onError: (error) => toast(errorMessage(error, 'Не удалось обновить категорию'), 'error'),
   });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.delete(`${meta.path}/${id}`),
+    onSuccess: () => {
+      toast('Категория удалена', 'success');
+      setDeleteTarget(null);
+      queryClient.invalidateQueries({ queryKey: [meta.path] });
+    },
+    onError: (error) => toast(errorMessage(error, 'Не удалось удалить категорию'), 'error'),
+  });
   const downloadTemplate = async () => {
     try {
       const response = await api.get(`/catalog/${kind}/import-template`, { responseType: 'blob' });
@@ -225,10 +247,13 @@ export default function CatalogsPage({ user }: { user: User }) {
         {canManageCategories && <Button startIcon={<AddIcon />} variant="outlined" onClick={() => setCategoryDialogOpen(true)} disabled={!articles.length}>Добавить категорию</Button>}
       </Stack>
     </Stack></Paper>
-    <Paper className="surface-pad"><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-      Статья или инвест-проект находится на верхнем уровне. Для каждой новой статьи система создаёт одноимённую категорию; в заявке выбирается пара «статья + категория».
+    <Paper className="surface-pad"><Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+      Статья или инвест-проект находится на верхнем уровне. При пустой категории создаётся одноимённая категория, только если у статьи ещё нет категорий.
     </Typography>
-    <Box sx={{ overflowX: 'auto' }}><Table size="small"><TableHead><TableRow><TableCell>{meta.article}</TableCell><TableCell>Категория</TableCell><TableCell>Активна</TableCell></TableRow></TableHead>
+    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+      Изменения в строках сохраняются сразу; во время редактирования нажмите Esc, чтобы отменить несохранённое изменение.
+    </Typography>
+    <Box sx={{ overflowX: 'auto' }}><Table size="small"><TableHead><TableRow><TableCell>{meta.article}</TableCell><TableCell>Категория</TableCell><TableCell>Активна</TableCell>{user.role === 'admin' && <TableCell width={56} />}</TableRow></TableHead>
       <TableBody>{rows.map((row) => <TableRow key={row.id}>
         <TableCell>{row.article.name}</TableCell>
         <TableCell>
@@ -251,9 +276,30 @@ export default function CatalogsPage({ user }: { user: User }) {
             onCommit={(next) => update.mutate({ id: row.id, body: { name: row.name, is_active: next === 'yes' } })}
           />
         </TableCell>
-      </TableRow>)}{rows.length === 0 && <TableRow><TableCell colSpan={3} align="center">Категории не найдены</TableCell></TableRow>}</TableBody>
+        {user.role === 'admin' && <TableCell>
+          <Tooltip title={row.delete_block_reason || 'Удалить категорию'}>
+            <span>
+              <IconButton
+                size="small"
+                color="error"
+                disabled={row.can_delete === false}
+                onClick={() => setDeleteTarget(row)}
+                aria-label="Удалить категорию"
+              ><DeleteOutlineIcon fontSize="small" /></IconButton>
+            </span>
+          </Tooltip>
+        </TableCell>}
+      </TableRow>)}{rows.length === 0 && <TableRow><TableCell colSpan={user.role === 'admin' ? 4 : 3} align="center">Категории не найдены</TableCell></TableRow>}</TableBody>
     </Table></Box></Paper>
     <ImportDialog open={importDialogOpen} kind={kind} departmentId={departmentId} departments={departments} catalog={catalog} onClose={() => setImportDialogOpen(false)} onDownloadTemplate={downloadTemplate} onImported={(result) => { if (result.rows.length) toast(`Импорт завершён: создано ${result.created}, обновлено ${result.updated}`, 'success'); queryClient.invalidateQueries({ queryKey: [meta.path] }); }} />
     <CategoryDialog open={categoryDialogOpen} kind={kind} departmentId={departmentId} articles={articles} onClose={() => setCategoryDialogOpen(false)} />
+    <ConfirmDialog
+      open={!!deleteTarget}
+      title="Удалить категорию?"
+      description={`Категория «${deleteTarget?.name || ''}» будет удалена. Это действие нельзя отменить.`}
+      pending={remove.isPending}
+      onClose={() => setDeleteTarget(null)}
+      onConfirm={() => deleteTarget && remove.mutate(deleteTarget.id)}
+    />
   </Stack>;
 }

@@ -23,9 +23,19 @@ class UnitService:
 
     def enrich_unit(self, unit: dict) -> dict:
         level = self.unit_level(unit["id"])
+        request_ids = {
+            request["id"] for request in self.repo.load_all("requests")
+            if request.get("unit_id") == unit["id"]
+        }
+        has_active_request_items = any(
+            item.get("request_id") in request_ids and item.get("status") != "deleted"
+            for item in self.repo.load_all("req_items")
+        )
         return {
             **unit,
             "type": "department" if level == 1 else "cfo" if level == 2 else "module",
+            "has_active_request_items": has_active_request_items,
+            "has_requests": bool(request_ids),
         }
 
     def list_units(self) -> list[dict]:
@@ -59,21 +69,15 @@ class UnitService:
             "uses_invest_projects" in patch
             and patch["uses_invest_projects"] != unit.get("uses_invest_projects", False)
         ):
-            new_kind = "invest" if patch["uses_invest_projects"] else "dds"
             request_ids = {
                 request["id"]
                 for request in self.repo.load_all("requests")
                 if request.get("unit_id") == unit_id
             }
-            if any(
-                item.get("request_id") in request_ids
-                and item.get("status") != "deleted"
-                and ("invest" if item.get("invest_id") else "dds") != new_kind
-                for item in self.repo.load_all("req_items")
-            ):
+            if request_ids:
                 raise HTTPException(
                     status_code=409,
-                    detail="Нельзя изменить тип строк, пока существуют активные строки другого типа",
+                    detail="Нельзя изменить тип строк: для модуля уже создана заявка, включая заявки на согласовании",
                 )
         return self.enrich_unit(self.repo.update("units", unit_id, patch))
 

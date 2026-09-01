@@ -174,6 +174,70 @@ def test_nsi_article_creates_default_category_and_request_uses_category(tmp_path
     assert extra.status_code == 200
 
 
+def test_nsi_explicit_category_does_not_create_article_name_duplicate(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+
+    article = client.post(
+        "/catalog/dds",
+        json={
+            "name": "Article A",
+            "unit_id": DEPARTMENT_ID,
+            "create_default_category": False,
+        },
+        headers=admin,
+    )
+    assert article.status_code == 200
+    category = client.post(
+        "/catalog/dds",
+        json={"parent_id": article.json()["id"], "name": "Category B", "unit_id": DEPARTMENT_ID},
+        headers=admin,
+    )
+    assert category.status_code == 200
+
+    catalog = client.get("/catalog/dds", params={"unit_id": DEPARTMENT_ID}, headers=admin).json()
+    children = [item for item in catalog if item["parent_id"] == article.json()["id"]]
+    assert [item["name"] for item in children] == ["Category B"]
+
+    fallback = client.post(f"/catalog/dds/{article.json()['id']}/default-category", headers=admin)
+    assert fallback.status_code == 200
+    assert fallback.json()["created"] is False
+
+
+def test_nsi_fallback_category_is_created_once(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+
+    article = client.post(
+        "/catalog/dds",
+        json={
+            "name": "Article without category",
+            "unit_id": DEPARTMENT_ID,
+            "create_default_category": False,
+        },
+        headers=admin,
+    ).json()
+    first = client.post(f"/catalog/dds/{article['id']}/default-category", headers=admin)
+    second = client.post(f"/catalog/dds/{article['id']}/default-category", headers=admin)
+    assert first.status_code == 200 and first.json()["created"] is True
+    assert second.status_code == 200 and second.json()["created"] is False
+
+    catalog = client.get("/catalog/dds", params={"unit_id": DEPARTMENT_ID}, headers=admin).json()
+    children = [item for item in catalog if item["parent_id"] == article["id"]]
+    assert [item["name"] for item in children] == ["Article without category"]
+
+
+def test_delete_linked_user_returns_a_clear_conflict(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    created = client.post("/users", json=user_payload("route-user"), headers=admin).json()
+    client.app.state.repo.create("steps", {"user_id": created["id"], "name": "Route step"})
+
+    response = client.delete(f"/users/{created['id']}", headers=admin)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Нельзя удалить: пользователь назначен в шагах согласования"
+
+
 def test_employee_can_attach_and_download_zip_archive(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")

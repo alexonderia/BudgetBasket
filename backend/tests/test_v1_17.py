@@ -82,12 +82,14 @@ def test_unit_mode_cannot_change_while_active_lines_exist(tmp_path):
         headers=employee,
     )
     assert created.status_code == 200
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
     changed = client.patch(
         f"/units/{MODULE_ALPHA_ID}",
         json={"uses_invest_projects": True},
         headers=admin,
     )
     assert changed.status_code == 409
+    assert "уже создана заявка" in changed.json()["detail"]
 
 
 def test_request_line_cannot_use_catalog_entry_from_another_department(tmp_path):

@@ -30,6 +30,8 @@ export interface Unit {
   is_active: boolean;
   uses_invest_projects: boolean;
   annual_budget: number;
+  has_active_request_items?: boolean;
+  has_requests?: boolean;
   children?: Unit[];
 }
 
@@ -39,6 +41,8 @@ export interface CatalogItem {
   unit_id: string | null;
   name: string;
   is_active: boolean;
+  can_delete?: boolean;
+  delete_block_reason?: string | null;
 }
 
 export interface BudgetRequest {

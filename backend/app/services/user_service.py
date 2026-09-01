@@ -91,12 +91,6 @@ class UserService:
         user = self.repo.get_by_id("users", user_id)
         if not user:
             raise HTTPException(status_code=404, detail="Запись не найдена")
-        if any(step.get("user_id") == user_id for step in self.repo.load_all("steps")):
-            raise HTTPException(
-                status_code=400,
-                detail="Сначала переназначьте шаги согласования пользователя",
-            )
-
         assigned_units = {
             item["unit_id"]
             for item in self.repo.load_all("units_responsibles")
@@ -106,12 +100,19 @@ class UserService:
             item["id"] for item in self.repo.load_all("cfo_positions")
             if item.get("cfo_unit_id") in assigned_units
         }
+        dependencies: list[str] = []
+        if any(step.get("user_id") == user_id for step in self.repo.load_all("steps")):
+            dependencies.append("назначен в шагах согласования")
+        if assigned_units:
+            dependencies.append("назначен ответственным за подразделение")
         if any(
             item.get("cfo_position_id") in position_ids
             and (item.get("frozen") or item.get("fixed"))
             for item in self.repo.load_all("req_items")
         ):
-            raise HTTPException(status_code=409, detail="У пользователя есть замороженные позиции ЦФО")
+            dependencies.append("имеет замороженные или зафиксированные позиции ЦФО")
+        if dependencies:
+            raise HTTPException(status_code=409, detail=f"Нельзя удалить: пользователь {', '.join(dependencies)}")
         self.repo.delete_where("profiles", {"user_id": user_id})
         self.repo.delete_where("units_responsibles", {"user_id": user_id})
         self.repo.delete("users", user_id)

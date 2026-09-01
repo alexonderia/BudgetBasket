@@ -34,6 +34,7 @@ import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinitio
 import { roleLabels } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
+import { getApiErrorMessage } from '../utils/apiErrors';
 
 const emptyForm = {
   login: '',
@@ -119,13 +120,6 @@ function draftFromUser(user: User): UserDraft {
   };
 }
 
-function getErrorMessage(error: unknown, fallback: string) {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (detail) return detail;
-  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
-  return error instanceof Error ? error.message : fallback;
-}
-
 function ProfileSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <Box className="profile-form-section">
@@ -163,7 +157,7 @@ function CreateUserDialog({
       onClose();
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось создать пользователя'), 'error');
+      toast(getApiErrorMessage(error, 'Не удалось создать пользователя'), 'error');
     },
   });
 
@@ -255,7 +249,7 @@ function EditUserDialog({
       onClose();
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось сохранить пользователя'), 'error');
+      toast(getApiErrorMessage(error, 'Не удалось сохранить пользователя'), 'error');
     },
   });
 
@@ -421,7 +415,7 @@ export default function UsersPage() {
       refresh();
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось удалить пользователя'), 'error');
+      toast(getApiErrorMessage(error, 'Не удалось удалить пользователя'), 'error');
     },
   });
 

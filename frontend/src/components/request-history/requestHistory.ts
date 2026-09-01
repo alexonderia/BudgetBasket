@@ -77,6 +77,7 @@ const historyFieldLabels: Record<string, string> = {
   is_income: 'Тип строки',
   dds_id: 'Статья ДДС',
   invest_id: 'Инвест-проект',
+  month_plans: 'Помесячный план',
   text: 'Текст сообщения',
   ...ANALYTICS_FIELD_LABELS,
 };
@@ -109,6 +110,8 @@ export function historyActorName(actor: RequestLog['user']) {
   return [profile?.last_name, profile?.name, profile?.second_name].filter(Boolean).join(' ') || actor.login;
 }
 
+const monthLabels = ['янв.', 'фев.', 'мар.', 'апр.', 'май', 'июн.', 'июл.', 'авг.', 'сен.', 'окт.', 'ноя.', 'дек.'];
+
 function historyValue(value: unknown, field: string, entity: string, action: string) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'boolean') {
@@ -125,6 +128,23 @@ function historyValue(value: unknown, field: string, entity: string, action: str
       : requestStatusLabels[value as RequestStatus] || stepStatusLabels[value as StepStatus] || value;
   }
   if (field === 'frozen') return value ? 'Зафиксирован' : 'Разморожен';
+  if (Array.isArray(value)) {
+    if (field === 'month_plans') {
+      const plans = value
+        .filter((plan): plan is { month: unknown; sum_plan: unknown } => Boolean(plan) && typeof plan === 'object' && 'month' in plan && 'sum_plan' in plan)
+        .map((plan) => {
+          const month = Number(plan.month);
+          const label = monthLabels[month - 1] || `Месяц ${month}`;
+          return `${label}: ${money(Number(plan.sum_plan))}`;
+        });
+      return plans.length ? plans.join('; ') : '—';
+    }
+    return value.length ? `Указано значений: ${value.length}` : '—';
+  }
+  if (typeof value === 'object') {
+    if ('name' in value && typeof value.name === 'string' && value.name.trim()) return value.name;
+    return 'Указано значение';
+  }
   return String(value);
 }
 
