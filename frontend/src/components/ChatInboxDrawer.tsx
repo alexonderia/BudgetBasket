@@ -196,11 +196,11 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
                 <Box className="chat-list-icon"><ForumOutlinedIcon /></Box>
                 <Stack spacing={0.35} minWidth={0} flex={1} alignItems="flex-start">
                   <Stack direction="row" spacing={1} alignItems="center" width="100%" minWidth={0}>
-                    <Typography className="chat-list-title" noWrap>{chatTitle(item)}</Typography>
+                    <Typography className="chat-list-title">{chatTitle(item)}</Typography>
                     {item.unread_count > 0 && <Chip size="small" color="primary" label={item.unread_count} />}
                   </Stack>
-                  <Typography className="chat-list-request" noWrap>{chatSubtitle(item)}</Typography>
-                  <Typography className="chat-list-preview" color={item.last_message ? undefined : 'text.secondary'} noWrap>
+                  <Typography className="chat-list-request">{chatSubtitle(item)}</Typography>
+                  <Typography className="chat-list-preview" color={item.last_message ? undefined : 'text.secondary'}>
                     {item.last_message ? <>{!item.last_message.is_system && <><strong>{senderName(item.last_message.sender)}:</strong>{' '}</>}{item.last_message.text}</> : 'Сообщений пока нет'}
                   </Typography>
                 </Stack>

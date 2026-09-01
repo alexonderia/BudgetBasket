@@ -257,8 +257,10 @@ export interface ApprovalRegisterRow {
   is_revision_actionable?: boolean;
   is_cfo_module_revision_actionable?: boolean;
   position_id: string | null;
+  current_step_id?: string | null;
   is_in_approval: boolean;
   is_approval_actionable: boolean;
+  is_final_approval_actionable?: boolean;
   is_position_actionable?: boolean;
   is_position_submission_actionable?: boolean;
   is_economist_completion_actionable?: boolean;

@@ -1077,6 +1077,13 @@ class ApprovalService:
         ]
 
     @staticmethod
+    def _position_chat_label(repo: Repository, position: dict) -> str:
+        catalog_name = "dds_catalog" if position.get("dds_id") else "invests_catalog"
+        article = repo.get_by_id(catalog_name, position.get("dds_id") or position.get("invest_id")) or {}
+        cfo = repo.get_by_id("units", position.get("cfo_unit_id")) or {}
+        return f"Позиция «{article.get('name') or 'Без статьи'}» ЦФО «{cfo.get('name') or 'не указан'}»"
+
+    @staticmethod
     def _all_items_frozen(items: list[dict]) -> bool:
         return bool(items) and all(bool(row.get("frozen")) for row in items)
 
@@ -1244,7 +1251,7 @@ class ApprovalService:
             if self.chat_service:
                 self.chat_service.system_message_for_position(
                     after,
-                    "Позиция ЦФО передана экономисту на проверку.",
+                    f"{self._position_chat_label(repo, after)} передана экономисту на проверку.",
                     repo=repo,
                 )
             economist_id = self.permissions.cfo_economist_id(position["cfo_unit_id"])
@@ -1403,7 +1410,7 @@ class ApprovalService:
             if self.chat_service:
                 self.chat_service.system_message_for_position(
                     after,
-                    "Экономист завершил проверку позиции ЦФО.",
+                    f"Экономист завершил проверку: {self._position_chat_label(repo, after)}.",
                     repo=repo,
                 )
             self._sync_step_statuses(repo)

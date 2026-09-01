@@ -196,7 +196,10 @@ export function isGroupActionable(group: ApprovalRegisterGroup) {
 export function isGroupSelectable(group: ApprovalRegisterGroup, role?: User['role']) {
   if (Object.keys(group.scope || {}).some((key) => key.startsWith('analytics_'))) return false;
   if (role === 'employee') {
-    return groupHasCfoActions(group) || groupHasCfoCompleteActions(group);
+    // An employee can also select a position that is already prepared for
+    // transfer, so a stalled «Передайте экономисту» state can be completed
+    // from the common selection bar.
+    return groupHasCfoActions(group) || groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group);
   }
   if (role) return groupHasWorkflowActions(group);
   return group.aggregates.cfo_review_actionable_requests > 0 || (
@@ -205,7 +208,7 @@ export function isGroupSelectable(group: ApprovalRegisterGroup, role?: User['rol
 }
 
 export function canUseLineLevelWorkflowActions(role: User['role']) {
-  return role === 'economist' || role === 'employee';
+  return role === 'economist' || role === 'employee' || role === 'zgd';
 }
 
 export function canEditRevisionLineDetails(role: User['role']) {
@@ -224,6 +227,19 @@ export function canEditApprovedAmount(role: User['role'], item: ApprovalRegister
     return item.is_approval_actionable;
   }
   return false;
+}
+
+/**
+ * A point approval accepts the full plan until the user explicitly enters a
+ * fact.  This keeps an empty fact (shown as 0 in a read-only cell) distinct
+ * from a deliberate correction to zero.
+ */
+export function resolvePointApprovalAmount(
+  requestedSum: number,
+  factSum: number,
+  hasEnteredFact: boolean,
+) {
+  return hasEnteredFact ? factSum : requestedSum;
 }
 
 export function groupHasCfoActions(group: ApprovalRegisterGroup) {
@@ -337,12 +353,12 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       shortHint: 'Можно принять решение',
     };
   }
-  if (item.is_position_submission_actionable) {
+  if (item.is_position_submission_actionable && !item.is_revision_actionable) {
     return {
-      label: 'Требуется ваша проверка',
+      label: 'Передайте экономисту',
       tone: 'warning',
-      hint: 'Проверьте доработку и повторно передайте позицию экономисту',
-      shortHint: 'Можно повторно передать',
+      hint: 'Проверка завершена. Передайте позицию экономисту для продолжения маршрута',
+      shortHint: 'Можно передать экономисту',
     };
   }
   if (item.is_revision) {

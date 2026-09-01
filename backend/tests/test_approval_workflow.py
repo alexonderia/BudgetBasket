@@ -180,6 +180,66 @@ def test_partial_cfo_review_keeps_request_open_and_consolidates_all_lines(tmp_pa
     assert current[1]["sum_fact"] == 0
 
 
+def test_zgd_can_fix_final_position_lines_one_by_one(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    zgd = auth(client, "zgd", "zgd")
+    request, items = create_submitted_request(client, employee, item_count=2)
+    position_id = complete_cfo(
+        client,
+        employee,
+        request["id"],
+        [(item["id"], "approved") for item in items],
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(client, employee, economist, position_id, [item["id"] for item in items])
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": "Freeze after economist review"},
+        headers=economist,
+    ).status_code == 200
+    approver = auth(client, "approver", "approver")
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Approved by reviewer"},
+        headers=approver,
+    ).status_code == 200
+    register = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "request_id": request["id"]},
+        headers=zgd,
+    )
+    assert register.status_code == 200
+    assert all(row["is_final_approval_actionable"] for row in register.json()["items"])
+
+    first = client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Fix first line", "item_ids": [items[0]["id"]]},
+        headers=zgd,
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["all_items_fixed"] is False
+    assert first.json()["current_step_id"] == ROOT_STEP_ID
+
+    refreshed = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "request_id": request["id"]},
+        headers=zgd,
+    )
+    by_id = {row["id"]: row for row in refreshed.json()["items"]}
+    assert by_id[items[0]["id"]]["fixed"] is True
+    assert by_id[items[1]["id"]]["is_final_approval_actionable"] is True
+
+    second = client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Fix second line", "item_ids": [items[1]["id"]]},
+        headers=zgd,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["all_items_fixed"] is True
+    assert second.json()["current_step_id"] is None
+
+
 def test_cfo_return_is_revision_and_module_can_resubmit(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
@@ -868,6 +928,13 @@ def test_register_group_actions_work_for_article_and_cfo(tmp_path):
     )
     assert submitted.status_code == 200, submitted.text
     assert submitted.json()["positions"][0]["current_step_id"] == ECONOMIST_STEP_ID
+    position_chat = client.get(f"/cfo-positions/{position_id}/chat", headers=employee)
+    assert position_chat.status_code == 200, position_chat.text
+    assert any(
+        message["text"] == "Позиция «Операционные расходы» ЦФО «ЦФО цифровых продуктов» передана экономисту на проверку."
+        for message in position_chat.json()["messages"]
+        if message.get("is_system")
+    )
 
     assert client.post(
         f"/cfo-positions/{position_id}/items/{items[0]['id']}/decision",

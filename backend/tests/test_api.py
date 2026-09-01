@@ -671,6 +671,41 @@ def test_approval_register_can_approve_all_available_article_lines(tmp_path):
     assert article["aggregates"]["cfo_review_actionable_requests"] >= 1
 
 
+def test_approval_register_keeps_cfo_fact_and_difference_before_economist_review(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    item = client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Adjusted line", "sum_plan": 100},
+        headers=employee,
+    ).json()
+    assert client.post(f"/requests/{request['id']}/submit", headers=employee).status_code == 200
+
+    initial_register = client.get("/approval-register", params={"view": "article"}, headers=employee).json()
+    article = next(group for group in initial_register["groups"] if group["type"] == "article" and group["aggregates"]["total_rows"] == 1)
+
+    decision = client.post(
+        f"/items/{item['id']}/cfo-decision",
+        json={"decision": "approved_with_changes", "comment": "", "sum_fact": 150},
+        headers=employee,
+    )
+    assert decision.status_code == 200, decision.text
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=employee,
+    ).json()["items"]
+    adjusted = next(row for row in rows if row["id"] == item["id"])
+    assert adjusted["status"] == "on_review"
+    assert adjusted["approved_sum"] == 150
+
+    register = client.get("/approval-register", params={"view": "article"}, headers=employee).json()
+    article_after = next(group for group in register["groups"] if group["id"] == article["id"])
+    assert article_after["aggregates"]["difference"] == 50
+
+
 def test_approval_register_marks_cfo_review_completable_after_all_lines_decided(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")

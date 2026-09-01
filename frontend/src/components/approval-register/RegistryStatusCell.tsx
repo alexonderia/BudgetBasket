@@ -25,6 +25,7 @@ const STATUS_EDIT_OPTIONS: Array<{ value: RegistryStatusAction; label: string }>
 function statusActionHint(item: ApprovalRegisterRow, active: boolean) {
   if (item.fixed) return 'Действия недоступны';
   if (item.is_revision_actionable) return 'Действие: исправить и повторно отправить';
+  if (item.is_position_submission_actionable) return 'Действие: передать экономисту';
   if (active) return 'Действие: согласовать или отклонить';
   return null;
 }

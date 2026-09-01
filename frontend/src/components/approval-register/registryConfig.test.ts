@@ -14,6 +14,7 @@ import {
   isRowActionable,
   orderedRegistryColumns,
   parseMoneyInput,
+  resolvePointApprovalAmount,
   rowReadiness,
   rowRegistryStatus,
   rowRejectedAmount,
@@ -79,7 +80,7 @@ describe('registry display helpers', () => {
       aggregates: { ...sampleAggregates, cfo_review_completable_requests: 1 },
     };
 
-    expect(isGroupSelectable(workflowOnlyGroup, 'employee')).toBe(false);
+    expect(isGroupSelectable(workflowOnlyGroup, 'employee')).toBe(true);
     expect(isGroupSelectable(workflowOnlyGroup, 'economist')).toBe(true);
     expect(isGroupSelectable(cfoCompletionGroup, 'employee')).toBe(true);
     expect(isGroupSelectable(cfoCompletionGroup, 'economist')).toBe(false);
@@ -143,7 +144,13 @@ describe('registry display helpers', () => {
           detail: 'Позиция ждёт повторной проверки ЦФО',
         },
       },
-    }).label).toBe('Требуется ваша проверка');
+    }).label).toBe('Передайте экономисту');
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      is_revision: true,
+      is_revision_actionable: true,
+      is_position_submission_actionable: true,
+    }).label).toBe('На доработке');
   });
 
   it('does not treat already decided lines as actionable', () => {
@@ -204,11 +211,18 @@ describe('registry display helpers', () => {
     expect(isRowActionable(economistLine)).toBe(true);
 
     expect(isRowActionable({ ...economistLine, is_cfo_review_actionable: false }, 'approver')).toBe(false);
+    expect(isRowActionable({ ...economistLine, is_cfo_review_actionable: false }, 'zgd')).toBe(true);
   });
 
   it('parses amounts with spaces and rejects non-numeric input', () => {
     expect(parseMoneyInput('1 250,50')).toBe(1250.5);
     expect(parseMoneyInput('12x')).toBeNull();
+  });
+
+  it('uses the full plan for a point approval until a fact is entered', () => {
+    expect(resolvePointApprovalAmount(100, 0, false)).toBe(100);
+    expect(resolvePointApprovalAmount(100, 150, true)).toBe(150);
+    expect(resolvePointApprovalAmount(100, 0, true)).toBe(0);
   });
 
   it('uses saved column order and hidden columns', () => {

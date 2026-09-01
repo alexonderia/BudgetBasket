@@ -12,6 +12,7 @@ export function InlineEditMoneyCell({
   parseValue,
   validate,
   onDraftChange,
+  onCancel,
   saveOnBlur = true,
   ariaLabel = 'Сумма',
   title = 'Нажмите, чтобы изменить сумму',
@@ -23,6 +24,7 @@ export function InlineEditMoneyCell({
   parseValue: (raw: string) => number | null;
   validate?: (amount: number) => boolean;
   onDraftChange?: (amount: number) => void;
+  onCancel?: () => void;
   saveOnBlur?: boolean;
   ariaLabel?: string;
   title?: string;
@@ -52,6 +54,7 @@ export function InlineEditMoneyCell({
   const cancel = () => {
     setDraft(formatValue(value));
     onDraftChange?.(value);
+    onCancel?.();
     setEditing(false);
   };
 
@@ -65,7 +68,16 @@ export function InlineEditMoneyCell({
 
   if (!editing) {
     return (
-      <ClickToEditTrigger align="right" title={title} onActivate={() => setEditing(true)}>
+      <ClickToEditTrigger
+        align="right"
+        title={title}
+        onActivate={() => {
+          // `formatValue` is a display format and may contain a currency sign.
+          // Never carry it over to a numeric editor.
+          setDraft(String(value));
+          setEditing(true);
+        }}
+      >
         {formatValue(value)}
       </ClickToEditTrigger>
     );

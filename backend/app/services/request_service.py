@@ -1755,25 +1755,30 @@ class RequestService:
             return position_items_cache[position_id]
 
         def can_act_on_position(position: dict | None, item: dict) -> bool:
-            if not position or item.get("fixed") or item.get("frozen"):
+            if not position or item.get("fixed"):
                 return False
             step = steps.get(cfo_position_current_step_id(self.repo, position))
             if not step or step.get("unit_id"):
                 return False
             actor = users.get(step.get("user_id"), {})
-            if actor.get("role") != "economist":
-                return False
-            if user.get("role") != "economist":
-                return False
-            if position.get("cfo_unit_id") not in economist_cfo_ids:
-                return False
-            if step.get("user_id") != user.get("id"):
-                return False
-            returned_items = revision_items_by_position.get(position["id"], set())
+            if actor.get("role") == "economist":
+                if item.get("frozen") or user.get("role") != "economist":
+                    return False
+                if position.get("cfo_unit_id") not in economist_cfo_ids or step.get("user_id") != user.get("id"):
+                    return False
+                returned_items = revision_items_by_position.get(position["id"], set())
+                return (
+                    item["id"] in returned_items
+                    and position.get("status") == CfoPositionStatus.on_revision
+                ) or item["id"] not in economist_decided_by_position.get(position["id"], set())
+            # At the final step a ZGD can fix any frozen line separately.
+            # The position itself remains at that step until all lines are fixed.
             return (
-                item["id"] in returned_items
-                and position.get("status") == CfoPositionStatus.on_revision
-            ) or item["id"] not in economist_decided_by_position.get(position["id"], set())
+                actor.get("role") == "zgd"
+                and user.get("role") == "zgd"
+                and step.get("user_id") == user.get("id")
+                and bool(item.get("frozen"))
+            )
 
         def can_act_on_position_block(position: dict | None) -> bool:
             if not position:
@@ -1902,7 +1907,12 @@ class RequestService:
                 **{field: str(item.get(field) or "").strip() for field in ANALYTICS_FIELDS},
                 "files_count": file_counts.get(item["id"], 0),
                 "requested_sum": float(item.get("sum_plan") or 0),
-                "approved_sum": float(item.get("sum_fact") or 0) if item.get("status") in APPROVED_ITEM_STATUSES else 0,
+                # `sum_fact` is the amount selected at the current review
+                # step.  CFO decisions intentionally keep the item status at
+                # `on_review` until the economist acts, but the selected fact
+                # (and its difference from the plan) must remain visible in
+                # the register during that intermediate state.
+                "approved_sum": float(item.get("sum_fact") or 0),
                 "status": str(item.get("status") or ItemStatus.on_review),
                 "updated_at": str(item.get("updated_at") or request.get("updated_at") or request.get("created_at") or ""),
                 "is_collecting": request.get("status") == RequestStatus.draft,
@@ -1935,8 +1945,12 @@ class RequestService:
                 ),
                 "is_cfo_review_completable": request["id"] in completable_cfo_review_requests,
                 "position_id": position.get("id") if position else None,
+                "current_step_id": position_step_id,
                 "is_in_approval": bool(position and position_step_id and not item.get("fixed")),
                 "is_approval_actionable": can_act_on_position(position, item),
+                "is_final_approval_actionable": (
+                    user.get("role") == "zgd" and can_act_on_position(position, item)
+                ),
                 "is_position_submission_actionable": can_submit_position(position),
                 "is_economist_completion_actionable": can_complete_economist_position(position),
                 "is_position_actionable": (

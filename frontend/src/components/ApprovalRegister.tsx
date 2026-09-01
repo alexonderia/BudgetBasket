@@ -51,7 +51,7 @@ import { api } from '../api/client';
 import { getApiErrorMessage } from '../utils/apiErrors';
 import { useAppToast, usePageChromeActions, usePageChromeLeading } from './Layout';
 import { ConfirmDialog } from './ConfirmDialog';
-import { InlineEditMoneyCell } from './inlineEdit';
+import { InlineEditMoneyCell, InlineEditTextCell } from './inlineEdit';
 import { ArticleRevisionDialog, type RevisionTarget } from './ArticleRevisionDialog';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from './TableColumnControls';
 import {
@@ -76,6 +76,7 @@ import {
   parseMoneyInput,
   REGISTRY_COLUMNS,
   REGISTRY_VIEW_LABELS,
+  resolvePointApprovalAmount,
   orderedRegistryColumns,
   rowRegistryStatus,
   STATUS_LABELS,
@@ -98,7 +99,7 @@ import {
   sortRegisterItems,
 } from './approval-register/registryTableColumns';
 import { useTableColumnControls, type TableSortState } from '../utils/tableColumns';
-import { RegistryGroupStatusCell, EditableRegistryStatusCell, type RegistryRowDecision } from './approval-register/RegistryStatusCell';
+import { RegistryGroupStatusCell, RegistryStatusCell, type RegistryRowDecision } from './approval-register/RegistryStatusCell';
 import { RegistryYourDecisionCell } from './approval-register/registryWorkflowCells';
 import { STATUS_LEGEND_SPECS, StatusVisualBadge, rowStatusPresentation } from './approval-register/registryStatusVisual';
 import { RequestHistoryDrawer, type RequestHistoryTarget } from './request-history/RequestHistoryDrawer';
@@ -117,6 +118,7 @@ const LEGACY_PREFERENCES_KEY = 'budgetbasket:approval-register:preferences';
 const LEGACY_COLUMNS_KEY = 'budgetbasket:approval-register:columns';
 const REQUEST_PAGE_SIZE_KEY = 'budgetbasket:register:request-page-size';
 const FilteredRegisterItemsContext = createContext<Map<string, ApprovalRegisterRow[]> | null>(null);
+const PointRevisionContext = createContext<(item: ApprovalRegisterRow) => void>(() => undefined);
 
 function preferencesStorageKey(userId: string) {
   return `budgetbasket:approval-register:preferences:${userId || 'anonymous'}`;
@@ -170,6 +172,8 @@ type DecisionTarget = {
   decision: RowDecision;
   amount?: number;
   allowAmountEdit?: boolean;
+  /** A row-level draft entered in the register before opening the decision dialog. */
+  comment?: string;
 };
 
 function groupEntityId(group: ApprovalRegisterGroup) {
@@ -404,6 +408,15 @@ async function postRowDecision(row: ApprovalRegisterRow, decision: RowDecision, 
   if (row.is_cfo_review_actionable) {
     return api.post<BudgetItem>(`/items/${row.id}/cfo-decision`, payload);
   }
+  if (row.is_final_approval_actionable && row.position_id && row.current_step_id) {
+    if (resolvedDecision !== 'approved') {
+      throw new Error('Для возврата строки на доработку используйте кнопку со стрелкой.');
+    }
+    return api.post(`/steps/${row.current_step_id}/positions/${row.position_id}/approve`, {
+      comment,
+      item_ids: [row.id],
+    });
+  }
   if (row.is_approval_actionable && row.position_id) {
     return api.post<BudgetItem>(`/cfo-positions/${row.position_id}/items/${row.id}/decision`, payload);
   }
@@ -412,9 +425,13 @@ async function postRowDecision(row: ApprovalRegisterRow, decision: RowDecision, 
 
 async function postBulkRowDecision(rows: ApprovalRegisterRow[], decision: RowDecision, comment: string) {
   const cfoRows = rows.filter((row) => row.is_cfo_review_actionable);
+  const finalApprovalRows = rows.filter((row) => row.is_final_approval_actionable && row.position_id && row.current_step_id);
+  if (finalApprovalRows.length && decision !== 'approved') {
+    throw new Error('Для возврата строк на доработку используйте кнопку «На доработку».');
+  }
   const workflowRowsByPosition = new Map<string, ApprovalRegisterRow[]>();
   rows.forEach((row) => {
-    if (row.is_cfo_review_actionable || !row.is_approval_actionable || !row.position_id) return;
+    if (row.is_cfo_review_actionable || row.is_final_approval_actionable || !row.is_approval_actionable || !row.position_id) return;
     const positionRows = workflowRowsByPosition.get(row.position_id) || [];
     positionRows.push(row);
     workflowRowsByPosition.set(row.position_id, positionRows);
@@ -427,6 +444,12 @@ async function postBulkRowDecision(rows: ApprovalRegisterRow[], decision: RowDec
       comment,
     }));
   }
+  finalApprovalRows.forEach((row) => {
+    requests.push(api.post(`/steps/${row.current_step_id}/positions/${row.position_id}/approve`, {
+      comment,
+      item_ids: [row.id],
+    }));
+  });
   workflowRowsByPosition.forEach((positionRows, positionId) => {
     requests.push(api.post(`/cfo-positions/${positionId}/items/decision/bulk`, {
       item_ids: positionRows.map((row) => row.id),
@@ -805,7 +828,7 @@ function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionT
   const [comment, setComment] = useState('');
   const [amount, setAmount] = useState('');
   useEffect(() => {
-    setComment('');
+    setComment(target?.comment || '');
     const initialAmount = target?.amount ?? target?.rows[0]?.approved_sum ?? target?.rows[0]?.requested_sum;
     setAmount(initialAmount === undefined ? '' : toMoneyInput(initialAmount));
   }, [target]);
@@ -1190,12 +1213,16 @@ function SelectionBar({
 
   return (
     <Paper variant="outlined" sx={{ px: 1.25, py: 0.75, borderColor: '#BFDBFE', bgcolor: '#F8FBFF' }}>
-      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
-        <Typography variant="body2" fontWeight={700}>
-          {summary} · {selectedRows.length} строк · запрошено: {money(requestedSum)}
-        </Typography>
-        <Box sx={{ flex: 1 }} />
-        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0, 1fr) auto' }, gap: 1, alignItems: 'center' }}>
+        <Stack spacing={0.15} sx={{ minWidth: 0 }}>
+          <Typography variant="body2" fontWeight={700} sx={{ lineHeight: 1.35, overflowWrap: 'anywhere' }}>
+            {summary} · {selectedRows.length} строк
+          </Typography>
+          <Typography variant="body2" fontWeight={700} sx={{ lineHeight: 1.35 }}>
+            Запрошено: {money(requestedSum)}
+          </Typography>
+        </Stack>
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap alignItems="center" justifyContent="flex-end" sx={{ maxWidth: '100%' }}>
           {canApprove && <Button size="small" color="success" variant="outlined" startIcon={<CheckCircleOutlineIcon />} onClick={onApprove}>Согласовать</Button>}
           {canReject && <Button size="small" color="warning" variant="outlined" startIcon={<RestartAltIcon />} onClick={onReject}>
             На доработку
@@ -1205,7 +1232,7 @@ function SelectionBar({
           </Tooltip>}
           <Button size="small" color="inherit" startIcon={<CloseIcon />} onClick={onClear}>Очистить выбор</Button>
         </Stack>
-      </Stack>
+      </Box>
     </Paper>
   );
 }
@@ -1225,19 +1252,30 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
   const viewerSteps = steps.filter((step) => (
     step.unit_id ? step.responsible?.id === user.id : step.user_id === user.id
   ));
+  // In the compact register panel the focal point is always the step of the
+  // user viewing the page, with only its immediate context around it.
   const currentStep = viewerSteps.find((step) => (
     displayStatus(step) === 'on_approval' || displayStatus(step) === 'on_revision'
   )) || viewerSteps[0];
-  const previousStepIds = new Set(currentStep?.child_step_ids || []);
-  const nextStepIds = new Set(currentStep?.parent_step_ids || []);
+  // Show the direct results required by the page user's step first, then the
+  // user's current step. Completed results stay visible and are marked as such.
+  const stepsById = new Map(steps.map((step) => [step.id, step]));
+  const expectedStepIds = currentStep
+    ? [...new Set(currentStep.child_step_ids || [])].filter((stepId) => stepsById.has(stepId))
+    : [];
+  const nextStepIds = currentStep
+    ? [...new Set(currentStep.parent_step_ids || [])].filter((stepId) => stepsById.has(stepId))
+    : [];
   const visibleRouteIds = currentStep
-    ? new Set([...previousStepIds, currentStep.id, ...nextStepIds])
+    ? new Set([...expectedStepIds, currentStep.id, ...nextStepIds])
     : new Set(steps.map((step) => step.id));
   const routeStateRank = (step: ApprovalStep) => {
-    if (previousStepIds.has(step.id)) return ['approved', 'closed'].includes(displayStatus(step)) ? 0 : 1;
-    if (step.id === currentStep?.id) return 2;
-    if (nextStepIds.has(step.id)) return 3;
-    return 4;
+    const expectedIndex = expectedStepIds.indexOf(step.id);
+    if (expectedIndex !== -1) return expectedIndex;
+    if (step.id === currentStep?.id) return expectedStepIds.length;
+    const nextIndex = nextStepIds.indexOf(step.id);
+    if (nextIndex !== -1) return expectedStepIds.length + 1 + nextIndex;
+    return Number.MAX_SAFE_INTEGER;
   };
   const displaySteps = steps
     .filter((step) => visibleRouteIds.has(step.id))
@@ -1254,7 +1292,7 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
   };
   const stateLabel = (step: ApprovalStep, active: boolean, isNext: boolean) => {
     if (active) return 'Текущий этап';
-    if (isNext) return 'Следующий этап';
+    if (isNext && !['approved', 'closed'].includes(displayStatus(step))) return 'Следующий этап';
     if (['approved', 'closed'].includes(displayStatus(step))) return 'Согласовано';
     if (displayStatus(step) === 'on_revision') return 'На доработке';
     if (displayStatus(step) === 'on_approval') return 'На согласовании';
@@ -1278,13 +1316,13 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
         {displaySteps.map((step, index) => {
           const completed = ['approved', 'closed'].includes(displayStatus(step));
           const active = step.id === currentStep?.id;
-          const isNext = nextStepIds.has(step.id);
+          const isNext = nextStepIds.includes(step.id);
           const tone = stateTone(step, active, isNext);
           return (
-            <Stack key={step.id} direction="row" spacing={0.85} alignItems="stretch">
-              <Stack alignItems="center" sx={{ width: 20 }}>
-                <Box aria-current={active ? 'step' : undefined} sx={{ width: 10, height: 10, mt: 0.45, borderRadius: '50%', bgcolor: completed || active || displayStatus(step) === 'on_revision' ? tone.main : '#fff', border: '1px solid', borderColor: tone.main }} />
-                {index < displaySteps.length - 1 && <Box sx={{ width: '1px', flex: 1, minHeight: 16, bgcolor: tone.line }} />}
+            <Stack key={step.id} direction="row" spacing={0.85} alignItems="stretch" sx={{ position: 'relative' }}>
+              <Stack alignItems="center" sx={{ width: 20, flex: '0 0 20px', alignSelf: 'stretch', position: 'relative' }}>
+                <Box aria-current={active ? 'step' : undefined} sx={{ width: 10, height: 10, mt: 0.45, zIndex: 1, borderRadius: '50%', bgcolor: completed || active || displayStatus(step) === 'on_revision' ? tone.main : '#fff', border: '1px solid', borderColor: tone.main }} />
+                {index < displaySteps.length - 1 && <Box sx={{ position: 'absolute', zIndex: 0, top: 14, bottom: -9, left: '50%', width: '1px', transform: 'translateX(-50%)', bgcolor: tone.line }} />}
               </Stack>
               <Box sx={{ pb: index < displaySteps.length - 1 ? 1.15 : 0, minWidth: 0 }}>
                 <Typography variant="caption" fontWeight={active || completed ? 700 : 600} sx={{ color: tone.main, lineHeight: 1.25, display: 'block', fontSize: 11.5 }}>{roleTitle(step)}</Typography>
@@ -1304,35 +1342,60 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
 }
 
 function RegistryRowCells({ item, columns, widths, selected, active, user, approvalMode, onSelect, onActive, onDecision, onSaveRowDecision, onOpen, onHistory, structureLevel = 0 }: { item: ApprovalRegisterRow; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selected: boolean; active: boolean; user: User; approvalMode: boolean; onSelect: (checked: boolean) => void; onActive: () => void; onDecision: (target: DecisionTarget) => void; onSaveRowDecision: (row: ApprovalRegisterRow, decision: RowDecision, amount: number, comment?: string) => void; onOpen: () => void; onHistory: () => void; structureLevel?: number }) {
+  const requestPointRevision = useContext(PointRevisionContext);
   const workflowColumns = usesWorkflowStepColumns(user.role);
   const actionEnabled = approvalMode && isRowActionable(item, user.role);
   const amountEditable = approvalMode && canEditApprovedAmount(user.role, item);
   const statusEditable = actionEnabled;
   const rowStatus = rowRegistryStatus(item);
   const [draftFact, setDraftFact] = useState(item.approved_sum);
-  useEffect(() => { setDraftFact(item.approved_sum); }, [item.approved_sum, item.id]);
-  const commitAmount = (amount: number) => {
-    if (item.is_cfo_review_actionable) {
-      onSaveRowDecision(item, amount === item.requested_sum ? 'approved' : 'approved_with_changes', amount);
-      return;
-    }
-    if (amount !== item.requested_sum) {
-      onDecision({ rows: [item], decision: 'approved_with_changes', amount });
-      return;
-    }
-    if (statusEditable && (item.is_approval_actionable || item.is_cfo_review_actionable)) {
-      onSaveRowDecision(item, 'approved', amount);
-      return;
-    }
-    onDecision({ rows: [item], decision: 'approved', amount });
+  const [hasEnteredFact, setHasEnteredFact] = useState(item.approved_sum !== 0);
+  const draftFactRef = useRef(item.approved_sum);
+  const hasEnteredFactRef = useRef(item.approved_sum !== 0);
+  const [draftComment, setDraftComment] = useState(item.comment || '');
+  const draftCommentRef = useRef(item.comment || '');
+  useEffect(() => {
+    setDraftFact(item.approved_sum);
+    setHasEnteredFact(item.approved_sum !== 0);
+    draftFactRef.current = item.approved_sum;
+    hasEnteredFactRef.current = item.approved_sum !== 0;
+    setDraftComment(item.comment || '');
+    draftCommentRef.current = item.comment || '';
+  }, [item.approved_sum, item.comment, item.id]);
+  const updateDraftFact = (amount: number) => {
+    setDraftFact(amount);
+    setHasEnteredFact(true);
+    draftFactRef.current = amount;
+    hasEnteredFactRef.current = true;
+  };
+  const cancelDraftFact = () => {
+    const hasSavedFact = item.approved_sum !== 0;
+    setDraftFact(item.approved_sum);
+    setHasEnteredFact(hasSavedFact);
+    draftFactRef.current = item.approved_sum;
+    hasEnteredFactRef.current = hasSavedFact;
+  };
+  const updateDraftComment = (comment: string) => {
+    setDraftComment(comment);
+    draftCommentRef.current = comment;
   };
   const commitDecision = (decision: RegistryRowDecision, amount: number) => {
     if (decision === 'approved' && amount !== item.requested_sum) {
-      onDecision({ rows: [item], decision: 'approved_with_changes', amount });
+      if (item.is_final_approval_actionable) {
+        // ZGD fixes the result agreed at the preceding step; it does not
+        // reinterpret an existing correction as a new amount decision.
+        onSaveRowDecision(item, 'approved', amount, draftCommentRef.current);
+        return;
+      }
+      if (item.is_cfo_review_actionable) {
+        onSaveRowDecision(item, 'approved_with_changes', amount, draftCommentRef.current);
+        return;
+      }
+      onDecision({ rows: [item], decision: 'approved_with_changes', amount, comment: draftCommentRef.current });
       return;
     }
     if (statusEditable && (item.is_approval_actionable || item.is_cfo_review_actionable)) {
-      onSaveRowDecision(item, decision, amount);
+      onSaveRowDecision(item, decision, amount, draftCommentRef.current);
       return;
     }
     onDecision({
@@ -1340,6 +1403,7 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
       decision,
       amount,
       allowAmountEdit: user.role === 'economist' && item.is_approval_actionable,
+      comment: draftCommentRef.current,
     });
   };
   const openStatusDecision = (decision: RegistryRowDecision, amount = item.approved_sum || item.requested_sum) => {
@@ -1348,7 +1412,15 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
       decision,
       amount,
       allowAmountEdit: user.role === 'economist' && item.is_approval_actionable,
+      comment: draftCommentRef.current,
     });
+  };
+  const approvePoint = () => {
+    commitDecision('approved', resolvePointApprovalAmount(
+      item.requested_sum,
+      draftFactRef.current,
+      hasEnteredFactRef.current,
+    ));
   };
   const cellTextSx = { fontSize: 13, lineHeight: 1.25 };
   const cells: Partial<Record<RegistryColumnId, React.ReactNode>> = {
@@ -1406,9 +1478,10 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
         validate={(amount) => amount >= 0}
         ariaLabel="Фактическая сумма"
         title={amountEditable ? 'Изменить факт в рамках вашего шага' : 'Факт можно изменить только на назначенном вам шаге'}
-        onDraftChange={setDraftFact}
+        onDraftChange={updateDraftFact}
+        onCancel={cancelDraftFact}
         saveOnBlur={false}
-        onCommit={setDraftFact}
+        onCommit={updateDraftFact}
       />
       </Stack>
     ),
@@ -1424,20 +1497,49 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
     ) : null,
     status: (
       <Stack spacing={0.5} alignItems="flex-start">
-        <EditableRegistryStatusCell
-          status={rowStatus}
-          item={item}
-          active={statusEditable}
-          onCommit={(decision) => commitDecision(decision, item.status === 'on_review' ? item.requested_sum : draftFact)}
-          onDecision={openStatusDecision}
-        />
-        {amountEditable && draftFact !== item.approved_sum && (
-          <Button size="small" variant="contained" onClick={() => commitAmount(draftFact)} sx={{ px: 1, fontSize: 11 }}>Сохранить факт</Button>
-        )}
+        <Stack direction="row" spacing={0.35} alignItems="flex-start" sx={{ minWidth: 0, width: '100%' }}>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <RegistryStatusCell status={rowStatus} item={item} />
+          </Box>
+          {actionEnabled && (
+            <Stack direction="row" spacing={0} sx={{ flex: '0 0 auto', '& .MuiIconButton-root': { p: 0.35 } }}>
+              <Tooltip title="Согласовать строку">
+                <IconButton
+                  size="small"
+                  color="success"
+                  aria-label="Согласовать строку"
+                  onClick={(event) => { event.stopPropagation(); approvePoint(); }}
+                >
+                  <CheckCircleOutlineIcon sx={{ fontSize: 17 }} />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title="Вернуть на доработку">
+                <IconButton
+                  size="small"
+                  color="warning"
+                  aria-label="Вернуть строку на доработку"
+                  onClick={(event) => { event.stopPropagation(); requestPointRevision(item); }}
+                >
+                  <RestartAltIcon sx={{ fontSize: 17 }} />
+                </IconButton>
+              </Tooltip>
+            </Stack>
+          )}
+        </Stack>
       </Stack>
     ),
     justification: <Typography variant="body2" noWrap title={item.justification || '—'} sx={cellTextSx}>{item.justification || '—'}</Typography>,
-    comment: <Typography variant="body2" noWrap title={item.comment || '—'} sx={cellTextSx}>{item.comment || '—'}</Typography>,
+    comment: (
+      <InlineEditTextCell
+        value={draftComment}
+        editable={approvalMode && (actionEnabled || amountEditable)}
+        multiline
+        placeholder="—"
+        ariaLabel="Комментарий к решению"
+        title="Изменить комментарий: он сохранится вместе с решением по строке"
+        onCommit={updateDraftComment}
+      />
+    ),
     files: <Typography variant="body2" align="center" sx={cellTextSx}>{item.files_count || '—'}</Typography>,
     actions: workflowColumns ? null : <RowActions item={item} user={user} onDecision={onDecision} onOpen={onOpen} onHistory={onHistory} />,
     ...ANALYTICS_FIELD_KEYS.reduce((result, key) => {
@@ -2124,6 +2226,17 @@ export function ApprovalRegister({
     target?: RevisionTarget | null;
     initialLines?: ApprovalRegisterRow[];
   } | null>(null);
+  const openPointRevision = useCallback((item: ApprovalRegisterRow) => {
+    setRevisionDialog({
+      mode: item.is_cfo_review_actionable ? 'cfo' : 'workflow',
+      target: {
+        groupType: 'article',
+        groupId: item.article_id,
+        groupName: item.article_name,
+      },
+      initialLines: [item],
+    });
+  }, []);
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
   const deferredSearch = useDeferredValue(filters.search);
   const effectiveFilters = useMemo(() => ({ ...filters, search: deferredSearch }), [deferredSearch, filters]);
@@ -2218,8 +2331,18 @@ export function ApprovalRegister({
     }
     return postRowDecision(target.rows[0], target.decision, comment, amount);
   }, onSuccess: (response, variables) => {
-    if (variables.target.rows.length === 1) updateRegisterCache(queryClient, variables.target.rows[0], (response as { data: BudgetItem }).data);
-    else queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+    if (variables.target.rows.length === 1 && !variables.target.rows[0].is_final_approval_actionable) {
+      updateRegisterCache(queryClient, variables.target.rows[0], (response as { data: BudgetItem }).data);
+      // Actionability ("your action", current owner and revision state) is
+      // calculated from workflow logs by the register endpoint.  The item
+      // response only contains the changed row, so refreshing just the local
+      // row leaves the previous action hint visible until a full reload.
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+    } else {
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+    }
     setSelected(new Map()); setSelectedGroups(new Map()); setDecisionTarget(null);
   }, onError: (error) => toast(getApiErrorMessage(error, 'Не удалось сохранить решение'), 'error') });
   const saveRowDecision = useMutation({
@@ -2227,7 +2350,9 @@ export function ApprovalRegister({
       postRowDecision(row, decision, comment, amount)
     ),
     onSuccess: (response, variables) => {
-      updateRegisterCache(queryClient, variables.row, response.data as BudgetItem);
+      if (!variables.row.is_final_approval_actionable) {
+        updateRegisterCache(queryClient, variables.row, response.data as BudgetItem);
+      }
       // The register's actionability and revision state are derived from
       // workflow logs, so a plain item response is not enough to refresh them.
       queryClient.invalidateQueries({ queryKey: ['approval-register'] });
@@ -2275,6 +2400,7 @@ export function ApprovalRegister({
       queryClient.invalidateQueries({ queryKey: ['cfo-incoming-requests'] });
       queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
       queryClient.invalidateQueries({ queryKey: ['cfo-approval-route'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-route'] });
       setSelected(new Map());
       setSelectedGroups(new Map());
     },
@@ -2295,6 +2421,7 @@ export function ApprovalRegister({
       queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
       queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
       queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-route'] });
       setSelected(new Map());
       setSelectedGroups(new Map());
     },
@@ -2303,8 +2430,20 @@ export function ApprovalRegister({
   const forwardApprovalGroups = useMutation({
     mutationFn: async (groups: ApprovalRegisterGroup[]) => {
       if (user.role === 'employee') {
-        const requestIds = [...new Set(groups.flatMap((group) => group.request_ids))];
+        const groupsAwaitingCompletion = groups.filter(groupHasCfoCompleteActions);
+        const requestIds = [...new Set(groupsAwaitingCompletion.flatMap((group) => group.request_ids))];
         for (const id of requestIds) await api.post(`/requests/${id}/complete-cfo-review`);
+        // Completing the CFO review only prepares positions for the route.
+        // The same explicit «Отправить дальше» action must also move those
+        // positions to the economist; otherwise the register keeps showing
+        // «Передайте экономисту» after a seemingly successful handoff.
+        for (const group of groups) {
+          await api.post(
+            `/approval-register/groups/${group.type}/${groupEntityId(group)}/workflow-action`,
+            { action: 'submit', comment: '' },
+            { params: { request_id: requestId } },
+          );
+        }
         return;
       }
       for (const group of groups) {
@@ -2321,6 +2460,7 @@ export function ApprovalRegister({
       queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
       queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
       queryClient.invalidateQueries({ queryKey: ['cfo-approval-route'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-route'] });
       setGroupsToForward([]);
       clearSelection();
       toast('Данные переданы на следующий этап', 'success');
@@ -2526,6 +2666,10 @@ export function ApprovalRegister({
   };
   const handleBulkReject = () => {
     const actionableRows = selectedRows.filter((row) => isRowActionable(row, user.role));
+    if (user.role === 'zgd' && actionableRows.some((row) => row.is_final_approval_actionable)) {
+      setRevisionDialog({ mode: 'workflow', initialLines: actionableRows.filter((row) => row.is_final_approval_actionable) });
+      return;
+    }
     if (actionableRows.length === 1) {
       setDecisionTarget({ rows: actionableRows, decision: 'rejected' });
       return;
@@ -2745,10 +2889,10 @@ export function ApprovalRegister({
         selectedRows={selectedRows}
         canApprove={selectedRows.some((row) => isRowActionable(row, user.role)) || selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoActions(group) : groupHasWorkflowActions(group))}
         canReject={selectedRows.some((row) => isRowActionable(row, user.role)) || selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoActions(group) : groupHasWorkflowActions(group))}
-        canForward={selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoCompleteActions(group) : groupHasWorkflowActions(group))}
+        canForward={selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group) : groupHasWorkflowActions(group))}
         forwarding={forwardApprovalGroups.isPending}
         onApprove={handleBulkApprove}
-        onForward={() => setGroupsToForward(selectionRoots.filter((group) => user.role === 'employee' ? groupHasCfoCompleteActions(group) : groupHasWorkflowActions(group)))}
+        onForward={() => setGroupsToForward(selectionRoots.filter((group) => user.role === 'employee' ? groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group) : groupHasWorkflowActions(group)))}
         onReject={handleBulkReject}
         onClear={clearSelection}
       />
@@ -2850,6 +2994,7 @@ export function ApprovalRegister({
           )}
           {data && (
             <FilteredRegisterItemsContext.Provider value={filteredItemsByGroup}>
+            <PointRevisionContext.Provider value={openPointRevision}>
             <TreeRows
               groups={displayRegisterGroups}
               level={0}
@@ -2885,6 +3030,7 @@ export function ApprovalRegister({
               visibleItemIds={visibleItemIds}
               columnSort={columnControls.sort}
             />
+            </PointRevisionContext.Provider>
             </FilteredRegisterItemsContext.Provider>
           )}
         </TableBody>
