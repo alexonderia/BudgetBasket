@@ -53,6 +53,7 @@ import { AUTH_TOKEN_KEY } from '../utils/session';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 import { AppBreadcrumbs, breadcrumblessPaths } from './AppBreadcrumbs';
 import { ChatInboxDrawer } from './ChatInboxDrawer';
+import { RequiredFieldLabel } from './RequiredFieldLabel';
 import { UserGuideDialog } from './UserGuideDialog';
 
 const expandedDrawerWidth = 280;
@@ -136,6 +137,11 @@ export function Layout({
   const [profileOpen, setProfileOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [chatInboxOpen, setChatInboxOpen] = useState(false);
+  useEffect(() => {
+    const openInbox = () => setChatInboxOpen(true);
+    window.addEventListener('budgetbasket:open-chat', openInbox);
+    return () => window.removeEventListener('budgetbasket:open-chat', openInbox);
+  }, []);
   const [summaryOpen, setSummaryOpen] = useState(true);
   const [summaryMenuAnchor, setSummaryMenuAnchor] = useState<HTMLElement | null>(null);
   const [profileForm, setProfileForm] = useState<ProfileDraft>(emptyProfile);
@@ -145,11 +151,12 @@ export function Layout({
     setToast({ message, severity, key: Date.now() });
   }, []);
   const toastCtx = useMemo(() => ({ showToast }), [showToast]);
-  const canUseChat = user.role === 'employee' || user.role === 'economist';
+  const canUseChat = user.role === 'admin' || user.role === 'employee' || user.role === 'economist';
+  const canUseNotifications = user.role !== 'admin';
 
   useEffect(() => {
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
-    if (!canUseChat || !token) return;
+    if (!canUseNotifications || !token) return;
 
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
@@ -164,11 +171,18 @@ export function Layout({
       };
       socket.onmessage = (event) => {
         try {
-          const payload = JSON.parse(event.data) as { type?: string; request_id?: string };
-          if (payload.type !== 'chat.message.created' || !payload.request_id) return;
-          queryClient.invalidateQueries({ queryKey: ['chats'] });
-          queryClient.invalidateQueries({ queryKey: ['request-details', payload.request_id, 'chat'] });
-          showToast(`Новое сообщение по заявке ${payload.request_id.slice(0, 8)}`, 'info');
+          const payload = JSON.parse(event.data) as { type?: string; chat_id?: string; kind?: string };
+          if (payload.type === 'chat.message.created' && payload.chat_id) {
+            queryClient.invalidateQueries({ queryKey: ['chats'] });
+            queryClient.invalidateQueries({ queryKey: ['chats', payload.chat_id] });
+            showToast(payload.kind === 'cfo_economist' ? 'Новое сообщение в чате ЦФО с экономистом' : 'Новое сообщение в чате модуля и ЦФО', 'info');
+            return;
+          }
+          queryClient.invalidateQueries({ queryKey: ['cfo-incoming-requests'] });
+          queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
+          queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
+          queryClient.invalidateQueries({ queryKey: ['requests'] });
+          showToast('Данные маршрута согласования обновились', 'info');
         } catch {
           // Ignore malformed websocket events and wait for the next message.
         }
@@ -186,7 +200,7 @@ export function Layout({
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [canUseChat, queryClient, showToast]);
+  }, [canUseNotifications, queryClient, showToast]);
 
   useEffect(() => {
     setActions(null);
@@ -251,9 +265,12 @@ export function Layout({
   });
 
   const displayName = formatFullName(profile || user.profile || null, user.login);
-  const invalidProfileContact =
-    (!!profileForm.email && !EMAIL_RE.test(profileForm.email)) ||
-    (!!profileForm.phone && !PHONE_RE.test(profileForm.phone));
+  const profileFieldsMissing = !profileForm.last_name.trim() || !profileForm.name.trim() || !profileForm.email.trim() || !profileForm.phone.trim();
+  const invalidProfileLastName = Boolean(profileForm.last_name) && !profileForm.last_name.trim();
+  const invalidProfileName = Boolean(profileForm.name) && !profileForm.name.trim();
+  const invalidProfileEmail = Boolean(profileForm.email) && !EMAIL_RE.test(profileForm.email);
+  const invalidProfilePhone = Boolean(profileForm.phone) && !PHONE_RE.test(profileForm.phone);
+  const invalidProfileContact = invalidProfileEmail || invalidProfilePhone;
 
   const items = [
     { label: 'Заявки', to: '/requests', icon: <FolderIcon /> },
@@ -270,6 +287,9 @@ export function Layout({
           { label: 'Оргструктура', to: '/units', icon: <SchemaIcon /> },
           { label: 'НСИ', to: '/catalogs', icon: <MenuBookIcon /> },
         ]
+      : []),
+    ...(user.role === 'economist'
+      ? [{ label: 'НСИ', to: '/catalogs', icon: <MenuBookIcon /> }]
       : []),
   ];
   const summaryItems = [
@@ -529,16 +549,20 @@ export function Layout({
               </Typography>
               <Stack spacing={1.75}>
                 <TextField
-                  label="Фамилия"
+                  label={<RequiredFieldLabel label="Фамилия" />}
                   value={profileForm.last_name}
                   onChange={(event) => setProfileForm((prev) => ({ ...prev, last_name: lettersOnly(event.target.value) }))}
+                  error={invalidProfileLastName}
+                  helperText={invalidProfileLastName ? 'Введите фамилию' : undefined}
                   fullWidth
                 />
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.75}>
                   <TextField
-                    label="Имя"
+                    label={<RequiredFieldLabel label="Имя" />}
                     value={profileForm.name}
                     onChange={(event) => setProfileForm((prev) => ({ ...prev, name: lettersOnly(event.target.value) }))}
+                    error={invalidProfileName}
+                    helperText={invalidProfileName ? 'Введите имя' : undefined}
                     fullWidth
                     autoFocus
                   />
@@ -560,20 +584,20 @@ export function Layout({
               </Typography>
               <Stack spacing={1.75}>
                 <TextField
-                  label="Электронная почта"
+                  label={<RequiredFieldLabel label="Электронная почта" />}
                   type="email"
                   value={profileForm.email}
                   onChange={(event) => setProfileForm((prev) => ({ ...prev, email: event.target.value }))}
-                  error={!!profileForm.email && !EMAIL_RE.test(profileForm.email)}
-                  helperText={profileForm.email && !EMAIL_RE.test(profileForm.email) ? 'Введите адрес в формате name@example.ru' : undefined}
+                  error={invalidProfileEmail}
+                  helperText={invalidProfileEmail ? 'Введите адрес в формате name@example.ru' : undefined}
                   fullWidth
                 />
                 <TextField
-                  label="Телефон"
+                  label={<RequiredFieldLabel label="Телефон" />}
                   value={profileForm.phone}
                   onChange={(event) => setProfileForm((prev) => ({ ...prev, phone: formatPhone(event.target.value) }))}
-                  error={!!profileForm.phone && !PHONE_RE.test(profileForm.phone)}
-                  helperText={profileForm.phone && !PHONE_RE.test(profileForm.phone) ? 'Формат: +7 (000) 000-00-00' : undefined}
+                  error={invalidProfilePhone}
+                  helperText={invalidProfilePhone ? 'Формат: +7 (000) 000-00-00' : undefined}
                   fullWidth
                 />
                 <TextField
@@ -589,7 +613,7 @@ export function Layout({
         </DialogContent>
         <DialogActions sx={{ px: 3, py: 2 }}>
           <Button onClick={() => setProfileOpen(false)}>Отмена</Button>
-          <Button variant="contained" onClick={() => saveProfile.mutate(profileForm)} disabled={saveProfile.isPending || invalidProfileContact}>
+          <Button variant="contained" onClick={() => saveProfile.mutate(profileForm)} disabled={saveProfile.isPending || profileFieldsMissing || invalidProfileLastName || invalidProfileName || invalidProfileContact}>
             Сохранить
           </Button>
         </DialogActions>

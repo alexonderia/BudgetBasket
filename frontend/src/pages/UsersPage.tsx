@@ -28,11 +28,13 @@ import { api } from '../api/client';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
+import { RequiredFieldLabel } from '../components/RequiredFieldLabel';
 import type { Role, Unit, User } from '../types';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { roleLabels } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
+import { getApiErrorMessage } from '../utils/apiErrors';
 
 const emptyForm = {
   login: '',
@@ -118,13 +120,6 @@ function draftFromUser(user: User): UserDraft {
   };
 }
 
-function getErrorMessage(error: unknown, fallback: string) {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (detail) return detail;
-  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
-  return error instanceof Error ? error.message : fallback;
-}
-
 function ProfileSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <Box className="profile-form-section">
@@ -136,10 +131,12 @@ function ProfileSection({ title, children }: { title: string; children: ReactNod
 
 function CreateUserDialog({
   open,
+  users,
   onClose,
   onCreated,
 }: {
   open: boolean;
+  users: User[];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -160,7 +157,7 @@ function CreateUserDialog({
       onClose();
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось создать пользователя'), 'error');
+      toast(getApiErrorMessage(error, 'Не удалось создать пользователя'), 'error');
     },
   });
 
@@ -168,7 +165,14 @@ function CreateUserDialog({
     setForm((current) => ({ ...current, [key]: value }));
   };
 
-  const invalidContact = (form.email && !EMAIL_RE.test(form.email)) || (form.phone && !PHONE_RE.test(form.phone));
+  const requiredFieldsMissing = !form.login.trim() || !form.password || !form.last_name.trim() || !form.name.trim() || !form.email.trim() || !form.phone.trim();
+  const invalidLastName = Boolean(form.last_name) && !form.last_name.trim();
+  const invalidName = Boolean(form.name) && !form.name.trim();
+  const invalidLogin = Boolean(form.login) && !form.login.trim();
+  const duplicateLogin = Boolean(form.login.trim()) && users.some((user) => user.login === form.login.trim());
+  const invalidEmail = Boolean(form.email) && !EMAIL_RE.test(form.email);
+  const invalidPhone = Boolean(form.phone) && !PHONE_RE.test(form.phone);
+  const invalidContact = invalidEmail || invalidPhone;
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} className="profile-dialog">
@@ -181,9 +185,9 @@ function CreateUserDialog({
       <DialogContent dividers sx={{ p: 0, overflowY: 'auto', scrollbarWidth: 'none', msOverflowStyle: 'none', '&::-webkit-scrollbar': { display: 'none' } }}>
         <Stack spacing={0} sx={{ px: 3, py: 2.5 }}>
           <ProfileSection title="Основное">
-            <TextField label="Фамилия" value={form.last_name} onChange={(event) => setField('last_name', lettersOnly(event.target.value))} fullWidth />
+            <TextField label={<RequiredFieldLabel label="Фамилия" />} value={form.last_name} onChange={(event) => setField('last_name', lettersOnly(event.target.value))} error={invalidLastName} helperText={invalidLastName ? 'Введите фамилию' : undefined} fullWidth />
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.75}>
-              <TextField label="Имя" value={form.name} onChange={(event) => setField('name', lettersOnly(event.target.value))} fullWidth autoFocus />
+              <TextField label={<RequiredFieldLabel label="Имя" />} value={form.name} onChange={(event) => setField('name', lettersOnly(event.target.value))} error={invalidName} helperText={invalidName ? 'Введите имя' : undefined} fullWidth autoFocus />
               <TextField label="Отчество" value={form.second_name} onChange={(event) => setField('second_name', lettersOnly(event.target.value))} fullWidth />
             </Stack>
           </ProfileSection>
@@ -191,16 +195,16 @@ function CreateUserDialog({
           <Divider sx={{ my: 2.5 }} />
 
           <ProfileSection title="Контакты">
-            <TextField label="Электронная почта" type="email" value={form.email} onChange={(event) => setField('email', event.target.value)} error={!!form.email && !EMAIL_RE.test(form.email)} helperText={form.email && !EMAIL_RE.test(form.email) ? 'Введите адрес в формате name@example.ru' : undefined} fullWidth />
-            <TextField label="Телефон" value={form.phone} onChange={(event) => setField('phone', formatPhone(event.target.value))} error={!!form.phone && !PHONE_RE.test(form.phone)} helperText={form.phone && !PHONE_RE.test(form.phone) ? 'Формат: +7 (000) 000-00-00' : undefined} fullWidth />
+            <TextField label={<RequiredFieldLabel label="Электронная почта" />} type="email" value={form.email} onChange={(event) => setField('email', event.target.value)} error={invalidEmail} helperText={invalidEmail ? 'Введите адрес в формате name@example.ru' : undefined} fullWidth />
+            <TextField label={<RequiredFieldLabel label="Телефон" />} value={form.phone} onChange={(event) => setField('phone', formatPhone(event.target.value))} error={invalidPhone} helperText={invalidPhone ? 'Формат: +7 (000) 000-00-00' : undefined} fullWidth />
             <TextField label="Ссылка Max" value={form.max_link} onChange={(event) => setField('max_link', event.target.value)} fullWidth placeholder="https://max.ru/..." />
           </ProfileSection>
 
           <Divider sx={{ my: 2.5 }} />
 
           <ProfileSection title="Доступ">
-            <TextField label="Логин" value={form.login} onChange={(event) => setField('login', event.target.value)} fullWidth />
-            <TextField label="Пароль" type="password" value={form.password} onChange={(event) => setField('password', event.target.value)} fullWidth />
+            <TextField label={<RequiredFieldLabel label="Логин" />} value={form.login} onChange={(event) => setField('login', event.target.value)} error={invalidLogin || duplicateLogin} helperText={duplicateLogin ? 'Логин уже используется' : invalidLogin ? 'Введите логин' : undefined} fullWidth />
+            <TextField label={<RequiredFieldLabel label="Пароль" />} type="password" value={form.password} onChange={(event) => setField('password', event.target.value)} fullWidth />
             <TextField select label="Роль" value={form.role} onChange={(event) => setField('role', event.target.value as Role)} fullWidth>
               {Object.entries(roleLabels).map(([value, label]) => (
                 <MenuItem key={value} value={value}>{label}</MenuItem>
@@ -211,7 +215,7 @@ function CreateUserDialog({
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2 }}>
         <Button onClick={onClose}>Отмена</Button>
-        <Button startIcon={<AddIcon />} variant="contained" onClick={() => create.mutate()} disabled={!form.login || !form.password || !!invalidContact || create.isPending}>
+        <Button startIcon={<AddIcon />} variant="contained" onClick={() => create.mutate()} disabled={requiredFieldsMissing || duplicateLogin || invalidContact || create.isPending}>
           Создать профиль
         </Button>
       </DialogActions>
@@ -245,7 +249,7 @@ function EditUserDialog({
       onClose();
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось сохранить пользователя'), 'error');
+      toast(getApiErrorMessage(error, 'Не удалось сохранить пользователя'), 'error');
     },
   });
 
@@ -411,7 +415,7 @@ export default function UsersPage() {
       refresh();
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось удалить пользователя'), 'error');
+      toast(getApiErrorMessage(error, 'Не удалось удалить пользователя'), 'error');
     },
   });
 
@@ -505,7 +509,7 @@ export default function UsersPage() {
         </Table>
       </TableContainer>
 
-      <CreateUserDialog open={dialogOpen} onClose={() => setDialogOpen(false)} onCreated={refresh} />
+      <CreateUserDialog open={dialogOpen} users={data} onClose={() => setDialogOpen(false)} onCreated={refresh} />
       <EditUserDialog user={editingUser} onClose={() => setEditingUser(null)} onSaved={refresh} />
 
       <ConfirmDialog

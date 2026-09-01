@@ -72,8 +72,100 @@
     min-height: 42px;
   }
 
+  .page-heading-stack {
+    min-width: 0;
+  }
+
+  .page-heading-title {
+    margin: 0;
+    font-size: 1.45rem;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.03em;
+  }
+
+  .page-heading-subtitle {
+    margin-top: 4px;
+    font-weight: 400;
+    line-height: 1.35;
+  }
+
+  .page-actions .MuiButton-root {
+    font-weight: 600;
+  }
+
+  .app-main:has(.approval-page) {
+    gap: 8px;
+  }
+
   .page-actions {
     justify-content: flex-end;
+  }
+
+  .approval-register-filters .MuiInputBase-root,
+  .approval-register-footer .MuiFormControlLabel-root {
+    background: #fff;
+  }
+
+  .approval-register-page {
+    gap: 10px;
+  }
+
+  .app-main:has(.approval-register-page) {
+    padding: 16px 20px 24px;
+    gap: 10px;
+  }
+
+  .app-main:has(.approval-register-page) .page-chrome {
+    min-height: 30px;
+    margin-bottom: -2px;
+  }
+
+  .app-main:has(.approval-register-page) .page-chrome .page-title {
+    font-size: 1.1rem;
+    letter-spacing: -0.02em;
+  }
+
+  .app-main:has(.approval-register-page) .page-actions {
+    gap: 6px;
+  }
+
+  .app-main:has(.approval-register-page) .page-actions .MuiButton-root {
+    height: 34px;
+    min-height: 34px;
+    min-width: 0;
+    padding-inline: 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .approval-register-page .approval-register-filters {
+    box-shadow: none;
+  }
+
+  .approval-register-page .approval-register-summary .MuiTypography-caption {
+    letter-spacing: 0;
+  }
+
+  .approval-register-chrome-actions .MuiButton-root {
+    height: 30px;
+    min-height: 30px;
+    min-width: 0;
+  }
+
+  .approval-register-page .approval-register-filters .MuiButton-root,
+  .approval-register-page .approval-register-filters .MuiIconButton-root {
+    height: 34px;
+    min-height: 34px;
+    min-width: 0;
+  }
+
+  .approval-register-table .MuiTableCell-root {
+    font-feature-settings: 'tnum' 1;
+  }
+
+  .approval-register-row--item .MuiCheckbox-root {
+    padding: 2px;
   }
 
   .page-actions .MuiButton-root {
@@ -534,7 +626,14 @@
 
   .chat-list-title {
     min-width: 0;
+    flex: 1 1 auto;
     font-weight: 700 !important;
+    white-space: normal !important;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.3 !important;
   }
 
   .chat-list-unit,
@@ -553,6 +652,16 @@
   .chat-list-preview {
     width: 100%;
     color: var(--bb-ink);
+  }
+
+  .chat-list-request,
+  .chat-list-preview {
+    white-space: normal !important;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.35 !important;
   }
 
   .chat-list-preview strong {
@@ -1376,7 +1485,7 @@
     background: #f8fafc;
   }
 
-  .dashboard-status-summary > div + div {
+  .dashboard-status-summary > * + * {
     padding-left: 12px;
     border-left: 1px solid var(--bb-line);
   }
@@ -1646,7 +1755,34 @@
     background: #ffffff;
     box-shadow: 0 1px 2px rgba(17, 24, 39, 0.05) !important;
     cursor: pointer;
+    font-family: inherit;
     transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease;
+  }
+
+  .approval-graph-card .MuiTypography-root {
+    font-family: inherit;
+  }
+
+  .approval-graph-card .MuiTypography-subtitle2 {
+    font-size: 18px;
+    line-height: 1.2;
+  }
+
+  .approval-graph-card .MuiTypography-body2 {
+    font-size: 14px;
+    line-height: 1.3;
+  }
+
+  .approval-graph-card .MuiTypography-caption {
+    font-size: 13px;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  .approval-graph-card .MuiChip-root:not(.approval-graph-status) .MuiChip-label {
+    font-family: inherit;
+    font-size: 12px;
+    line-height: 1.2;
   }
 
   .approval-graph-card:hover {
@@ -1657,10 +1793,6 @@
 
   .approval-graph-card.is-leaf {
     border-left: 4px solid #2e7d32;
-  }
-
-  .approval-graph-card.is-review {
-    border-left: 4px solid #1976d2;
   }
 
   .approval-graph-card.is-status-waiting {
@@ -1714,7 +1846,9 @@
     color: var(--bb-ink);
     background: #ffffff;
     cursor: pointer;
-    font-size: 0.875rem;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.3;
   }
 
   .approval-reviewer-select-trigger:hover,
@@ -1748,28 +1882,39 @@
     background: var(--bb-primary-soft);
   }
 
-  .approval-contact {
+  .approval-contact-info {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
     margin-top: 4px;
   }
 
-  .approval-contact-toggle {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    min-height: 24px;
-    cursor: pointer;
+  .approval-contact-info .MuiTypography-root {
+    line-height: 1.25;
   }
 
-  .approval-contact-toggle:hover {
-    color: var(--bb-primary);
+  .approval-contact-row {
+    min-width: 0;
   }
 
-  .approval-contact-toggle .MuiSvgIcon-root {
-    transition: transform 150ms ease;
+  .approval-contact-row .MuiSvgIcon-root {
+    flex: 0 0 auto;
+    color: #475569;
+    font-size: 19px;
   }
 
-  .approval-contact-toggle .MuiSvgIcon-root.is-open {
-    transform: rotate(180deg);
+  .approval-graph-card .MuiInputBase-input,
+  .approval-graph-card .MuiInputLabel-root,
+  .approval-graph-card .MuiSelect-select {
+    font-family: inherit;
+    font-size: 14px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .approval-graph-card .MuiInputLabel-root {
+    line-height: 1.2;
   }
 
   .approval-graph-link-handle {
@@ -2226,7 +2371,7 @@
     gap: 10px;
   }
 
-  .dashboard-status-summary > div + div {
+  .dashboard-status-summary > * + * {
     padding-left: 0;
     padding-top: 10px;
     border-left: 0;
@@ -2421,7 +2566,7 @@
     padding: 12px;
   }
 
-  .dashboard-status-summary > div + div {
+  .dashboard-status-summary > * + * {
     padding-left: 8px;
   }
 

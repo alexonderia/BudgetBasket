@@ -2,6 +2,13 @@
 
 Команды выполняются из корня репозитория, если не указано иное.
 
+Перед миграцией маршрута ЦФО сформировать read-only отчёт:
+
+```powershell
+Get-Content backend/db/cfo_workflow_preflight.sql -Raw |
+  docker compose exec -T postgres psql -U budgetbasket -d budgetbasket
+```
+
 ## Развёртывание и запуск
 
 ```powershell

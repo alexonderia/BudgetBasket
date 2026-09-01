@@ -1,16 +1,19 @@
 import ArrowOutwardIcon from '@mui/icons-material/ArrowOutward';
 import AssignmentTurnedInIcon from '@mui/icons-material/AssignmentTurnedIn';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import PaymentsOutlinedIcon from '@mui/icons-material/PaymentsOutlined';
 import InsightsOutlinedIcon from '@mui/icons-material/InsightsOutlined';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import Autocomplete from '@mui/material/Autocomplete';
 import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
 import Grid from '@mui/material/Grid';
+import IconButton from '@mui/material/IconButton';
 import LinearProgress from '@mui/material/LinearProgress';
 import MenuItem from '@mui/material/MenuItem';
 import Skeleton from '@mui/material/Skeleton';
@@ -21,20 +24,23 @@ import Tabs from '@mui/material/Tabs';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useMemo, useState, type ReactNode } from 'react';
+import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { DashboardTableView, type DashboardTableRow } from '../components/DashboardTableView';
+import { ApprovalRegister } from '../components/ApprovalRegister';
 import type { User } from '../types';
+import { buildRegisterHref, parseArticleKey } from '../utils/dashboardNavigation';
 import { money } from '../utils/labels';
 
 type Breakdown = {
   id: string;
   name: string;
-  kind: 'dds' | 'invest' | 'unit';
+  kind: 'dds' | 'invest' | 'unit' | 'cfo';
   planned: number;
   approved: number;
   items_count: number;
+  cfo_id?: string;
+  article_id?: string;
 };
 
 type DashboardData = {
@@ -62,20 +68,62 @@ type ArticleCfoBreakdown = Breakdown & {
   cfo: Breakdown[];
 };
 
+function DashboardDrillLink({ to, title, children }: { to: string; title: string; children: ReactNode }) {
+  return (
+    <Tooltip title={title} arrow>
+      <Box
+        component={RouterLink}
+        to={to}
+        target="_blank"
+        rel="noopener noreferrer"
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.5,
+          minWidth: 0,
+          color: 'inherit',
+          textDecoration: 'none',
+          borderRadius: 1,
+          px: 0.25,
+          mx: -0.25,
+          transition: 'background-color 0.15s ease',
+          '&:hover': { bgcolor: 'rgba(47, 111, 237, 0.08)', color: 'primary.main' },
+        }}
+      >
+        {children}
+      </Box>
+    </Tooltip>
+  );
+}
+
+function DashboardDrillButton({ to, title }: { to: string; title: string }) {
+  return (
+    <Tooltip title={title} arrow>
+      <IconButton
+        component={RouterLink}
+        to={to}
+        target="_blank"
+        rel="noopener noreferrer"
+        size="small"
+        aria-label={title}
+        sx={{ color: 'text.secondary', '&:hover': { color: 'primary.main' } }}
+      >
+        <OpenInNewIcon sx={{ fontSize: 16 }} />
+      </IconButton>
+    </Tooltip>
+  );
+}
+
 function compactMoney(value: number) {
   const absolute = Math.abs(value);
-  const [divisor, suffix] = absolute >= 1_000_000_000
-    ? [1_000_000_000, 'млрд']
-    : absolute >= 1_000_000
-      ? [1_000_000, 'млн']
-      : absolute >= 1_000
-        ? [1_000, 'тыс']
-        : [1, ''];
+  const [divisor, suffix] = absolute >= 1_000
+    ? [1_000, 'тыс']
+    : [1, ''];
   const formatted = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: divisor === 1 ? 0 : 1 }).format(value / divisor);
   return `${formatted}${suffix ? ` ${suffix}` : ''} ₽`;
 }
 
-function Metric({ title, value, exactValue, hint, icon, tone = 'blue' }: { title: string; value: string | number; exactValue?: string; hint: string; icon: React.ReactNode; tone?: string }) {
+function Metric({ title, value, exactValue, hint, icon, tone = 'blue' }: { title: string; value: string | number; exactValue?: string; hint: ReactNode; icon: React.ReactNode; tone?: string }) {
   return (
     <Card className="metric-card dashboard-metric" elevation={0}>
       <CardContent sx={{ p: 2.5 }}>
@@ -109,11 +157,12 @@ function chartColorForId(id: string) {
   return chartColors[hash % chartColors.length];
 }
 
-function ParetoChart({ rows, total, ariaLabel, showType = false }: {
+function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
   rows: Breakdown[];
   total: number;
   ariaLabel: string;
   showType?: boolean;
+  getRowHref?: (row: Breakdown) => string | null;
 }) {
   const segments = useMemo(() => {
     const ordered = [...rows].sort((left, right) => right.planned - left.planned || left.name.localeCompare(right.name, 'ru'));
@@ -179,12 +228,19 @@ function ParetoChart({ rows, total, ariaLabel, showType = false }: {
           <Stack key={segment.id} className="dashboard-legend-row" direction="row" spacing={1} alignItems="center" justifyContent="space-between">
             <Stack direction="row" spacing={0.9} minWidth={0} alignItems="center" className="dashboard-legend-name">
               <Box className="dashboard-legend-dot" sx={{ backgroundColor: segment.color }} />
-              <Typography variant="body2" noWrap title={segment.name}>{segment.name}</Typography>
+              {getRowHref?.(segment) ? (
+                <DashboardDrillLink to={getRowHref(segment)!} title="Открыть строки в реестре">
+                  <Typography variant="body2" noWrap title={segment.name}>{segment.name}</Typography>
+                </DashboardDrillLink>
+              ) : (
+                <Typography variant="body2" noWrap title={segment.name}>{segment.name}</Typography>
+              )}
               {showType && <Chip size="small" label={segment.kind === 'invest' ? 'Инвест' : 'ДДС'} className={`dashboard-type-chip dashboard-type-chip-${segment.kind}`} />}
             </Stack>
-            <Stack direction="row" spacing={1.25} alignItems="center" flexShrink={0} className="dashboard-legend-values">
+            <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0} className="dashboard-legend-values">
               <Tooltip title={money(segment.planned)} arrow><Typography variant="body2" color="text.secondary">{compactMoney(segment.planned)}</Typography></Tooltip>
               <Typography variant="body2" color="text.secondary" fontWeight={700}>{segment.percentage.toFixed(0)}%</Typography>
+              {getRowHref?.(segment) ? <DashboardDrillButton to={getRowHref(segment)!} title="Открыть строки в реестре" /> : null}
             </Stack>
           </Stack>
         ))}
@@ -193,7 +249,7 @@ function ParetoChart({ rows, total, ariaLabel, showType = false }: {
   );
 }
 
-function BudgetBars({ rows, title, emptyText, showType, showAmounts }: { rows: Breakdown[]; title: string; emptyText: string; showType?: boolean; showAmounts?: boolean }) {
+function BudgetBars({ rows, title, emptyText, showType, showAmounts, getRowHref }: { rows: Breakdown[]; title: string; emptyText: string; showType?: boolean; showAmounts?: boolean; getRowHref?: (row: Breakdown) => string | null }) {
   const visibleRows = rows.slice(0, 5);
   const scaleMax = Math.max(...visibleRows.map((item) => Math.max(item.planned, item.approved)), 0);
 
@@ -215,15 +271,22 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts }: { rows: B
               <Box key={row.id}>
                 <Stack direction="row" justifyContent="space-between" spacing={1.5} alignItems="baseline">
                   <Stack direction="row" spacing={0.8} alignItems="center" minWidth={0}>
+                  {getRowHref?.(row) ? (
+                    <DashboardDrillLink to={getRowHref(row)!} title="Открыть строки статьи в реестре">
+                      <Typography variant="body2" fontWeight={650} noWrap title={row.name}>{row.name}</Typography>
+                    </DashboardDrillLink>
+                  ) : (
                     <Typography variant="body2" fontWeight={650} noWrap title={row.name}>{row.name}</Typography>
-                    {showType ? (
-                      <Chip
-                        size="small"
-                        label={row.kind === 'invest' ? 'Инвест-проект' : 'Статья ДДС'}
-                        className={`dashboard-type-chip dashboard-type-chip-${row.kind}`}
-                      />
-                    ) : null}
-                  </Stack>
+                  )}
+                  {showType ? (
+                    <Chip
+                      size="small"
+                      label={row.kind === 'invest' ? 'Инвест-проект' : 'Статья ДДС'}
+                      className={`dashboard-type-chip dashboard-type-chip-${row.kind}`}
+                    />
+                  ) : null}
+                  {getRowHref?.(row) ? <DashboardDrillButton to={getRowHref(row)!} title="Открыть строки статьи в реестре" /> : null}
+                </Stack>
                   {showAmounts ? (
                     <Stack className="dashboard-article-amounts" spacing={0.15} alignItems="flex-end">
                       <Typography variant="caption" color="text.secondary">План: {money(row.planned)}</Typography>
@@ -249,7 +312,7 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts }: { rows: B
   );
 }
 
-function CfoShareBars({ rows }: { rows: Breakdown[] }) {
+function CfoShareBars({ rows, getRowHref }: { rows: Breakdown[]; getRowHref?: (row: Breakdown) => string | null }) {
   const total = rows.reduce((sum, row) => sum + row.planned, 0);
 
   if (!rows.length) return <Box className="dashboard-empty-chart">Нет данных по ЦФО для выбранной статьи</Box>;
@@ -272,12 +335,19 @@ function CfoShareBars({ rows }: { rows: Breakdown[] }) {
           return (
             <Stack key={row.id} className="dashboard-cfo-legend-item" direction="row" spacing={0.8} alignItems="center" minWidth={0}>
               <Box className="dashboard-legend-dot" sx={{ backgroundColor: chartColorForId(row.id) }} />
-              <Typography variant="body2" noWrap title={row.name} minWidth={0}>{row.name}</Typography>
+              {getRowHref?.(row) ? (
+                <DashboardDrillLink to={getRowHref(row)!} title="Открыть строки ЦФО в реестре">
+                  <Typography variant="body2" noWrap title={row.name} minWidth={0}>{row.name}</Typography>
+                </DashboardDrillLink>
+              ) : (
+                <Typography variant="body2" noWrap title={row.name} minWidth={0}>{row.name}</Typography>
+              )}
               <Stack direction="row" spacing={0.8} alignItems="baseline" flexShrink={0} className="dashboard-cfo-values">
                 <Tooltip title={money(row.planned)} arrow>
                   <Typography variant="body2" color="text.secondary">{compactMoney(row.planned)}</Typography>
                 </Tooltip>
                 <Typography variant="body2" color="primary.main" fontWeight={700}>{share.toFixed(0)}%</Typography>
+                {getRowHref?.(row) ? <DashboardDrillButton to={getRowHref(row)!} title="Открыть строки ЦФО в реестре" /> : null}
               </Stack>
             </Stack>
           );
@@ -299,10 +369,6 @@ export default function DashboardPage({ user }: { user: User }) {
     queryKey: ['dashboard', mode, unitId],
     queryFn: async () => (await api.get<DashboardData>(isIncomeDashboard ? '/dashboard/income' : '/dashboard', { params: { unit_id: unitId || undefined } })).data,
   });
-  const { data: tableRows = [], isLoading: tableLoading } = useQuery({
-    queryKey: ['dashboard-table', mode],
-    queryFn: async () => (await api.get<DashboardTableRow[]>('/dashboard/table', { params: { is_income: isIncomeDashboard } })).data,
-  });
   const { data: articlesCfo = [], isLoading: articlesCfoLoading } = useQuery({
     queryKey: ['dashboard-articles-cfo', mode, unitId],
     queryFn: async () => (await api.get<ArticleCfoBreakdown[]>('/dashboard/articles-cfo', {
@@ -316,6 +382,32 @@ export default function DashboardPage({ user }: { user: User }) {
   const correctionLabel = correction === 0 ? 'Без корректировки' : correction > 0 ? 'Сумма увеличена' : 'Сумма уменьшена';
   const selectedArticleFilter = articlesCfo.find((article) => article.id === articleFilterId) || null;
   const visibleArticlesCfo = selectedArticleFilter ? [selectedArticleFilter] : articlesCfo;
+  const articleRegisterHref = useMemo(() => (row: Breakdown) => {
+    const articleId = row.article_id || parseArticleKey(row.id);
+    if (!articleId) return null;
+    if (user.role === 'economist') {
+      const cfoId = row.cfo_id;
+      return buildRegisterHref(user, { view: 'cfo', articleId, ...(cfoId ? { cfoId } : {}) });
+    }
+    return buildRegisterHref(user, { view: 'article', articleId });
+  }, [user]);
+  const cfoRegisterHref = useMemo(() => (row: Breakdown) => {
+    const cfoId = row.cfo_id || row.id;
+    return cfoId ? buildRegisterHref(user, { view: 'cfo', cfoId }) : null;
+  }, [user]);
+  const articleCfoRegisterHref = useMemo(() => (article: ArticleCfoBreakdown, cfo: Breakdown) => {
+    const articleId = article.article_id || parseArticleKey(article.id);
+    const cfoId = cfo.cfo_id || cfo.id;
+    return articleId && cfoId
+      ? buildRegisterHref(user, { view: 'cfo', articleId, cfoId })
+      : null;
+  }, [user]);
+  const detailView = user.role === 'economist' || user.role === 'approver' || user.role === 'zgd' ? 'cfo' : 'article';
+  const requestsApprovedHref = buildRegisterHref(user, { view: detailView, requestStatus: 'approved' });
+  const requestsReviewHref = buildRegisterHref(user, { view: detailView, requestStatus: 'on_review' });
+  const requestsAllHref = buildRegisterHref(user, { view: detailView });
+  const frozenRequestsHref = buildRegisterHref(user, { view: detailView });
+  const registerHref = buildRegisterHref(user, { view: detailView });
 
   if (isLoading || !data) {
     return <Skeleton variant="rounded" height={420} sx={{ borderRadius: 4 }} />;
@@ -323,33 +415,35 @@ export default function DashboardPage({ user }: { user: User }) {
 
   return (
     <Stack spacing={2.5} className="dashboard-page">
-      <Card className="dashboard-hero" elevation={0}>
-        <Box>
-          <Typography variant="h5">Сводка объединений</Typography>
-          <Tabs
-            value={mode}
-            onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
-            aria-label="Тип сводки"
-            sx={{ mt: 1 }}
-          >
-            <Tab value="expense" label="Расходы" />
-            <Tab value="income" label="Доходы" />
-          </Tabs>
-        </Box>
-        {view !== 'table' && <TextField select size="small" label="Объединение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
-          <MenuItem value="">Все доступные объединения</MenuItem>
-          {data.scope.available_units.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
-        </TextField>}
-      </Card>
+      {view !== 'table' && (
+        <Card className="dashboard-hero" elevation={0}>
+          <Box>
+            <Typography variant="h5">Сводка объединений</Typography>
+            <Tabs
+              value={mode}
+              onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
+              aria-label="Тип сводки"
+              sx={{ mt: 1 }}
+            >
+              <Tab value="expense" label="Расходы" />
+              <Tab value="income" label="Доходы" />
+            </Tabs>
+          </Box>
+          <TextField select size="small" label="Объединение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
+            <MenuItem value="">Все доступные объединения</MenuItem>
+            {data.scope.available_units.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
+          </TextField>
+        </Card>
+      )}
 
-      {view === 'table' ? (tableLoading ? <Skeleton variant="rounded" height={420} sx={{ borderRadius: 4 }} /> : <DashboardTableView rows={tableRows} />) : <>
+      {view === 'table' ? <ApprovalRegister user={user} hideHeader /> : <>
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={compactMoney(data.totals.planned)} exactValue={money(data.totals.planned)} hint="Запланированная объединениями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Корректировка" value={`${correction > 0 ? '+' : ''}${compactMoney(correction)}`} exactValue={money(correction)} hint={correctionLabel} icon={<TrendingUpIcon fontSize="small" />} tone="purple" /></Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Утверждено" value={compactMoney(data.totals.approved)} exactValue={money(data.totals.approved)} hint={`${approvalRate}% от расчета`} icon={<AssignmentTurnedInIcon fontSize="small" />} tone="green" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Зафиксировано" value={compactMoney(data.totals.frozen)} exactValue={money(data.totals.frozen)} hint={`${data.totals.frozen_requests_count} заявок зафиксировано`} icon={<LockOutlinedIcon fontSize="small" />} tone="amber" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Обработано" value={data.totals.approved_requests_count} hint={`заявок из ${data.totals.requests_count}`} icon={<FactCheckIcon fontSize="small" />} tone="amber" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Зафиксировано" value={compactMoney(data.totals.frozen)} exactValue={money(data.totals.frozen)} hint={<DashboardDrillLink to={frozenRequestsHref} title="Открыть детализацию реестра">{`${data.totals.frozen_requests_count} заявок зафиксировано`}</DashboardDrillLink>} icon={<LockOutlinedIcon fontSize="small" />} tone="amber" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Обработано" value={data.totals.approved_requests_count} hint={<DashboardDrillLink to={requestsApprovedHref} title="Открыть детализацию утверждённых">{`заявок из ${data.totals.requests_count}`}</DashboardDrillLink>} icon={<FactCheckIcon fontSize="small" />} tone="amber" /></Grid>
       </Grid>
 
       <Grid container spacing={2.5}>
@@ -362,29 +456,31 @@ export default function DashboardPage({ user }: { user: User }) {
               </Box>
               <InsightsOutlinedIcon color="primary" />
             </Box>
-            <ParetoChart rows={data.by_article} total={data.totals.planned} ariaLabel={`Структура ${subject} по статьям`} />
+            <ParetoChart rows={data.by_article} total={data.totals.planned} ariaLabel={`Структура ${subject} по статьям`} showType getRowHref={articleRegisterHref} />
           </Card>
         </Grid>
         <Grid size={{ xs: 12, lg: 5 }}>
           <Card className="surface dashboard-panel" elevation={0}>
             <Box className="dashboard-panel-heading">
               <Box>
-                <Typography variant="h6">Объединения</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>Распределение плановых сумм по объединениям</Typography>
+                <Typography variant="h6">ЦФО</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>Распределение плановых сумм по центрам финансовой ответственности</Typography>
               </Box>
               <InsightsOutlinedIcon color="primary" />
             </Box>
-            <ParetoChart rows={data.by_unit} total={data.totals.planned} ariaLabel={`Парето ${subject} по объединениям`} />
+            <ParetoChart rows={data.by_unit} total={data.totals.planned} ariaLabel={`Парето ${subject} по ЦФО`} getRowHref={cfoRegisterHref} />
           </Card>
         </Grid>
         <Grid size={{ xs: 12, lg: 7 }}>
-          <BudgetBars rows={data.by_article} title={`Ключевые статьи ${subject}`} emptyText={`Добавьте строки ${subject} в заявки, чтобы увидеть распределение`} showType showAmounts />
+          <BudgetBars rows={data.by_article} title={`Ключевые статьи ${subject}`} emptyText={`Добавьте строки ${subject} в заявки, чтобы увидеть распределение`} showType showAmounts getRowHref={articleRegisterHref} />
         </Grid>
         <Grid size={{ xs: 12, lg: 5 }}>
           <Card className="surface dashboard-panel dashboard-progress-panel" elevation={0}>
             <Box className="dashboard-panel-heading">
               <Typography variant="h6">Статус согласования</Typography>
-              <ArrowOutwardIcon color="primary" />
+              <Button component={RouterLink} to={registerHref} target="_blank" rel="noopener noreferrer" size="small" endIcon={<ArrowOutwardIcon />} sx={{ textTransform: 'none' }}>
+                Реестр заявок
+              </Button>
             </Box>
             <Stack spacing={2.25}>
               <Box>
@@ -392,9 +488,15 @@ export default function DashboardPage({ user }: { user: User }) {
                 <LinearProgress variant="determinate" value={approvalRate} sx={{ mt: 1, height: 9, borderRadius: 9 }} />
               </Box>
               <Box className="dashboard-status-summary">
-                <Box><Typography variant="h6">{data.totals.approved_requests_count}</Typography><Typography variant="body2" color="text.secondary">утверждено</Typography></Box>
-                <Box><Typography variant="h6">{data.totals.review_requests_count}</Typography><Typography variant="body2" color="text.secondary">на проверке</Typography></Box>
-                <Box><Typography variant="h6">{data.totals.requests_count}</Typography><Typography variant="body2" color="text.secondary">всего заявок</Typography></Box>
+                <DashboardDrillLink to={requestsApprovedHref} title="Открыть детализацию утверждённых">
+                  <Box><Typography variant="h6">{data.totals.approved_requests_count}</Typography><Typography variant="body2" color="text.secondary">утверждено</Typography></Box>
+                </DashboardDrillLink>
+                <DashboardDrillLink to={requestsReviewHref} title="Открыть детализацию заявок на проверке">
+                  <Box><Typography variant="h6">{data.totals.review_requests_count}</Typography><Typography variant="body2" color="text.secondary">на проверке</Typography></Box>
+                </DashboardDrillLink>
+                <DashboardDrillLink to={requestsAllHref} title="Открыть детализацию реестра">
+                  <Box><Typography variant="h6">{data.totals.requests_count}</Typography><Typography variant="body2" color="text.secondary">всего заявок</Typography></Box>
+                </DashboardDrillLink>
               </Box>
             </Stack>
           </Card>
@@ -427,14 +529,23 @@ export default function DashboardPage({ user }: { user: User }) {
                   <Box key={article.id} className="dashboard-cfo-article">
                     <Stack direction="row" justifyContent="space-between" spacing={1.5} alignItems="baseline">
                       <Stack direction="row" spacing={0.8} alignItems="center" minWidth={0}>
-                        <Typography variant="body1" fontWeight={700} noWrap title={article.name}>{article.name}</Typography>
+                        {articleRegisterHref(article) ? (
+                          <>
+                            <DashboardDrillLink to={articleRegisterHref(article)!} title="Открыть строки статьи в реестре">
+                              <Typography variant="body1" fontWeight={700} noWrap title={article.name}>{article.name}</Typography>
+                            </DashboardDrillLink>
+                            <DashboardDrillButton to={articleRegisterHref(article)!} title="Открыть строки статьи в реестре" />
+                          </>
+                        ) : (
+                          <Typography variant="body1" fontWeight={700} noWrap title={article.name}>{article.name}</Typography>
+                        )}
                         <Chip size="small" label={article.kind === 'invest' ? 'Инвест-проект' : 'Статья ДДС'} className={`dashboard-type-chip dashboard-type-chip-${article.kind}`} />
                       </Stack>
                       <Tooltip title={money(article.planned)} arrow>
                         <Typography variant="body2" color="text.secondary" fontWeight={700} flexShrink={0}>{compactMoney(article.planned)}</Typography>
                       </Tooltip>
                     </Stack>
-                    <CfoShareBars rows={article.cfo} />
+                    <CfoShareBars rows={article.cfo} getRowHref={(cfo) => articleCfoRegisterHref(article, cfo)} />
                   </Box>
                 ))}
               </Stack>

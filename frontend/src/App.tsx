@@ -91,10 +91,11 @@ export default function App() {
         <Route path="/" element={user.role === 'employee' ? <Navigate to="/requests" replace /> : <DashboardPage user={user} />} />
         <Route path="/income-dashboard" element={<Navigate to="/" replace />} />
         <Route path="/requests" element={<RequestsPage user={user} />} />
+        <Route path="/register" element={<Navigate to="/requests" replace />} />
         <Route path="/requests/:id" element={<RequestDetailsRoute user={user} />} />
         <Route path="/users" element={user.role === 'admin' ? <UsersPage /> : <Navigate to="/" replace />} />
         <Route path="/units" element={user.role === 'admin' ? <UnitsPage /> : <Navigate to="/" replace />} />
-        <Route path="/catalogs" element={user.role === 'admin' ? <CatalogsPage /> : <Navigate to="/" replace />} />
+        <Route path="/catalogs" element={user.role === 'admin' || user.role === 'economist' ? <CatalogsPage user={user} /> : <Navigate to="/" replace />} />
         <Route path="/approval" element={canAccessApproval(user.role) ? <ApprovalPage key={user.id} user={user} /> : <Navigate to="/" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

@@ -30,8 +30,6 @@ REQUEST_STATUS_LABELS = {
     "draft": "Черновик",
     "on_review": "На проверке",
     "approved": "Утверждена",
-    "approved_with_changes": "Утверждена с изменениями",
-    "partially_approved": "Частично утверждена",
     "rejected": "Отклонена",
     "cancelled": "Отменена",
 }
@@ -149,6 +147,17 @@ class ExcelService:
         note["A4"] = "Одинаковая Категория в нескольких строках создаёт одну категорию и несколько подкатегорий."
         note["A5"] = "Подразделение должно совпадать с названием подразделения (корневого unit)."
         note["A6"] = "Активен: да/нет, true/false, 1/0."
+        ws.delete_rows(1, ws.max_row)
+        article_label = "Статья ДДС" if kind == "dds" else "Инвест-проект"
+        self._style_header(ws, [article_label, "Категория", "Объединение", "Активен"])
+        ws.append(["Операционные расходы", "Операционные расходы", "", "да"])
+        ws.append(["Операционные расходы", "Подписки", "", "да"])
+        note["A1"] = "Структура НСИ: статья / инвест-проект → категория."
+        note["A2"] = "Если категория не указана, одноимённая категория будет создана только у статьи без других категорий."
+        note["A3"] = "Повторяющаяся статья создаёт дополнительные категории под той же статьёй."
+        note["A4"] = None
+        note["A5"] = None
+        note["A6"] = None
         self._autosize(ws)
         buffer = BytesIO()
         wb.save(buffer)
@@ -189,6 +198,8 @@ class ExcelService:
     @staticmethod
     def _normalize_header(value: Any) -> str:
         text = str(value or "").strip().lower().replace(" ", "_")
+        if text in {"статья_ддс", "инвест-проект", "статья_/_инвест-проект"}:
+            return "name"
         mapping = {
             "название": "name",
             "наименование": "name",
@@ -212,15 +223,15 @@ class ExcelService:
         }
         return mapping.get(text, text)
 
-    def _ensure_category(
+    def _ensure_article(
         self,
         collection: str,
         *,
-        category_name: str,
+        article_name: str,
         unit_id: str | None,
         is_active: bool,
     ) -> dict:
-        name_key = category_name.strip()
+        name_key = article_name.strip()
         match = next(
             (
                 item
@@ -330,22 +341,28 @@ class ExcelService:
                     (
                         entry
                         for entry in catalog
-                        if item["category"]
-                        and not entry.get("parent_id")
+                if not entry.get("parent_id")
                         and entry.get("unit_id") == item["unit_id"]
-                        and entry.get("name", "").strip().casefold() == item["category"].casefold()
+                        and entry.get("name", "").strip().casefold() == item["name"].casefold()
                     ),
                     None,
                 )
-                existing = self._find_leaf(
-                    collection,
-                    name=item["name"],
-                    parent_id=parent["id"] if parent else None,
-                    unit_id=item["unit_id"],
-                )
-                action = "update" if existing else "create"
-                updated += int(bool(existing))
-                created += int(not existing)
+                category_name = item["category"]
+                children = [entry for entry in catalog if parent and entry.get("parent_id") == parent["id"]]
+                # A blank category asks for a fallback only while the article
+                # has no children. This matches manual creation exactly.
+                if not category_name and children:
+                    action = "skip"
+                else:
+                    existing = self._find_leaf(
+                        collection,
+                        name=category_name or item["name"],
+                        parent_id=parent["id"] if parent else None,
+                        unit_id=item["unit_id"],
+                    )
+                    action = "update" if existing else "create"
+                    updated += int(bool(existing))
+                    created += int(not existing)
                 preview_rows.append({**item, "action": action})
             return {
                 "preview": True,
@@ -359,23 +376,28 @@ class ExcelService:
         created = 0
         updated = 0
         for item in prepared:
-            parent = None
-            if item["category"]:
-                parent = self._ensure_category(
-                    collection,
-                    category_name=item["category"],
-                    unit_id=item["unit_id"],
-                    is_active=True,
-                )
+            parent = self._ensure_article(
+                collection,
+                article_name=item["name"],
+                unit_id=item["unit_id"],
+                is_active=True,
+            )
+            children = [
+                entry for entry in self.repo.load_all(collection)
+                if entry.get("parent_id") == parent["id"]
+            ]
+            # Do not append an article-name fallback after any category exists.
+            if not item["category"] and children:
+                continue
             payload = {
-                "name": item["name"],
-                "parent_id": parent["id"] if parent else None,
+                "name": item["category"] or item["name"],
+                "parent_id": parent["id"],
                 "unit_id": item["unit_id"],
                 "is_active": item["is_active"],
             }
             existing = self._find_leaf(
                 collection,
-                name=item["name"],
+                name=payload["name"],
                 parent_id=payload["parent_id"],
                 unit_id=item["unit_id"],
             )
@@ -469,8 +491,8 @@ class ExcelService:
                     "kind": kind,
                     "purpose": "Доход" if item.get("is_income", False) else "Расход",
                     "item_id": item["id"],
-                    "article": self._catalog_name(catalog, item.get(field)),
-                    "category": self._category_name(catalog, item.get(field)),
+                    "article": self._category_name(catalog, item.get(field)),
+                    "category": self._catalog_name(catalog, item.get(field)),
                     "sum_plan": float(item.get("sum_plan") or 0),
                     "sum_fact": item.get("sum_fact"),
                     "status_code": item.get("status"),
@@ -514,6 +536,11 @@ class ExcelService:
         is_income = {"income": True, "expense": False}.get(export_kind)
 
         selected_unit_ids = self._export_unit_ids(unit_id, department_id, department_ids, module_ids)
+        position_request_ids = {
+            item["request_id"]
+            for item in self.repo.load_all("req_items")
+            if not fixed_only or item.get("fixed")
+        }
         requests = []
         for status in selected_statuses:
             for item in self.requests.list_requests(user, status=status):
@@ -521,7 +548,7 @@ class ExcelService:
                     continue
                 if selected_unit_ids is not None and item.get("unit_id") not in selected_unit_ids:
                     continue
-                if fixed_only and not item.get("frozen"):
+                if item.get("id") not in position_request_ids:
                     continue
                 requests.append(item)
         if is_income is not None:

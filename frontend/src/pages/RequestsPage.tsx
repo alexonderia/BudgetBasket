@@ -1,8 +1,10 @@
 import AddIcon from '@mui/icons-material/Add';
+import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import UndoIcon from '@mui/icons-material/Undo';
@@ -34,10 +36,12 @@ import Typography from '@mui/material/Typography';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, useMemo, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Fragment, useMemo, useState, useEffect, type ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { ApprovalRegister } from '../components/ApprovalRegister';
+import { RequestHistoryDrawer, type RequestHistoryTarget } from '../components/request-history/RequestHistoryDrawer';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
@@ -47,12 +51,13 @@ import { downloadBlob } from '../utils/download';
 import { money, requestStatusLabels } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
+import { getApiErrorDetail, getApiErrorMessage } from '../utils/apiErrors';
 
-function getErrorMessage(error: unknown, fallback: string) {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (detail) return detail;
-  if (error instanceof Error && error.message === 'Network Error') return 'Не удалось подключиться к серверу';
-  return detail || (error instanceof Error ? error.message : fallback);
+function existingRequestId(error: unknown): string | null {
+  const detail = getApiErrorDetail(error);
+  if (!detail || typeof detail !== 'object' || !('request_id' in detail)) return null;
+  const requestId = (detail as { request_id?: unknown }).request_id;
+  return typeof requestId === 'string' && requestId ? requestId : null;
 }
 
 type RequestTableColumn = 'unit' | 'status' | 'my_step' | 'planned' | 'approved' | 'items_count' | 'actions';
@@ -129,13 +134,23 @@ const REQUEST_TABLE_COLUMN_MIN_WIDTHS: Record<RequestTableColumn, number> = {
   actions: 100,
 };
 
-export default function RequestsPage({ user }: { user: User }) {
+function RequestsListPage({ user }: { user: User }) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const toast = useAppToast();
   const theme = useTheme();
   const fullScreenDialog = useMediaQuery(theme.breakpoints.down('sm'));
-  const [filters, setFilters] = useState({ status: '', frozen: '' });
+  const [filters, setFilters] = useState({
+    status: searchParams.get('status') || '',
+    frozen: searchParams.get('frozen') || '',
+  });
+  useEffect(() => {
+    setFilters({
+      status: searchParams.get('status') || '',
+      frozen: searchParams.get('frozen') || '',
+    });
+  }, [searchParams]);
   const [expandedZgdDepartments, setExpandedZgdDepartments] = useState<string[]>([]);
   const [expandedZgdCfos, setExpandedZgdCfos] = useState<string[]>([]);
   const [expandedZgdArticles, setExpandedZgdArticles] = useState<string[]>([]);
@@ -154,6 +169,8 @@ export default function RequestsPage({ user }: { user: User }) {
     include_files: user.role === 'zgd',
   });
   const [deleteTarget, setDeleteTarget] = useState<BudgetRequest | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<BudgetRequest | null>(null);
+  const [historyTarget, setHistoryTarget] = useState<RequestHistoryTarget | null>(null);
   const deleteTargetId = deleteTarget?.id || '';
 
   const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
@@ -303,7 +320,7 @@ export default function RequestsPage({ user }: { user: User }) {
       queryClient.invalidateQueries({ queryKey: ['my-approval-steps'] });
       queryClient.invalidateQueries({ queryKey: ['step-requests'] });
     },
-    onError: (error) => toast(getErrorMessage(error, 'Не удалось передать пакет'), 'error'),
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось передать пакет'), 'error'),
   });
 
   const allModules = units.filter((unit) => unit.type === 'department' || unit.type === 'module');
@@ -392,7 +409,15 @@ export default function RequestsPage({ user }: { user: User }) {
       navigate(`/requests/${response.data.id}`);
     },
     onError: (error) => {
-      setCreateError(getErrorMessage(error, 'Заявку не удалось создать'));
+      const requestId = existingRequestId(error);
+      if (requestId) {
+        setCreateError('');
+        queryClient.invalidateQueries({ queryKey: ['requests'] });
+        toast('Открыта существующая заявка текущего года', 'info');
+        navigate(`/requests/${requestId}`);
+        return;
+      }
+      setCreateError(getApiErrorMessage(error, 'Заявку не удалось создать'));
       toast('Не удалось создать заявку', 'error');
     },
   });
@@ -405,7 +430,30 @@ export default function RequestsPage({ user }: { user: User }) {
       setDeleteTarget(null);
     },
     onError: (error) => {
-      toast(getErrorMessage(error, 'Не удалось удалить заявку'), 'error');
+      toast(getApiErrorMessage(error, 'Не удалось удалить заявку'), 'error');
+    },
+  });
+
+  const cancelRequest = useMutation({
+    mutationFn: (requestId: string) => api.post(`/requests/${requestId}/cancel`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['requests'] });
+      toast('Заявка отменена', 'success');
+      setCancelTarget(null);
+    },
+    onError: (error) => {
+      toast(getApiErrorMessage(error, 'Не удалось отменить заявку'), 'error');
+    },
+  });
+
+  const restoreRequest = useMutation({
+    mutationFn: (requestId: string) => api.post(`/requests/${requestId}/restore`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['requests'] });
+      toast('Заявка восстановлена в черновик', 'success');
+    },
+    onError: (error) => {
+      toast(getApiErrorMessage(error, 'Не удалось восстановить заявку'), 'error');
     },
   });
 
@@ -490,7 +538,7 @@ export default function RequestsPage({ user }: { user: User }) {
 
   const requestTableColumns = useMemo<TableColumnDefinition<BudgetRequest, RequestTableColumn>[]>(() => {
     const columns: TableColumnDefinition<BudgetRequest, RequestTableColumn>[] = [
-    ...(user.role === 'employee' && filteredRequests.some((item) => item.status === 'draft') ? [{ id: 'actions' as const, label: 'Действие', sortable: false, filterable: false, hideable: false, getValue: () => '' }] : []),
+    ...(user.role === 'employee' ? [{ id: 'actions' as const, label: 'Действие', sortable: false, filterable: false, hideable: false, getValue: () => '' }] : []),
     { id: 'unit', label: 'Объединение заявки', getValue: (item) => formatUnitName(item.unit_id) },
     { id: 'status', label: 'Статус', getValue: (item) => requestStatusLabels[item.status] || item.status },
     ...(user.role === 'approver' || user.role === 'zgd' ? [{ id: 'my_step' as const, label: 'Мой этап', getValue: (item: BudgetRequest) => item.my_step_statuses?.map((step) => step.reviewed ? 'Согласовано' : step.status).join(', ') || '—' }] : []),
@@ -574,8 +622,73 @@ export default function RequestsPage({ user }: { user: User }) {
   };
   const renderRequestCell = (item: BudgetRequest, columnId: RequestTableColumn) => {
     const canDelete = item.status === 'draft' && user.role === 'employee';
+    const canCancel = item.status === 'draft'
+      && user.role === 'employee'
+      && item.available_actions?.includes('cancel')
+      && !item.frozen;
+    const canRestore = item.status === 'cancelled'
+      && user.role === 'employee'
+      && item.available_actions?.includes('restore');
     if (columnId === 'actions') {
-      return <TableCell key={columnId}><Stack direction="row" spacing={0.5}>{canDelete && <Tooltip title="Удалить"><IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }} aria-label="Удалить"><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>}</Stack></TableCell>;
+      return (
+        <TableCell key={columnId}>
+          <Stack direction="row" spacing={0.5}>
+            <Tooltip title="История изменений">
+              <IconButton
+                size="small"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setHistoryTarget({
+                    requestId: item.id,
+                    title: 'История изменений',
+                    subtitle: `Заявка №${item.id.slice(0, 8)}`,
+                  });
+                }}
+                aria-label="История изменений"
+              >
+                <HistoryOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+            {canCancel ? (
+              <Tooltip title="Отменить заявку">
+                <IconButton
+                  size="small"
+                  color="warning"
+                  onClick={(event) => { event.stopPropagation(); setCancelTarget(item); }}
+                  aria-label="Отменить заявку"
+                >
+                  <CancelOutlinedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
+            {canRestore ? (
+              <Tooltip title="Восстановить заявку">
+                <IconButton
+                  size="small"
+                  color="warning"
+                  disabled={restoreRequest.isPending}
+                  onClick={(event) => { event.stopPropagation(); restoreRequest.mutate(item.id); }}
+                  aria-label="Восстановить заявку"
+                >
+                  <UndoIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
+            {canDelete ? (
+              <Tooltip title="Удалить">
+                <IconButton
+                  size="small"
+                  color="error"
+                  onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }}
+                  aria-label="Удалить"
+                >
+                  <DeleteOutlineIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : null}
+          </Stack>
+        </TableCell>
+      );
     }
     if (columnId === 'unit') return <TableCell key={columnId}>{formatUnitName(item.unit_id)}</TableCell>;
     if (columnId === 'status') return <TableCell key={columnId}><Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap><RequestStatusBadge status={item.status} />{item.frozen && <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}><LockOutlinedIcon color={item.fixed ? 'success' : 'warning'} fontSize="small" /></Tooltip>}</Stack></TableCell>;
@@ -1099,6 +1212,17 @@ export default function RequestsPage({ user }: { user: User }) {
       )}
 
       <ConfirmDialog
+        open={!!cancelTarget}
+        title="Отменить заявку?"
+        description="Заявка будет переведена в статус «Отменена». Её можно будет восстановить, только пока для этого модуля не создана другая активная заявка текущего года."
+        confirmLabel="Отменить заявку"
+        confirmColor="error"
+        pending={cancelRequest.isPending}
+        onClose={() => setCancelTarget(null)}
+        onConfirm={() => cancelTarget && cancelRequest.mutate(cancelTarget.id)}
+      />
+
+      <ConfirmDialog
         open={!!deleteTarget}
         title="Удалить заявку?"
         maxWidth="md"
@@ -1166,6 +1290,27 @@ export default function RequestsPage({ user }: { user: User }) {
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => deleteTarget && deleteRequest.mutate(deleteTarget.id)}
       />
+      <RequestHistoryDrawer target={historyTarget} onClose={() => setHistoryTarget(null)} />
     </Stack>
   );
+}
+
+export default function RequestsPage({ user }: { user: User }) {
+  const { data: units = [], isPending: unitsPending } = useQuery({
+    queryKey: ['units'],
+    queryFn: async () => (await api.get<Unit[]>('/units')).data,
+  });
+  const isCfoResponsible = user.role === 'employee'
+    && (user.unit_ids || []).some((unitId) => units.some((unit) => unit.id === unitId && unit.type === 'cfo'));
+  const isReviewer = isCfoResponsible || ['admin', 'economist', 'approver', 'zgd'].includes(user.role);
+
+  if (user.role === 'employee' && unitsPending) {
+    return <Typography color="text.secondary">Загрузка заявок…</Typography>;
+  }
+
+  if (isReviewer) {
+    return <ApprovalRegister user={user} inRequestsPage />;
+  }
+
+  return <RequestsListPage user={user} />;
 }
