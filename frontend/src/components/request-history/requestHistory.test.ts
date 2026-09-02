@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RequestLog } from '../../types';
-import { historyChanges } from './requestHistory';
+import { historyChanges, historyStatusLabel } from './requestHistory';
 
 const entry = (changes: RequestLog['log']['changes']): RequestLog => ({
   id: 1,
@@ -11,6 +11,10 @@ const entry = (changes: RequestLog['log']['changes']): RequestLog => ({
 });
 
 describe('historyChanges', () => {
+  it('uses Russian labels for workflow statuses', () => {
+    expect(historyStatusLabel('on_approval')).toBe('На согласовании');
+  });
+
   it('renders month plans as a readable list instead of object stringification', () => {
     const [change] = historyChanges(entry({
       month_plans: {

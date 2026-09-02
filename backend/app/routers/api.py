@@ -445,6 +445,7 @@ def approval_register_analytics_filters(
     request_status: str | None = None,
     search: str | None = None,
     mine_only: bool = False,
+    is_income: bool | None = None,
     analytics_1: str | None = None,
     analytics_2: str | None = None,
     analytics_3: str | None = None,
@@ -463,6 +464,7 @@ def approval_register_analytics_filters(
         request_status=request_status,
         search=search,
         mine_only=mine_only,
+        is_income=is_income,
         analytics_1=analytics_1,
         analytics_2=analytics_2,
         analytics_3=analytics_3,
@@ -486,6 +488,7 @@ def approval_register(
     request_status: str | None = None,
     search: str | None = None,
     mine_only: bool = False,
+    is_income: bool | None = None,
     analytics_1: str | None = None,
     analytics_2: str | None = None,
     analytics_3: str | None = None,
@@ -497,7 +500,7 @@ def approval_register(
         user, view, budget_year=budget_year, cfo_id=cfo_id,
         category_id=category_id, article_id=article_id, module_id=module_id, request_id=request_id,
         status=status, request_status=request_status, search=search,
-        mine_only=mine_only,
+        mine_only=mine_only, is_income=is_income,
         analytics_1=analytics_1,
         analytics_2=analytics_2,
         analytics_3=analytics_3,
@@ -505,6 +508,81 @@ def approval_register(
         analytics_5=analytics_5,
         group_by=group_by,
     )
+
+
+@router.get("/approval-register/export")
+def export_approval_register(
+    request: Request,
+    user: User,
+    view: str = "cfo",
+    budget_year: int | None = None,
+    cfo_id: str | None = None,
+    category_id: str | None = None,
+    article_id: str | None = None,
+    module_id: str | None = None,
+    request_id: str | None = None,
+    status: str | None = None,
+    request_status: str | None = None,
+    search: str | None = None,
+    mine_only: bool = False,
+    is_income: bool | None = None,
+    analytics_1: str | None = None,
+    analytics_2: str | None = None,
+    analytics_3: str | None = None,
+    analytics_4: str | None = None,
+    analytics_5: str | None = None,
+    item_ids: str | None = None,
+    include_files: bool = True,
+    export_kind: str = "all",
+    fixed_only: bool = False,
+    department_ids: str | None = None,
+    module_ids: str | None = None,
+    group_by: Annotated[list[str] | None, Query(alias="group_by[]")] = None,
+):
+    selected_item_ids = (
+        {item_id.strip() for item_id in item_ids.split(",") if item_id.strip()}
+        if item_ids is not None
+        else None
+    )
+    selected_department_ids = (
+        {department_id.strip() for department_id in department_ids.split(",") if department_id.strip()}
+        if department_ids
+        else None
+    )
+    selected_module_ids = (
+        {module_id.strip() for module_id in module_ids.split(",") if module_id.strip()}
+        if module_ids
+        else None
+    )
+    path = request.app.state.excel_service.export_approval_register(
+        user,
+        view=view,
+        budget_year=budget_year,
+        cfo_id=cfo_id,
+        category_id=category_id,
+        article_id=article_id,
+        module_id=module_id,
+        request_id=request_id,
+        status=status,
+        request_status=request_status,
+        search=search,
+        mine_only=mine_only,
+        is_income=is_income,
+        analytics_1=analytics_1,
+        analytics_2=analytics_2,
+        analytics_3=analytics_3,
+        analytics_4=analytics_4,
+        analytics_5=analytics_5,
+        group_by=group_by,
+        item_ids=selected_item_ids,
+        include_files=include_files,
+        export_kind=export_kind,
+        fixed_only=fixed_only,
+        department_ids=selected_department_ids,
+        module_ids=selected_module_ids,
+    )
+    media_type = "application/zip" if path.suffix == ".zip" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return FileResponse(path, filename=path.name, media_type=media_type)
 
 
 @router.get("/approval-register/rows")
@@ -523,6 +601,7 @@ def approval_register_rows(
     request_status: str | None = None,
     search: str | None = None,
     mine_only: bool = False,
+    is_income: bool | None = None,
     analytics_1: str | None = None,
     analytics_2: str | None = None,
     analytics_3: str | None = None,
@@ -540,6 +619,7 @@ def approval_register_rows(
         user, page, page_size, request_id=request_id, budget_year=budget_year, cfo_id=cfo_id,
         category_id=category_id, article_id=article_id, module_id=module_id, status=status,
         request_status=request_status, search=search, mine_only=mine_only,
+        is_income=is_income,
         analytics_1=analytics_1,
         analytics_2=analytics_2,
         analytics_3=analytics_3,
@@ -669,6 +749,7 @@ def export_closed_requests(
     department_id: str | None = None,
     department_ids: str | None = None,
     module_ids: str | None = None,
+    request_ids: str | None = None,
     statuses: str | None = None,
     include_files: bool = False,
     fixed_only: bool = False,
@@ -677,6 +758,11 @@ def export_closed_requests(
     selected_statuses = {status.strip() for status in statuses.split(",") if status.strip()} if statuses else None
     selected_department_ids = {department_id.strip() for department_id in department_ids.split(",") if department_id.strip()} if department_ids else None
     selected_module_ids = {module_id.strip() for module_id in module_ids.split(",") if module_id.strip()} if module_ids else None
+    selected_request_ids = (
+        {request_id.strip() for request_id in request_ids.split(",") if request_id.strip()}
+        if request_ids is not None
+        else None
+    )
     path = request.app.state.excel_service.export_closed_requests(
         user,
         unit_id,
@@ -687,6 +773,7 @@ def export_closed_requests(
         module_ids=selected_module_ids,
         fixed_only=fixed_only,
         export_kind=export_kind,
+        request_ids=selected_request_ids,
     )
     media_type = "application/zip" if path.suffix == ".zip" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     return FileResponse(path, filename=path.name, media_type=media_type)

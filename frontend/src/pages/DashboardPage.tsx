@@ -211,17 +211,32 @@ function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
         <svg viewBox="0 0 42 42" role="img" aria-label={ariaLabel}>
           <circle className="dashboard-donut-track" cx="21" cy="21" r="15" />
           {segments.map((segment) => (
-            <Tooltip key={segment.id} arrow placement="top" classes={{ popper: 'dashboard-donut-tooltip' }} title={<Box><Typography variant="caption" component="div">{segment.name}</Typography><Typography variant="body2" component="div" fontWeight={700}>{money(segment.planned)}</Typography></Box>}>
+            <Tooltip
+              key={segment.id}
+              arrow
+              placement="top"
+              classes={{ popper: 'dashboard-donut-tooltip' }}
+              title={<Box><Typography variant="caption" component="div">{segment.name}</Typography><Typography variant="body2" component="div" fontWeight={700}>{money(segment.planned)}</Typography></Box>}
+            >
+              <g className="dashboard-donut-segment" tabIndex={0} role="img" aria-label={`${segment.name}: ${money(segment.planned)}`}>
               {segment.percentage >= 99.999
-                ? <circle className="dashboard-donut-segment" cx="21" cy="21" r="15" fill="none" stroke={segment.color} strokeWidth="8" tabIndex={0} />
-                : <path className="dashboard-donut-segment" d={segmentPath(segment.offset, segment.percentage)} fill={segment.color} tabIndex={0} />}
+                ? <circle cx="21" cy="21" r="15" fill="none" stroke={segment.color} strokeWidth="8" />
+                : <path d={segmentPath(segment.offset, segment.percentage)} fill={segment.color} />}
+              </g>
             </Tooltip>
           ))}
         </svg>
-        <Box className="dashboard-donut-value">
-          <Typography variant="caption" color="text.secondary">Расчет</Typography>
-          <Tooltip title={money(total)} arrow><Typography variant="subtitle2">{compactMoney(total)}</Typography></Tooltip>
-        </Box>
+        <Tooltip
+          arrow
+          placement="top"
+          classes={{ popper: 'dashboard-donut-tooltip' }}
+          title={<Box><Typography variant="caption" component="div">Общая сумма</Typography><Typography variant="body2" component="div" fontWeight={700}>{money(total)}</Typography></Box>}
+        >
+          <Box className="dashboard-donut-value" sx={{ inset: '43px', pointerEvents: 'auto', cursor: 'help' }}>
+            <Typography variant="caption" color="text.secondary">Расчет</Typography>
+            <Typography variant="subtitle2">{compactMoney(total)}</Typography>
+          </Box>
+        </Tooltip>
       </Box>
       <Stack spacing={1.15} className="dashboard-legend">
         {segments.map((segment) => (
@@ -436,7 +451,24 @@ export default function DashboardPage({ user }: { user: User }) {
         </Card>
       )}
 
-      {view === 'table' ? <ApprovalRegister user={user} hideHeader /> : <>
+      {view === 'table' ? (
+        <ApprovalRegister
+          user={user}
+          hideHeader
+          flow={mode}
+          tableTabs={(
+            <Tabs
+              value={mode}
+              onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
+              aria-label="Тип табличного вида"
+              sx={{ mt: 1 }}
+            >
+              <Tab value="expense" label="Расходы" />
+              <Tab value="income" label="Доходы" />
+            </Tabs>
+          )}
+        />
+      ) : <>
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={compactMoney(data.totals.planned)} exactValue={money(data.totals.planned)} hint="Запланированная объединениями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>

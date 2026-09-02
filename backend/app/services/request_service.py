@@ -1655,7 +1655,17 @@ class RequestService:
         analytics_3: str | None = None,
         analytics_4: str | None = None,
         analytics_5: str | None = None,
+        item_ids: set[str] | list[str] | None = None,
+        is_income: bool | None = None,
+        fixed_only: bool = False,
+        module_ids: set[str] | None = None,
     ) -> list[dict]:
+        allowed_item_ids = set(item_ids) if item_ids is not None else None
+        request_statuses = (
+            {part.strip() for part in str(request_status).split(",") if part.strip()}
+            if request_status
+            else None
+        )
         analytics_filters = {
             field: "" if value == EMPTY_ANALYTICS_GROUP_VALUE else str(value or "").strip()
             for field, value in zip(
@@ -1858,6 +1868,12 @@ class RequestService:
         for item in self.repo.load_all("req_items"):
             if item.get("status") == ItemStatus.deleted:
                 continue
+            if is_income is not None and bool(item.get("is_income", False)) != is_income:
+                continue
+            if fixed_only and not item.get("fixed"):
+                continue
+            if allowed_item_ids is not None and item["id"] not in allowed_item_ids:
+                continue
             request = requests.get(item.get("request_id"))
             if not request or (visible is not None and request["id"] not in visible):
                 continue
@@ -1985,11 +2001,13 @@ class RequestService:
                 continue
             if module_id and entry["module_id"] != module_id:
                 continue
+            if module_ids is not None and entry["module_id"] not in module_ids:
+                continue
             if request_id and entry["request_id"] != request_id:
                 continue
             if status and entry["status"] != status:
                 continue
-            if request_status and entry["request_status"] != request_status:
+            if request_statuses and entry["request_status"] not in request_statuses:
                 continue
             if any((entry.get(field) or "").strip() != expected for field, expected in analytics_filters.items()):
                 continue

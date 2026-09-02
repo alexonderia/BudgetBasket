@@ -233,13 +233,22 @@ describe('registry display helpers', () => {
     expect(ids).not.toContain('readiness');
   });
 
-  it('keeps the required financial columns and one status/action column for every role', () => {
+  it('preserves selections for data columns while keeping structural columns visible', () => {
     expect(REGISTRY_COLUMNS.filter((column) => ['structure', 'requested', 'approved', 'rejected', 'status'].includes(column.id)).map((column) => column.label))
       .toEqual(['Структура', 'План, ₽', 'Факт, ₽', 'Корректировка, ₽', 'Статус']);
 
     const visibility = applyWorkflowColumnVisibility({ ...DEFAULT_COLUMN_VISIBILITY, status: false, your_step: true, actions: true }, 'economist');
-    expect(visibility.status).toBe(true);
-    expect(visibility.your_step).toBe(false);
-    expect(visibility.actions).toBe(false);
+    expect(visibility.status).toBe(false);
+    expect(visibility.your_step).toBe(true);
+    expect(visibility.actions).toBe(true);
+    expect(visibility.select).toBe(true);
+    expect(visibility.structure).toBe(true);
+  });
+
+  it('does not include secondary workflow columns in the register table', () => {
+    const ids = REGISTRY_COLUMNS.map((column) => column.id);
+    expect(ids).not.toContain('your_step');
+    expect(ids).not.toContain('previous_step');
+    expect(ids).not.toContain('actions');
   });
 });

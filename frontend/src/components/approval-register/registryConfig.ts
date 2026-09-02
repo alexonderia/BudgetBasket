@@ -6,6 +6,7 @@ export type RegistryColumnId = 'select' | 'structure' | 'requested' | 'approved'
 
 export type RegistryFilters = {
   search: string;
+  flow: '' | 'expense' | 'income';
   status: '' | ItemStatus;
   budgetYear: string;
   cfoId: string;
@@ -27,10 +28,7 @@ export const REGISTRY_COLUMNS: Array<{ id: RegistryColumnId; label: string; widt
   { id: 'requested', label: 'План, ₽', width: 110 },
   { id: 'approved', label: 'Факт, ₽', width: 132 },
   { id: 'rejected', label: 'Корректировка, ₽', width: 132 },
-  { id: 'your_step', label: 'Ваше решение', width: 168, hideable: true },
-  { id: 'previous_step', label: 'Предыдущий шаг', width: 168, hideable: true },
   { id: 'status', label: 'Статус', width: 188 },
-  { id: 'actions', label: 'Действия', width: 108, hideable: true },
   { id: 'justification', label: 'Обоснование', width: 240 },
   { id: 'comment', label: 'Комментарий', width: 180 },
   { id: 'files', label: 'Файлы', width: 72 },
@@ -105,8 +103,9 @@ export function applyWorkflowColumnVisibility(
     your_step: false,
     actions: false,
   };
-  if (!usesWorkflowStepColumns(role)) return coreVisibility;
-  return coreVisibility;
+  const userVisibility = { ...coreVisibility, ...visibility, select: true, structure: true };
+  if (!usesWorkflowStepColumns(role)) return userVisibility;
+  return userVisibility;
 }
 
 export function groupPreviousStepSummary(aggregates: RegisterAggregates) {

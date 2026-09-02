@@ -3,6 +3,13 @@ import { ANALYTICS_FIELD_LABELS } from '../../utils/analyticsFields';
 import { itemStatusLabels, requestStatusLabels, stepStatusLabels } from '../../utils/labels';
 import { money } from '../../utils/labels';
 
+export function historyStatusLabel(status: string): string {
+  return itemStatusLabels[status as ItemStatus]
+    || stepStatusLabels[status as StepStatus]
+    || requestStatusLabels[status as RequestStatus]
+    || status;
+}
+
 const historyActionLabels: Record<string, string> = {
   created: 'Заявка создана',
   submitted: 'Заявка отправлена на рассмотрение',
@@ -120,12 +127,7 @@ function historyValue(value: unknown, field: string, entity: string, action: str
   }
   if (field === 'sum_plan' || field === 'sum_fact') return money(Number(value));
   if (field === 'status' && typeof value === 'string') {
-    if (action.startsWith('approval_')) {
-      return stepStatusLabels[value as StepStatus] || requestStatusLabels[value as RequestStatus] || value;
-    }
-    return entity === 'req_item'
-      ? itemStatusLabels[value as ItemStatus] || value
-      : requestStatusLabels[value as RequestStatus] || stepStatusLabels[value as StepStatus] || value;
+    return historyStatusLabel(value);
   }
   if (field === 'frozen') return value ? 'Зафиксирован' : 'Разморожен';
   if (Array.isArray(value)) {

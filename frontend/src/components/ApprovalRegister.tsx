@@ -5,7 +5,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import DoneAllIcon from '@mui/icons-material/DoneAll';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
+import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined';
 import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -18,6 +18,7 @@ import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import Card from '@mui/material/Card';
 import Checkbox from '@mui/material/Checkbox';
 import Chip from '@mui/material/Chip';
 import Dialog from '@mui/material/Dialog';
@@ -45,17 +46,17 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, createContext, useCallback, useContext, useDeferredValue, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Fragment, createContext, useCallback, useContext, useDeferredValue, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { getApiErrorMessage } from '../utils/apiErrors';
+import { getApiErrorMessage, getDownloadApiErrorMessage } from '../utils/apiErrors';
+import { downloadBlob } from '../utils/download';
 import { useAppToast, usePageChromeActions, usePageChromeLeading } from './Layout';
 import { ConfirmDialog } from './ConfirmDialog';
 import { InlineEditMoneyCell, InlineEditTextCell } from './inlineEdit';
 import { ArticleRevisionDialog, type RevisionTarget } from './ArticleRevisionDialog';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from './TableColumnControls';
 import {
-  AGGREGATE_DISPLAY_LABELS,
   canEditApprovedAmount,
   DEFAULT_COLUMN_VISIBILITY,
   DEFAULT_COLUMN_ORDER,
@@ -108,8 +109,10 @@ import { RegisterHistoryDrawer } from './request-history/RegisterHistoryDrawer';
 import { ANALYTICS_FIELD_KEYS, ANALYTICS_FIELD_LABELS, EMPTY_ANALYTICS_FILTERS, buildRegisterFilterParams, canEditItemAnalytics, type AnalyticsFieldKey } from '../utils/analyticsFields';
 import { EditableAnalyticsCell } from './EditableAnalyticsCell';
 import { GroupAnalyticsCell } from './GroupAnalyticsCell';
-import type { ApprovalRegisterGroup, ApprovalRegisterResponse, ApprovalRegisterRow, ApprovalRegisterRowsResponse, ApprovalStep, BudgetItem, FileAttachment, ItemStatus, RegisterAggregates, RegisterAnalyticsSummary, RegisterGroupingLevel, RequestLog, User } from '../types';
+import { ExportSettingsDialog } from './ExportSettingsDialog';
+import type { ApprovalRegisterGroup, ApprovalRegisterResponse, ApprovalRegisterRow, ApprovalRegisterRowsResponse, ApprovalStep, BudgetItem, FileAttachment, ItemStatus, RegisterAggregates, RegisterAnalyticsSummary, RegisterGroupingLevel, RequestLog, Unit, User } from '../types';
 import { money, requestStatusLabels } from '../utils/labels';
+import { REGISTER_EXPORT_STATUSES, defaultExportSettings, exportSettingsFromRegister, type ExportSettingsState } from '../utils/exportSettings';
 import { buildRegisterHref, registerDrillFromSearchParams } from '../utils/dashboardNavigation';
 import { filterFieldSx } from '../utils/responsive';
 import { canUseRegisterApprovalMode } from '../utils/roles';
@@ -164,7 +167,7 @@ function filtersForPersistence(filters: RegistryFilters): RegistryFilters {
   return persisted;
 }
 
-const EMPTY_FILTERS: RegistryFilters = { search: '', status: '', budgetYear: '', cfoId: '', articleId: '', requestStatus: '', ...EMPTY_ANALYTICS_FILTERS };
+const EMPTY_FILTERS: RegistryFilters = { search: '', flow: '', status: '', budgetYear: '', cfoId: '', articleId: '', requestStatus: '', ...EMPTY_ANALYTICS_FILTERS };
 
 type RowDecision = 'approved' | 'approved_with_changes' | 'rejected';
 type DecisionTarget = {
@@ -528,6 +531,7 @@ function RegistryFilterBar({
   onGroupByChange,
   analyticsFilterOptions = {},
   drillLabels,
+  hideFlowSelect = false,
 }: {
   view: RegistryView;
   filters: RegistryFilters;
@@ -540,6 +544,7 @@ function RegistryFilterBar({
   onGroupByChange: (levels: RegisterGroupingLevel[]) => void;
   analyticsFilterOptions?: Partial<Record<AnalyticsFieldKey, string[]>>;
   drillLabels?: { cfoName?: string; articleName?: string };
+  hideFlowSelect?: boolean;
 }) {
   const [moreFiltersAnchor, setMoreFiltersAnchor] = useState<HTMLElement | null>(null);
   const [groupingAnchor, setGroupingAnchor] = useState<HTMLElement | null>(null);
@@ -549,6 +554,7 @@ function RegistryFilterBar({
   const additionalFiltersCount = additionalAnalyticsKeys.filter((key) => filters[key]).length;
   const hasActiveFilters = Boolean(
     filters.search
+    || filters.flow
     || filters.status
     || filters.budgetYear
     || filters.cfoId
@@ -581,6 +587,13 @@ function RegistryFilterBar({
             sx={{ minWidth: { md: 220 }, flex: { lg: '1 1 260px' } }}
             InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 18 }} color="action" /></InputAdornment> }}
           />
+          {!hideFlowSelect && (
+            <TextField select size="small" label="Вид бюджета" value={filters.flow} onChange={(event) => onChange({ ...filters, flow: event.target.value as RegistryFilters['flow'] })} sx={{ ...filterFieldSx(145), maxWidth: { lg: 145 } }}>
+              <MenuItem value="" dense>Все</MenuItem>
+              <MenuItem value="expense" dense>Расходы</MenuItem>
+              <MenuItem value="income" dense>Доходы</MenuItem>
+            </TextField>
+          )}
           <TextField select size="small" label="Статус" value={filters.status} onChange={(event) => onChange({ ...filters, status: event.target.value as RegistryFilters['status'] })} sx={{ ...filterFieldSx(150), maxWidth: { lg: 150 } }}>
             <MenuItem value="" dense>Все</MenuItem>
             {(Object.keys(STATUS_LABELS) as ItemStatus[]).map((status) => <MenuItem key={status} value={status} dense>{STATUS_LABELS[status]}</MenuItem>)}
@@ -634,6 +647,7 @@ function RegistryFilterBar({
       {hasActiveFilters ? (
         <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ pt: 0.75 }}>
           {filters.search ? <Chip label={`Поиск: ${filters.search}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} /> : null}
+          {filters.flow ? <Chip label={`Вид бюджета: ${filters.flow === 'income' ? 'Доходы' : 'Расходы'}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} /> : null}
           {filters.requestStatus ? (
             <Chip
               label={`Заявка: ${requestStatusLabels[filters.requestStatus as keyof typeof requestStatusLabels] || filters.requestStatus}`}
@@ -1653,7 +1667,7 @@ function RegisterRows({ group, expanded, filters, columns, widths, selectedIds, 
   const usesColumnFilteredItems = filteredItemsByGroup !== null;
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => Number(sessionStorage.getItem(REQUEST_PAGE_SIZE_KEY)) || 50);
-  useEffect(() => { setPage(1); }, [group.id, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  useEffect(() => { setPage(1); }, [group.id, filters.flow, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isFetching, error } = useQuery({
     queryKey: ['approval-register-rows', group.id, group.module_id, group.article_id, group.category_id, requestId, page, pageSize, filters],
     queryFn: async ({ signal }) => (await api.get<ApprovalRegisterRowsResponse>('/approval-register/rows', {
@@ -1840,7 +1854,7 @@ function CategoryModuleRows({
   const usesColumnFilteredItems = filteredItemsByGroup !== null;
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => Number(sessionStorage.getItem(REQUEST_PAGE_SIZE_KEY)) || 50);
-  useEffect(() => { setPage(1); }, [category.id, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  useEffect(() => { setPage(1); }, [category.id, filters.flow, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isFetching, error } = useQuery({
     queryKey: ['approval-register-rows', category.id, category.category_id, category.article_id, requestId, page, pageSize, filters],
     queryFn: async ({ signal }) => (await api.get<ApprovalRegisterRowsResponse>('/approval-register/rows', {
@@ -2170,12 +2184,16 @@ export function ApprovalRegister({
   embedded = false,
   inRequestsPage = false,
   hideHeader = false,
+  flow,
+  tableTabs,
 }: {
   user: User;
   requestId?: string;
   embedded?: boolean;
   inRequestsPage?: boolean;
   hideHeader?: boolean;
+  flow?: Exclude<RegistryFilters['flow'], ''>;
+  tableTabs?: ReactNode;
 }) {
   const toast = useAppToast();
   const availableViews = useMemo<RegistryView[]>(
@@ -2194,7 +2212,13 @@ export function ApprovalRegister({
   const [groupBy, setGroupBy] = useState<RegisterGroupingLevel[]>(
     () => storedPreferences.groupBy || GROUPING_PRESETS[initialView],
   );
-  const [filters, setFilters] = useState<RegistryFilters>(() => storedPreferences.filters || EMPTY_FILTERS);
+  const [filters, setFilters] = useState<RegistryFilters>(() => (
+    flow ? { ...(storedPreferences.filters || EMPTY_FILTERS), flow } : (storedPreferences.filters || EMPTY_FILTERS)
+  ));
+  useEffect(() => {
+    if (!flow) return;
+    setFilters((current) => current.flow === flow ? current : { ...current, flow });
+  }, [flow]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [preferences, setPreferences] = useState(() => ({ order: storedPreferences.order, visibility: storedPreferences.visibility, widths: storedPreferences.widths }));
   const [draggedColumn, setDraggedColumn] = useState<RegistryColumnId | null>(null);
@@ -2207,6 +2231,10 @@ export function ApprovalRegister({
   const [detailsItem, setDetailsItem] = useState<ApprovalRegisterRow | null>(null);
   const [historyTarget, setHistoryTarget] = useState<RequestHistoryTarget | null>(null);
   const [registerHistoryOpen, setRegisterHistoryOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportSettings, setExportSettings] = useState<ExportSettingsState>(() => defaultExportSettings(user, true));
+  const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
   const openHistory = useCallback((item: ApprovalRegisterRow, full = false) => {
     setHistoryTarget({
       requestId: item.request_id,
@@ -2266,7 +2294,7 @@ export function ApprovalRegister({
       JSON.stringify({ version: 2, view, groupBy, filters: filtersForPersistence(filters), ...preferences }),
     );
   }, [filters, groupBy, preferences, user.id, view]);
-  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, groupBy, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isLoading, error, isFetching } = useQuery({
     queryKey: ['approval-register', requestId, view, groupBy, effectiveFilters],
     queryFn: async ({ signal }) => (await api.get<ApprovalRegisterResponse>('/approval-register', {
@@ -2279,7 +2307,7 @@ export function ApprovalRegister({
     setExpanded((current) => (
       current.size > 0 ? current : new Set(collectDefaultExpandedGroupIds(data.groups, view))
     ));
-  }, [data?.groups, view, groupBy, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  }, [data?.groups, view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   useEffect(() => {
     if (!data?.groups?.length || !filters.articleId) return;
     const matches: ApprovalRegisterGroup[] = [];
@@ -2552,6 +2580,10 @@ export function ApprovalRegister({
     () => computeRegisterVisibility(data?.groups || [], columnControls.rows, columnControls.hasActiveFilters, controlRows),
     [columnControls.rows, columnControls.hasActiveFilters, controlRows, data?.groups],
   );
+  const filteredExportItemIds = useMemo(
+    () => (columnControls.hasActiveFilters ? [...(visibleItemIds || [])] : null),
+    [columnControls.hasActiveFilters, visibleItemIds],
+  );
   const summaryAggregates = useMemo(() => {
     if (!data) return null;
     if (!columnControls.hasActiveFilters) return data.aggregates;
@@ -2633,6 +2665,7 @@ export function ApprovalRegister({
           status: effectiveFilters.status || undefined,
           budget_year: effectiveFilters.budgetYear || undefined,
           search: effectiveFilters.search || undefined,
+          is_income: effectiveFilters.flow === 'income' ? true : effectiveFilters.flow === 'expense' ? false : undefined,
         },
       },
     )
@@ -2760,7 +2793,62 @@ export function ApprovalRegister({
     user.role === 'employee' ? groups.filter(groupHasCfoActions) : []
   );
   const workflowGroupsForAction = (groups: ApprovalRegisterGroup[]) => groups.filter(groupHasWorkflowActions);
-  const exportRegister = () => { const rows: string[][] = [['Структура', 'Запрошено', 'Согласовано', 'Статус']]; const visit = (groups: ApprovalRegisterGroup[], level = 0) => groups.forEach((group) => { rows.push([`${'  '.repeat(level)}${group.name}`, String(group.aggregates.requested_sum), String(group.aggregates.approved_sum), AGGREGATE_DISPLAY_LABELS[group.aggregates.aggregate_status]]); visit(group.children, level + 1); }); visit(data?.groups || []); const content = rows.map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(';')).join('\n'); const url = URL.createObjectURL(new Blob([`\ufeff${content}`], { type: 'text/csv;charset=utf-8' })); const link = document.createElement('a'); link.href = url; link.download = 'реестр-бюджетных-заявок.csv'; link.click(); URL.revokeObjectURL(url); };
+  const exportRegister = useCallback(async () => {
+    setExporting(true);
+    try {
+      const hasUnitScope = exportSettings.department_ids.length > 0 || exportSettings.module_ids.length > 0;
+      const params = buildRegisterFilterParams(
+        { ...effectiveFilters, requestStatus: '', cfoId: hasUnitScope ? '' : effectiveFilters.cfoId },
+        {
+          view,
+          request_id: requestId,
+          group_by: groupBy,
+          request_status: exportSettings.statuses.join(',') || undefined,
+          include_files: exportSettings.include_files,
+          export_kind: exportSettings.export_kind,
+          fixed_only: exportSettings.fixed_only,
+          department_ids: exportSettings.department_ids.join(',') || undefined,
+          module_ids: exportSettings.module_ids.join(',') || undefined,
+          ...(filteredExportItemIds !== null
+            ? { item_ids: filteredExportItemIds.join(',') }
+            : {}),
+        },
+      );
+      const response = await api.get('/approval-register/export', { params, responseType: 'blob' });
+      const contentType = String(response.headers['content-type'] || '');
+      const disposition = String(response.headers['content-disposition'] || '');
+      const isZip = contentType.includes('zip') || disposition.toLowerCase().includes('.zip');
+      const baseName = hideHeader ? 'Табличный_вид' : 'Реестр_заявок';
+      downloadBlob(response.data, `${baseName}.${isZip ? 'zip' : 'xlsx'}`);
+      setExportOpen(false);
+    } catch (error) {
+      toast(await getDownloadApiErrorMessage(error, 'Не удалось выгрузить Excel'), 'error');
+    } finally {
+      setExporting(false);
+    }
+  }, [
+    effectiveFilters,
+    exportSettings,
+    filteredExportItemIds,
+    groupBy,
+    hideHeader,
+    requestId,
+    toast,
+    view,
+    visibleItemIds,
+  ]);
+  const openExportSettings = useCallback(() => {
+    setExportSettings(exportSettingsFromRegister({
+      user,
+      flow: effectiveFilters.flow,
+      requestStatus: effectiveFilters.requestStatus,
+      cfoId: effectiveFilters.cfoId,
+      visibleRequestStatuses: (data?.summary_items || []).map((item) => item.request_status),
+      visibleUnitIds: (data?.summary_items || []).flatMap((item) => [item.cfo_id, item.module_id]),
+      units,
+    }));
+    setExportOpen(true);
+  }, [data?.summary_items, effectiveFilters.cfoId, effectiveFilters.requestStatus, units, user]);
   const registerGroupItems = useCallback((groupId: string, items: ApprovalRegisterRow[]) => {
     setLoadedItems((current) => {
       const next = new Map(current);
@@ -2785,6 +2873,7 @@ export function ApprovalRegister({
   }, [selectedGroups, user.role]);
   const hasActiveTableFilters = Boolean(
     filters.search
+    || filters.flow
     || filters.status
     || filters.budgetYear
     || filters.cfoId
@@ -2803,7 +2892,10 @@ export function ApprovalRegister({
     }, { replace: true });
   }, [columnControls, setSearchParams]);
   usePageChromeLeading(useMemo(() => {
-    if (embedded || hideHeader) return null;
+    if (embedded || tableTabs) return null;
+    if (hideHeader) {
+      return <Typography component="h1" className="page-title">Табличный вид</Typography>;
+    }
     if (inRequestsPage) {
       return (
         <Stack direction="row" spacing={1} alignItems="center" minWidth={0}>
@@ -2822,7 +2914,7 @@ export function ApprovalRegister({
         register &gt; Реестр бюджетных заявок
       </Typography>
     );
-  }, [approvalMode, embedded, hideHeader, inRequestsPage]));
+  }, [approvalMode, embedded, hideHeader, inRequestsPage, tableTabs]));
   const columnTools = (
     <TableColumnTools
       buttonLabel="Колонки"
@@ -2847,20 +2939,71 @@ export function ApprovalRegister({
     localStorage.setItem(`budgetbasket:approval-register:saved-filter:${user.id}`, JSON.stringify(filtersForPersistence(filters)));
     toast('Текущие фильтры сохранены', 'success');
   };
+  const tableHeroActions = useMemo(() => {
+    if (!tableTabs) return null;
+    return (
+      <Stack
+        direction="row"
+        spacing={0.5}
+        flexWrap="wrap"
+        useFlexGap
+        justifyContent="flex-end"
+        alignItems="center"
+        sx={{ pr: { md: 7 } }}
+      >
+        {pageChromeActions}
+        <Button size="small" color="inherit" startIcon={<TuneOutlinedIcon />} onClick={openExportSettings} disabled={exporting}>
+          Настроить экспорт
+        </Button>
+        {columnTools}
+        {drillTitle && <Button size="small" color="inherit" startIcon={<RestartAltIcon />} onClick={resetRegisterFilters}>Показать весь реестр</Button>}
+      </Stack>
+    );
+  }, [columnTools, drillTitle, exporting, openExportSettings, pageChromeActions, resetRegisterFilters, tableTabs]);
   usePageChromeActions(useMemo(() => {
-    if (embedded || hideHeader) return null;
+    if (embedded || tableTabs) return null;
+    const exportButton = (
+      <Button
+        size="small"
+        color="inherit"
+        startIcon={<TuneOutlinedIcon />}
+        onClick={openExportSettings}
+        disabled={exporting}
+      >
+        Настроить экспорт
+      </Button>
+    );
+    if (hideHeader) {
+      return (
+        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+          {pageChromeActions}
+          {exportButton}
+          {columnTools}
+          {drillTitle && <Button size="small" color="inherit" startIcon={<RestartAltIcon />} onClick={resetRegisterFilters}>Показать весь реестр</Button>}
+        </Stack>
+      );
+    }
     if (!inRequestsPage) return pageChromeActions;
     return (
       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
         <Button size="small" color="inherit" startIcon={<HistoryOutlinedIcon />} onClick={() => setRegisterHistoryOpen(true)}>История согласования</Button>
-        <Button size="small" color="inherit" startIcon={<FileDownloadOutlinedIcon />} onClick={exportRegister}>Экспорт</Button>
+        {exportButton}
         {columnTools}
         {drillTitle && <Button size="small" color="inherit" startIcon={<RestartAltIcon />} onClick={resetRegisterFilters}>Показать весь реестр</Button>}
         {canUseApprovalMode && <Button size="small" variant="contained" startIcon={approvalMode ? <CloseIcon /> : <DoneAllIcon />} onClick={() => setApprovalModeEnabled(!approvalMode)}>{approvalMode ? 'Выйти из режима' : 'Перейти к согласованию'}</Button>}
       </Stack>
     );
-  }, [approvalMode, canUseApprovalMode, columnTools, drillTitle, embedded, exportRegister, hideHeader, inRequestsPage, pageChromeActions, resetRegisterFilters]));
+  }, [approvalMode, canUseApprovalMode, columnTools, drillTitle, embedded, exporting, hideHeader, inRequestsPage, openExportSettings, pageChromeActions, resetRegisterFilters, tableTabs]));
   return <Stack spacing={1.1} className="approval-register-page">
+    {tableTabs ? (
+      <Card className="dashboard-hero" elevation={0}>
+        <Box>
+          <Typography variant="h5">Табличный вид</Typography>
+          {tableTabs}
+        </Box>
+        {tableHeroActions}
+      </Card>
+    ) : null}
     {!inRequestsPage && !hideHeader ? (
       <Box sx={{ pt: 0.15 }}>
         <Typography fontWeight={700} letterSpacing="-0.02em" sx={{ fontSize: { xs: '1.2rem', md: '1.35rem' }, lineHeight: 1.2 }}>
@@ -2880,6 +3023,7 @@ export function ApprovalRegister({
       onGroupByChange={setGroupBy}
       analyticsFilterOptions={analyticsFilterOptions}
       drillLabels={drillLabels}
+      hideFlowSelect={Boolean(flow)}
     />
     {summaryAggregates && !approvalMode && <RegistrySummary aggregates={summaryAggregates} />}
     {!approvalMode && <AnalyticsSummaryList summary={data?.analytics_summary || []} />}
@@ -3074,6 +3218,19 @@ export function ApprovalRegister({
       pending={forwardApprovalGroups.isPending}
       onClose={() => setGroupsToForward([])}
       onConfirm={() => groupsToForward.length > 0 && forwardApprovalGroups.mutate(groupsToForward)}
+    />
+    <ExportSettingsDialog
+      open={exportOpen}
+      settings={exportSettings}
+      units={units}
+      statusOptions={REGISTER_EXPORT_STATUSES}
+      filterNote={filteredExportItemIds === null
+        ? 'Настройки подставлены из фильтров страницы. Выгрузка повторяет текущую таблицу: сводку, аналитику, иерархию реестра и помесячные планы.'
+        : `Применены фильтры по столбцам: в выгрузку попадут только ${filteredExportItemIds.length} строк(и), видимые в таблице.`}
+      exporting={exporting}
+      onClose={() => setExportOpen(false)}
+      onChange={setExportSettings}
+      onExport={() => { void exportRegister(); }}
     />
     <ArticleRevisionDialog
       open={!!revisionDialog}

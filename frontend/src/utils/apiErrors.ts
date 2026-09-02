@@ -41,3 +41,31 @@ export function getApiErrorMessage(error: unknown, fallback: string): string {
 
   return fallback;
 }
+
+/** Read FastAPI's error body when a download request used `responseType: 'blob'`. */
+export async function getDownloadApiErrorMessage(error: unknown, fallback: string): Promise<string> {
+  const body = axios.isAxiosError(error) ? error.response?.data : undefined;
+  if (!body || typeof body !== 'object' || !('text' in body) || typeof body.text !== 'function') {
+    return getApiErrorMessage(error, fallback);
+  }
+
+  try {
+    const payload = JSON.parse(await body.text()) as { detail?: unknown };
+    const detail = payload.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail === 'object' && 'message' in detail) {
+      const message = (detail as MessageDetail).message;
+      if (typeof message === 'string' && message.trim()) return message;
+    }
+    if (Array.isArray(detail)) {
+      const messages = detail
+        .map((entry) => typeof entry === 'string' ? entry : entry && typeof entry === 'object' && 'msg' in entry ? String((entry as ValidationDetail).msg) : null)
+        .filter(Boolean);
+      if (messages.length) return messages.join('; ');
+    }
+  } catch {
+    // The endpoint may have returned a non-JSON file or proxy error.
+  }
+
+  return fallback;
+}

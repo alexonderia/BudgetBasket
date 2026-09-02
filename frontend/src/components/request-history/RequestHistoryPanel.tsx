@@ -15,13 +15,14 @@ import Tabs from '@mui/material/Tabs';
 import Typography from '@mui/material/Typography';
 import { useMemo, useState } from 'react';
 import type { RequestLog } from '../../types';
-import { itemStatusLabels, money, stepStatusLabels } from '../../utils/labels';
+import { money } from '../../utils/labels';
 import {
   filterLogsByLine,
   groupHistoryEntries,
   historyActionLabel,
   historyActorName,
   historyChanges,
+  historyStatusLabel,
   splitRequestLogs,
   type HistoryChange,
 } from './requestHistory';
@@ -175,7 +176,7 @@ function GroupHistoryEntry({ entries }: { entries: RequestLog[] }) {
   const decisionFor = (entry: RequestLog) => {
     const status = entry.log.decision || entry.log.changes?.status?.to;
     return typeof status === 'string'
-      ? itemStatusLabels[status as keyof typeof itemStatusLabels] || status
+      ? historyStatusLabel(status)
       : undefined;
   };
 
@@ -201,7 +202,7 @@ function GroupHistoryEntry({ entries }: { entries: RequestLog[] }) {
     ? `${positions.size} ${positions.size === 1 ? 'позиция' : 'позиции'} · ${requestIds.size || positions.size} ${requestIds.size === 1 ? 'заявка' : 'заявки'}`
     : `${positions.size} группировки · ${itemIds.size || 0} строк`;
   const positionStatusLabel = typeof positionStatus === 'string'
-    ? stepStatusLabels[positionStatus as keyof typeof stepStatusLabels] || positionStatus
+    ? historyStatusLabel(positionStatus)
     : '';
 
   const resultFor = (entry: RequestLog) => {
