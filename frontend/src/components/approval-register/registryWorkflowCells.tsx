@@ -104,31 +104,30 @@ export function RegistryYourDecisionCell({
   };
 
   if (!active) {
-    return (
-      <Tooltip title={display?.hint || display?.label || ''} arrow placement="top">
-        <Stack
-          direction="row"
-          alignItems="center"
-          justifyContent="flex-end"
-          spacing={0.35}
-          sx={{ minWidth: 0, maxWidth: '100%' }}
-        >
-          <Typography variant="body2" sx={{ fontSize: 13, lineHeight: 1.25, fontVariantNumeric: 'tabular-nums' }}>
-            {stepAmountLabel(display)}
-          </Typography>
-          <Box sx={{ flex: '0 0 auto' }}>
+    const content = (
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="flex-end"
+        spacing={0.35}
+        sx={{ minWidth: 0, maxWidth: '100%' }}
+      >
+        <Typography variant="body2" sx={{ fontSize: 13, lineHeight: 1.25, fontVariantNumeric: 'tabular-nums' }}>
+          {stepAmountLabel(display)}
+        </Typography>
+        <Box sx={{ flex: '0 0 auto' }}>
             <EditableRegistryStatusCell
-              status={statusDisplay}
-              item={item}
-              active={false}
-              compact
-              onCommit={commitStatus}
+            status={statusDisplay}
+            item={item}
+            active={false}
+            compact
+            onCommit={commitStatus}
               onDecision={(decision) => onDecision(decision, amount)}
-            />
-          </Box>
-        </Stack>
-      </Tooltip>
+          />
+        </Box>
+      </Stack>
     );
+    return content;
   }
 
   return (
@@ -147,7 +146,7 @@ export function RegistryYourDecisionCell({
         parseValue={parseMoneyInput}
         validate={(next) => next >= 0}
         ariaLabel="Сумма вашего решения"
-        title="Изменить сумму согласования"
+        tooltip="Изменить сумму согласования"
         onCommit={commitAmount}
       />
       <Box sx={{ flex: '0 0 auto' }}>

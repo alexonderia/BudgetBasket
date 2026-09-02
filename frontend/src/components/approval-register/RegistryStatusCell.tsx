@@ -102,9 +102,9 @@ export function EditableRegistryStatusCell({
         value=""
         editable
         options={STATUS_EDIT_OPTIONS}
-        display={<StatusVisualCell presentation={presentation} />}
+        display={<StatusVisualCell presentation={presentation} disableTooltip />}
         ariaLabel="Статус и действие по строке"
-        title="Выберите доступное действие по строке"
+        tooltip="Выберите доступное действие по строке"
         onCommit={(decision) => {
           if (!decision) return;
           if (decision === 'rejected') {

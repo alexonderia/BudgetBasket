@@ -752,9 +752,11 @@ function RegistrySummary({ aggregates }: { aggregates: RegisterAggregates }) {
           {metrics.map((metric) => (
             <Box key={metric.label} sx={{ px: 1.5, py: 0.85, borderRight: { md: '1px solid rgba(15, 23, 42, 0.06)' }, borderBottom: { xs: '1px solid rgba(15, 23, 42, 0.06)', md: 0 } }}>
               <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, lineHeight: 1.2 }}>{metric.label}</Typography>
-              <Typography variant="body2" fontWeight={700} noWrap title={metric.value} sx={{ mt: 0.15, fontSize: 14, fontVariantNumeric: 'tabular-nums', color: metric.tone === 'success' ? 'success.main' : metric.tone === 'warning' ? 'warning.dark' : 'text.primary' }}>
-                {metric.value}
-              </Typography>
+              <Tooltip title={metric.value}>
+                <Typography variant="body2" fontWeight={700} noWrap sx={{ mt: 0.15, fontSize: 14, fontVariantNumeric: 'tabular-nums', color: metric.tone === 'success' ? 'success.main' : metric.tone === 'warning' ? 'warning.dark' : 'text.primary' }}>
+                  {metric.value}
+                </Typography>
+              </Tooltip>
             </Box>
           ))}
         </Box>
@@ -1064,8 +1066,8 @@ function RowActions({ item, user, onDecision, onOpen, onHistory }: { item: Appro
   return (
     <Stack direction="row" spacing={0} justifyContent="flex-end" sx={{ '& .MuiIconButton-root': { p: 0.35 } }}>
       {actionable && <>
-        <Tooltip title="Согласовать"><IconButton size="small" color="success" onClick={(event) => { event.stopPropagation(); approve(); }}><CheckCircleOutlineIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
-        <Tooltip title="Отклонить строку окончательно"><IconButton size="small" color="error" onClick={(event) => { event.stopPropagation(); reject(); }}><CancelOutlinedIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
+        <Tooltip title="Согласовать"><IconButton size="small" color="success" aria-label="Согласовать" onClick={(event) => { event.stopPropagation(); approve(); }}><CheckCircleOutlineIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
+        <Tooltip title="Отклонить строку окончательно"><IconButton size="small" color="error" aria-label="Отклонить строку окончательно" onClick={(event) => { event.stopPropagation(); reject(); }}><CancelOutlinedIcon sx={{ fontSize: 17 }} /></IconButton></Tooltip>
         <IconButton size="small" onClick={(event) => { event.stopPropagation(); setAnchor(event.currentTarget); }} aria-label="Дополнительные действия"><MoreVertIcon sx={{ fontSize: 17 }} /></IconButton>
         <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
           <MenuItem dense onClick={() => { setAnchor(null); onDecision({ rows: [item], decision: 'approved_with_changes', amount: item.approved_sum || item.requested_sum }); }}>Согласовать с корректировкой</MenuItem>
@@ -1132,7 +1134,7 @@ function GroupActions({
     >
       {hasComplete && (
         <Tooltip title="Завершить проверку заявок и передать согласованные строки в маршрут">
-          <IconButton size="small" color="primary" onClick={() => onCompleteCfoReview(group)}>
+          <IconButton size="small" color="primary" aria-label="Завершить проверку заявок и передать согласованные строки в маршрут" onClick={() => onCompleteCfoReview(group)}>
             <DoneAllIcon sx={{ fontSize: 17 }} />
           </IconButton>
         </Tooltip>
@@ -1140,13 +1142,13 @@ function GroupActions({
       {hasCfo && (
         <>
           <Tooltip title={approveTitle}>
-            <IconButton size="small" color="success" onClick={primaryApprove}>
+            <IconButton size="small" color="success" aria-label={approveTitle} onClick={primaryApprove}>
               <CheckCircleOutlineIcon sx={{ fontSize: 17 }} />
             </IconButton>
           </Tooltip>
           {showReject && (
             <Tooltip title={rejectTitle}>
-              <IconButton size="small" color="warning" onClick={primaryReject}>
+              <IconButton size="small" color="warning" aria-label={rejectTitle} onClick={primaryReject}>
                 <RestartAltIcon sx={{ fontSize: 17 }} />
               </IconButton>
             </Tooltip>
@@ -1156,13 +1158,13 @@ function GroupActions({
       {!hasCfo && hasWorkflow && (
         <>
           <Tooltip title={approveTitle}>
-            <IconButton size="small" color="success" onClick={primaryApprove}>
+            <IconButton size="small" color="success" aria-label={approveTitle} onClick={primaryApprove}>
               <CheckCircleOutlineIcon sx={{ fontSize: 17 }} />
             </IconButton>
           </Tooltip>
           {showReject && (
             <Tooltip title={rejectTitle}>
-              <IconButton size="small" color="warning" onClick={primaryReject}>
+              <IconButton size="small" color="warning" aria-label={rejectTitle} onClick={primaryReject}>
                 <RestartAltIcon sx={{ fontSize: 17 }} />
               </IconButton>
             </Tooltip>
@@ -1213,20 +1215,21 @@ function GroupYourDecisionCell({
       spacing={0.5}
       sx={{ minWidth: 0, maxWidth: '100%' }}
     >
-      <Typography
-        variant="body2"
-        noWrap
-        title={summary}
-        sx={{
-          fontSize: 13,
-          lineHeight: 1.25,
-          color: quick ? 'warning.main' : 'text.primary',
-          fontWeight: quick ? 600 : 400,
-          minWidth: 0,
-        }}
-      >
-        {summary}
-      </Typography>
+      <Tooltip title={summary}>
+        <Typography
+          variant="body2"
+          noWrap
+          sx={{
+            fontSize: 13,
+            lineHeight: 1.25,
+            color: quick ? 'warning.main' : 'text.primary',
+            fontWeight: quick ? 600 : 400,
+            minWidth: 0,
+          }}
+        >
+          {summary}
+        </Typography>
+      </Tooltip>
       {quick ? (
         <GroupActions
           group={group}
@@ -1492,21 +1495,9 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
       : null,
     structure: (
       <Box sx={{ pl: structureLevel * 1.15, minWidth: 0 }}>
-        <Typography variant="body2" title={item.name} noWrap sx={{ ...cellTextSx, fontWeight: 500 }}>{item.name}</Typography>
-        <Typography variant="caption" color="text.secondary" noWrap title={`${item.cfo_name} · ${item.article_name} · ${item.category_name} · ${item.module_name}`} sx={{ display: 'block', fontSize: 11, lineHeight: 1.2 }}>
-          {item.cfo_name} · {item.article_name} · {item.category_name} · {item.module_name}
-        </Typography>
-        {(item.justification || item.comment || item.files_count > 0) && (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            noWrap
-            title={[item.justification, item.comment, item.files_count ? `Файлов: ${item.files_count}` : ''].filter(Boolean).join(' · ')}
-            sx={{ display: 'block', fontSize: 11, lineHeight: 1.2, opacity: 0.9 }}
-          >
-            {item.justification || item.comment || (item.files_count ? `Файлов: ${item.files_count}` : '')}
-          </Typography>
-        )}
+        <Tooltip title={item.name || '—'}>
+          <Typography variant="body2" noWrap sx={{ ...cellTextSx, fontWeight: 500 }}>{item.name}</Typography>
+        </Tooltip>
         <Typography
           component="button"
           type="button"
@@ -1540,7 +1531,7 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
         parseValue={parseMoneyInput}
         validate={(amount) => amount >= 0}
         ariaLabel="Фактическая сумма"
-        title={amountEditable ? 'Изменить факт в рамках вашего шага' : 'Факт можно изменить только на назначенном вам шаге'}
+        tooltip={amountEditable ? 'Изменить факт в рамках вашего шага' : 'Факт можно изменить только на назначенном вам шаге'}
         onDraftChange={updateDraftFact}
         onCancel={cancelDraftFact}
         saveOnBlur={false}
@@ -1591,7 +1582,11 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
         </Stack>
       </Stack>
     ),
-    justification: <Typography variant="body2" noWrap title={item.justification || '—'} sx={cellTextSx}>{item.justification || '—'}</Typography>,
+    justification: (
+      <Tooltip title={item.justification || '—'}>
+        <Typography variant="body2" noWrap sx={cellTextSx}>{item.justification || '—'}</Typography>
+      </Tooltip>
+    ),
     comment: (
       <InlineEditTextCell
         value={draftComment}
@@ -1599,7 +1594,7 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
         multiline
         placeholder="—"
         ariaLabel="Комментарий к решению"
-        title="Изменить комментарий: он сохранится вместе с решением по строке"
+        tooltip="Изменить комментарий: он сохранится вместе с решением по строке"
         onCommit={updateDraftComment}
       />
     ),
@@ -1801,7 +1796,9 @@ function ModuleGroupHeaderRow({
       <Stack direction="row" alignItems="center" spacing={0.25} sx={{ pl: level * 1.15, minWidth: 0 }}>
         <Box sx={{ width: 22, flex: '0 0 auto' }} />
         <Box minWidth={0}>
-          <Typography variant="body2" fontWeight={600} noWrap title={module.name} sx={{ fontSize: 13, lineHeight: 1.25 }}>{module.name}</Typography>
+          <Tooltip title={module.name || '—'}>
+            <Typography variant="body2" fontWeight={600} noWrap sx={{ fontSize: 13, lineHeight: 1.25 }}>{module.name}</Typography>
+          </Tooltip>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>
             {module.label} · {groupRowsCaption(module)}{groupStructureCaptionExtras(module, user)}
           </Typography>
@@ -2064,7 +2061,7 @@ function TreeRows({
       select: approvalMode && groupSelectable
         ? <Checkbox size="small" checked={groupChecked} indeterminate={groupIndeterminate} onChange={(_, checked) => onToggleGroupSelected(group, checked)} onClick={(event) => event.stopPropagation()} sx={{ p: 0.35 }} inputProps={{ 'aria-label': `Выбрать ${group.name}` }} />
         : null,
-      structure: <Stack direction="row" alignItems="center" spacing={0.25} sx={{ pl: level * 1.15, minWidth: 0 }}><Box sx={{ width: 22, flex: '0 0 auto' }}>{hasContent && <IconButton size="small" aria-label={isExpanded ? 'Свернуть группу' : 'Раскрыть группу'} onClick={() => onToggle(group)} sx={{ p: 0.25 }}>{isExpanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}</IconButton>}</Box><Box minWidth={0}><Typography variant="body2" fontWeight={level === 0 ? 700 : 600} noWrap title={group.name} sx={{ fontSize: 13, lineHeight: 1.25 }}>{group.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>{group.label} · {groupRowsCaption(group)}{groupStructureCaptionExtras(group, user)}</Typography></Box></Stack>,
+      structure: <Stack direction="row" alignItems="center" spacing={0.25} sx={{ pl: level * 1.15, minWidth: 0 }}><Box sx={{ width: 22, flex: '0 0 auto' }}>{hasContent && <IconButton size="small" aria-label={isExpanded ? 'Свернуть группу' : 'Раскрыть группу'} onClick={() => onToggle(group)} sx={{ p: 0.25 }}>{isExpanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}</IconButton>}</Box><Box minWidth={0}><Tooltip title={group.name || '—'}><Typography variant="body2" fontWeight={level === 0 ? 700 : 600} noWrap sx={{ fontSize: 13, lineHeight: 1.25 }}>{group.name}</Typography></Tooltip><Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, lineHeight: 1.2 }}>{group.label} · {groupRowsCaption(group)}{groupStructureCaptionExtras(group, user)}</Typography></Box></Stack>,
       requested: <GroupAggregateAmount group={group} field="requested_sum" />,
       approved: <GroupAggregateAmount group={group} field="approved_sum" />,
       rejected: <GroupAggregateAmount group={group} field="difference" />,

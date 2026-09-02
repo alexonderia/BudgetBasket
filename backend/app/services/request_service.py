@@ -325,12 +325,13 @@ class RequestService:
         request_id: str,
         *,
         repo: Repository | None = None,
+        log_rows: list[dict] | None = None,
     ) -> dict[str, str]:
         storage = repo or self.repo
         decisions: dict[str, str] = {}
         rows = sorted(
             (
-                row for row in storage.load_all("req_logs")
+                row for row in (log_rows if log_rows is not None else storage.load_all("req_logs"))
                 if row.get("req_id") == request_id
             ),
             key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
@@ -1072,8 +1073,15 @@ class RequestService:
         self,
         users: dict[str, dict],
         profiles: dict[str, dict],
+        req_logs: list[dict] | None = None,
+        position_logs: list[dict] | None = None,
     ) -> dict[str, dict]:
         latest: dict[str, dict] = {}
+        req_log_rows = req_logs if req_logs is not None else self.repo.load_all("req_logs")
+        position_log_rows = (
+            position_logs if position_logs is not None
+            else self.repo.load_all("cfo_position_logs")
+        )
 
         def consider(
             item_id: str | None,
@@ -1096,13 +1104,13 @@ class RequestService:
                 "stage": stage or self._REGISTER_DECISION_ACTIONS.get(action),
             }
 
-        for row in self.repo.load_all("req_logs"):
+        for row in req_log_rows:
             log = row.get("log") or {}
             action = log.get("action")
             item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
             consider(item_id, row.get("created_at"), row.get("user_id"), action, log.get("stage"))
 
-        for row in self.repo.load_all("cfo_position_logs"):
+        for row in position_log_rows:
             log = row.get("log") or {}
             action = log.get("action")
             item_id = log.get("req_item_id")
@@ -1116,8 +1124,20 @@ class RequestService:
         self,
         users: dict[str, dict],
         profiles: dict[str, dict],
+        item_rows: list[dict] | None = None,
+        req_logs: list[dict] | None = None,
+        position_logs: list[dict] | None = None,
     ) -> dict[str, dict[str, dict]]:
-        items_by_id = {row["id"]: row for row in self.repo.load_all("req_items")}
+        item_rows = item_rows if item_rows is not None else self.repo.load_all("req_items")
+        req_log_rows = req_logs if req_logs is not None else self.repo.load_all("req_logs")
+        position_log_rows = (
+            position_logs if position_logs is not None
+            else self.repo.load_all("cfo_position_logs")
+        )
+        items_by_id = {
+            row["id"]: row
+            for row in item_rows
+        }
         by_item: dict[str, dict[str, dict]] = {}
 
         def consider(
@@ -1152,7 +1172,7 @@ class RequestService:
                 "item_status": item_status,
             }
 
-        for row in self.repo.load_all("req_logs"):
+        for row in req_log_rows:
             log = row.get("log") or {}
             action = log.get("action")
             item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
@@ -1165,7 +1185,7 @@ class RequestService:
                 log,
             )
 
-        for row in self.repo.load_all("cfo_position_logs"):
+        for row in position_log_rows:
             log = row.get("log") or {}
             action = log.get("action")
             item_id = log.get("req_item_id")
@@ -1795,8 +1815,50 @@ class RequestService:
         profiles = {item["user_id"]: item for item in self.repo.load_all("profiles")}
         positions = {item["id"]: item for item in self.repo.load_all("cfo_positions")}
         steps = {item["id"]: item for item in self.repo.load_all("steps")}
-        item_decisions = self._build_register_item_decisions(users, profiles)
-        item_step_decisions = self._build_register_item_step_decisions(users, profiles)
+        item_rows = self.repo.load_all("req_items")
+        req_log_rows = self.repo.load_all("req_logs")
+        position_log_rows = self.repo.load_all("cfo_position_logs")
+        item_decisions = self._build_register_item_decisions(
+            users,
+            profiles,
+            req_logs=req_log_rows,
+            position_logs=position_log_rows,
+        )
+        item_step_decisions = self._build_register_item_step_decisions(
+            users,
+            profiles,
+            item_rows=item_rows,
+            req_logs=req_log_rows,
+            position_logs=position_log_rows,
+        )
+
+        unit_levels: dict[str, int] = {}
+
+        def unit_level(unit_id: str) -> int:
+            if unit_id in unit_levels:
+                return unit_levels[unit_id]
+            level = 1
+            current = units.get(unit_id)
+            seen: set[str] = set()
+            while current and current.get("parent_id") and current["id"] not in seen:
+                seen.add(current["id"])
+                level += 1
+                current = units.get(current["parent_id"])
+            unit_levels[unit_id] = level
+            return level
+
+        cfo_by_module: dict[str, str | None] = {}
+
+        def cfo_for_module(module_id: str) -> str | None:
+            if module_id in cfo_by_module:
+                return cfo_by_module[module_id]
+            current = units.get(module_id)
+            while current and unit_level(current["id"]) > 2:
+                current = units.get(current.get("parent_id"))
+            result = current["id"] if current and unit_level(current["id"]) == 2 else None
+            cfo_by_module[module_id] = result
+            return result
+
         economist_cfo_ids = (
             self.permissions.economist_cfo_ids(user["id"])
             if user.get("role") == "economist"
@@ -1807,17 +1869,64 @@ class RequestService:
             if user.get("role") == "employee"
             else set()
         )
+        employee_module_ids = (
+            self.permissions.employee_module_ids(user["id"])
+            if user.get("role") == "employee"
+            else set()
+        )
         request_pending_items: dict[str, int] = {}
         request_active_items: dict[str, int] = {}
         cfo_decisions_by_request: dict[str, dict[str, str]] = {}
         returned_by_request: dict[str, set[str]] = {}
         cfo_completed_requests: set[str] = set()
+        logs_by_request: dict[str, list[dict]] = {}
+        for row in req_log_rows:
+            request_key = row.get("req_id")
+            if request_key:
+                logs_by_request.setdefault(request_key, []).append(row)
+
+        def latest_request_log(request_id: str, actions: set[str]) -> dict | None:
+            relevant = [
+                row for row in logs_by_request.get(request_id, [])
+                if (row.get("log") or {}).get("action") in actions
+            ]
+            return max(
+                relevant,
+                key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+                default=None,
+            )
+
         for request_key in requests:
-            cfo_decisions_by_request[request_key] = self._latest_cfo_decisions(request_key)
-            returned_by_request[request_key] = self.returned_item_ids(request_key)
-            if self.cfo_review_completed(request_key):
+            request_logs = logs_by_request.get(request_key, [])
+            cfo_decisions_by_request[request_key] = self._latest_cfo_decisions(
+                request_key,
+                log_rows=request_logs,
+            )
+            returned_log = latest_request_log(
+                request_key,
+                {
+                    "cfo_items_returned_for_revision",
+                    "request_revision_resubmitted_to_cfo",
+                    "request_restored",
+                },
+            )
+            returned_by_request[request_key] = (
+                {str(item_id) for item_id in (returned_log.get("log") or {}).get("item_ids") or []}
+                if returned_log and (returned_log.get("log") or {}).get("action") == "cfo_items_returned_for_revision"
+                else set()
+            )
+            completed_log = latest_request_log(
+                request_key,
+                {
+                    "cfo_request_review_completed",
+                    "cfo_items_returned_for_revision",
+                    "request_revision_resubmitted_to_cfo",
+                    "request_restored",
+                },
+            )
+            if completed_log and (completed_log.get("log") or {}).get("action") == "cfo_request_review_completed":
                 cfo_completed_requests.add(request_key)
-        for row in self.repo.load_all("req_items"):
+        for row in item_rows:
             if row.get("status") == ItemStatus.deleted:
                 continue
             request_key = row["request_id"]
@@ -1831,7 +1940,7 @@ class RequestService:
                     continue
                 if request["id"] in cfo_completed_requests or returned_by_request.get(request["id"]):
                     continue
-                cfo_for_request = self.permissions.cfo_for_module(request["unit_id"])
+                cfo_for_request = cfo_for_module(request["unit_id"])
                 if cfo_for_request not in employee_cfo_ids:
                     continue
                 request_key = request["id"]
@@ -1846,7 +1955,7 @@ class RequestService:
             file_counts[link.get("req_item_id")] = file_counts.get(link.get("req_item_id"), 0) + 1
         economist_decided_by_position: dict[str, set[str]] = {}
         latest_position_return: dict[str, tuple[tuple[str, int], set[str]]] = {}
-        for row in self.repo.load_all("cfo_position_logs"):
+        for row in position_log_rows:
             log = row.get("log") or {}
             position_id = row.get("cfo_position_id")
             if not position_id:
@@ -1869,14 +1978,23 @@ class RequestService:
             for position_id, (_, item_ids) in latest_position_return.items()
             if positions.get(position_id, {}).get("status") == CfoPositionStatus.on_revision
         }
-        position_items_cache: dict[str, list[dict]] = {}
+        active_request_ids = {
+            request["id"]
+            for request in requests.values()
+            if request.get("status") != RequestStatus.cancelled
+        }
+        items_by_position: dict[str, list[dict]] = {}
+        for row in item_rows:
+            position_id = row.get("cfo_position_id")
+            if (
+                position_id
+                and row.get("status") != ItemStatus.deleted
+                and row.get("request_id") in active_request_ids
+            ):
+                items_by_position.setdefault(position_id, []).append(row)
 
         def position_items(position_id: str) -> list[dict]:
-            if position_id not in position_items_cache:
-                position_items_cache[position_id] = self._items_for_position(
-                    self.repo, position_id
-                )
-            return position_items_cache[position_id]
+            return items_by_position.get(position_id, [])
 
         def can_act_on_position(position: dict | None, item: dict) -> bool:
             if not position or item.get("fixed"):
@@ -1945,7 +2063,7 @@ class RequestService:
             step = steps.get(cfo_position_current_step_id(self.repo, position)) if position else None
             return bool(
                 position
-                and not all(row.get("fixed") for row in self._items_for_position(self.repo, position["id"]))
+                and not all(row.get("fixed") for row in position_items(position["id"]))
                 and user.get("role") == "employee"
                 and position.get("cfo_unit_id") in employee_cfo_ids
                 and step
@@ -2010,7 +2128,7 @@ class RequestService:
             if mine_only and request_author_id(self.repo, request["id"]) != user.get("id"):
                 continue
             module = units.get(request.get("unit_id"), {})
-            current_cfo_id = self.permissions.cfo_for_module(request["unit_id"])
+            current_cfo_id = cfo_for_module(request["unit_id"])
             cfo = units.get(current_cfo_id, {})
             kind = "dds" if item.get("dds_id") else "invest"
             category = catalogs[kind].get(item.get(f"{kind}_id"), {})
@@ -2074,7 +2192,7 @@ class RequestService:
                 "is_revision_actionable": (
                     item["id"] in returned_item_ids
                     and user.get("role") == "employee"
-                    and request["unit_id"] in self.permissions.employee_module_ids(user["id"])
+                    and request["unit_id"] in employee_module_ids
                     and not item.get("frozen")
                     and not item.get("fixed")
                 ),
@@ -2108,18 +2226,6 @@ class RequestService:
                 "frozen": bool(item.get("frozen")),
                 "fixed": bool(item.get("fixed")),
             }
-            entry["status_context"] = self._register_status_context(
-                user=user,
-                users=users,
-                profiles=profiles,
-                steps=steps,
-                position=position,
-                cfo_id=current_cfo_id,
-                entry=entry,
-                item_decisions=item_decisions,
-                item_step_decisions=item_step_decisions,
-                economist_decided_by_position=economist_decided_by_position,
-            )
             if budget_year and entry["budget_year"] != budget_year:
                 continue
             if cfo_id and entry["cfo_id"] != cfo_id:
@@ -2150,6 +2256,22 @@ class RequestService:
                 *ANALYTICS_FIELDS,
             )).casefold():
                 continue
+            # Build the expensive workflow context only for rows that survive
+            # the register scope and filters.  Group row requests usually
+            # target one category/module, so calculating it for every item in
+            # the database makes expansion unnecessarily slow.
+            entry["status_context"] = self._register_status_context(
+                user=user,
+                users=users,
+                profiles=profiles,
+                steps=steps,
+                position=position,
+                cfo_id=current_cfo_id,
+                entry=entry,
+                item_decisions=item_decisions,
+                item_step_decisions=item_step_decisions,
+                economist_decided_by_position=economist_decided_by_position,
+            )
             entries.append(entry)
         return entries
 

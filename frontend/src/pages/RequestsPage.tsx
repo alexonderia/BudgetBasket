@@ -623,15 +623,17 @@ function RequestsListPage({ user }: { user: User }) {
             ) : null}
             {canRestore ? (
               <Tooltip title="Восстановить заявку">
-                <IconButton
-                  size="small"
-                  color="warning"
-                  disabled={restoreRequest.isPending}
-                  onClick={(event) => { event.stopPropagation(); restoreRequest.mutate(item.id); }}
-                  aria-label="Восстановить заявку"
-                >
-                  <UndoIcon fontSize="small" />
-                </IconButton>
+                <span>
+                  <IconButton
+                    size="small"
+                    color="warning"
+                    disabled={restoreRequest.isPending}
+                    onClick={(event) => { event.stopPropagation(); restoreRequest.mutate(item.id); }}
+                    aria-label="Восстановить заявку"
+                  >
+                    <UndoIcon fontSize="small" />
+                  </IconButton>
+                </span>
               </Tooltip>
             ) : null}
             {canDelete ? (
@@ -651,7 +653,7 @@ function RequestsListPage({ user }: { user: User }) {
       );
     }
     if (columnId === 'unit') return <TableCell key={columnId}>{formatUnitName(item.unit_id)}</TableCell>;
-    if (columnId === 'status') return <TableCell key={columnId}><Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap><RequestStatusBadge status={item.status} />{item.frozen && <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}><LockOutlinedIcon color={item.fixed ? 'success' : 'warning'} fontSize="small" /></Tooltip>}</Stack></TableCell>;
+    if (columnId === 'status') return <TableCell key={columnId}><Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap><RequestStatusBadge status={item.status} />{item.frozen && <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}><LockOutlinedIcon aria-label={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'} color={item.fixed ? 'success' : 'warning'} fontSize="small" /></Tooltip>}</Stack></TableCell>;
     if (columnId === 'my_step') return <TableCell key={columnId}><Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(item.my_step_statuses || []).map((step, index) => <StepStatusBadge key={`${step.status}-${index}`} status={step.reviewed && step.status === 'on_approval' ? 'approved' : step.status} label={step.reviewed && step.status === 'on_approval' ? 'Согласовано' : undefined} />)}{!item.my_step_statuses?.length && '—'}</Stack></TableCell>;
     if (columnId === 'planned') return <TableCell key={columnId}>{money(requestAmounts(item).planned)}</TableCell>;
     if (columnId === 'approved') return <TableCell key={columnId}>{money(requestAmounts(item).approved)}</TableCell>;
@@ -1025,7 +1027,7 @@ function RequestsListPage({ user }: { user: User }) {
                         <RequestStatusBadge status={item.status} />
                         {item.frozen && (
                           <Tooltip title={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'}>
-                            <LockOutlinedIcon color={item.fixed ? 'success' : 'warning'} fontSize="small" />
+                            <LockOutlinedIcon aria-label={item.fixed ? 'Окончательно зафиксирована ЗГД' : 'Заморожена экономистом'} color={item.fixed ? 'success' : 'warning'} fontSize="small" />
                           </Tooltip>
                         )}
                       </Stack>

@@ -11,7 +11,7 @@ export function InlineEditSelectCell<T extends string>({
   onCommit,
   display,
   ariaLabel = 'Выбор значения',
-  title = 'Нажмите, чтобы изменить',
+  tooltip = 'Нажмите, чтобы изменить',
 }: {
   value: T;
   editable: boolean;
@@ -19,7 +19,7 @@ export function InlineEditSelectCell<T extends string>({
   onCommit: (value: T) => void;
   display: ReactNode;
   ariaLabel?: string;
-  title?: string;
+  tooltip?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<T>(value);
@@ -37,7 +37,7 @@ export function InlineEditSelectCell<T extends string>({
 
   if (!editing) {
     return (
-      <ClickToEditTrigger emphasized={false} title={title} onActivate={() => setEditing(true)}>
+      <ClickToEditTrigger emphasized={false} tooltip={tooltip} ariaLabel={ariaLabel} onActivate={() => setEditing(true)}>
         {display}
       </ClickToEditTrigger>
     );

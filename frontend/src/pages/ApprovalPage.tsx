@@ -422,7 +422,9 @@ function EdgeDeleteGraphPreview({
                   <rect x={position.x} y={position.y} width="4" height={nodeHeight} rx="2" fill="#2F6FED" />
                   <foreignObject x={position.x + 10} y={position.y + 6} width={nodeWidth - 16} height={nodeHeight - 12}>
                     <div className="approval-edge-delete-preview-node">
-                      <span title={node.label}>{shortRouteLabel(node.label)}</span>
+                      <Tooltip title={node.label || '—'} arrow>
+                        <span>{shortRouteLabel(node.label)}</span>
+                      </Tooltip>
                     </div>
                   </foreignObject>
                 </g>
@@ -1643,13 +1645,16 @@ function AdminApprovalPage() {
                 <TableCell>{step.child_step_ids.map((id) => stepNames.get(id) || id.slice(0, 8)).join(', ') || '—'}</TableCell>
                 <TableCell align="right">
                   <Tooltip title="Удалить шаг">
-                    <IconButton
-                      color="error"
-                      onClick={() => setStepDeleteTarget(step)}
-                      disabled={!canDeleteApprovalStep(step)}
-                    >
-                      <DeleteOutlineIcon />
-                    </IconButton>
+                    <span>
+                      <IconButton
+                        color="error"
+                        onClick={() => setStepDeleteTarget(step)}
+                        disabled={!canDeleteApprovalStep(step)}
+                        aria-label="Удалить шаг"
+                      >
+                        <DeleteOutlineIcon />
+                      </IconButton>
+                    </span>
                   </Tooltip>
                 </TableCell>
               </TableRow>

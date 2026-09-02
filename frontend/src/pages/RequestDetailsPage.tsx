@@ -664,16 +664,18 @@ function ItemFilesCell({
           </Tooltip>
           {editing && (
             <Tooltip title="Удалить файл при сохранении">
-              <IconButton
-                size="small"
-                color="default"
-                onClick={() => onStageDelete(file)}
-                disabled={disabled}
-                aria-label="Удалить файл"
-                sx={{ color: 'text.secondary', flexShrink: 0 }}
-              >
-              <CloseIcon fontSize="small" />
-              </IconButton>
+              <span>
+                <IconButton
+                  size="small"
+                  color="default"
+                  onClick={() => onStageDelete(file)}
+                  disabled={disabled}
+                  aria-label="Удалить файл"
+                  sx={{ color: 'text.secondary', flexShrink: 0 }}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              </span>
             </Tooltip>
           )}
         </Stack>
@@ -716,19 +718,21 @@ function FileAttachAction({
 }) {
   return (
     <Tooltip title="Прикрепить файл">
-      <IconButton component="label" size="small" color="primary" disabled={disabled} aria-label="Прикрепить файл">
-        <AttachFileIcon fontSize="small" />
-        <input
-          hidden
-          type="file"
-          accept={UPLOAD_ACCEPT}
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = '';
-            if (file) onUpload(file);
-          }}
-        />
-      </IconButton>
+      <span>
+        <IconButton component="label" size="small" color="primary" disabled={disabled} aria-label="Прикрепить файл">
+          <AttachFileIcon fontSize="small" />
+          <input
+            hidden
+            type="file"
+            accept={UPLOAD_ACCEPT}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (file) onUpload(file);
+            }}
+          />
+        </IconButton>
+      </span>
     </Tooltip>
   );
 }
@@ -917,20 +921,22 @@ function AddItemForm({
                   }}
                 />
                 <Tooltip title={lockedMonths.has(index + 1) ? 'Месяц зафиксирован: не менять при распределении' : 'Зафиксировать месяц при распределении'}>
-                  <IconButton
-                    size="small"
-                    aria-label={lockedMonths.has(index + 1) ? `Снять фиксацию: ${month}` : `Зафиксировать: ${month}`}
-                    disabled={disabled}
-                    onClick={() => setLockedMonths((current) => {
-                      const next = new Set(current);
-                      if (next.has(index + 1)) next.delete(index + 1);
-                      else next.add(index + 1);
-                      return next;
-                    })}
-                    sx={{ mt: 0.5 }}
-                  >
-                    {lockedMonths.has(index + 1) ? <LockOutlinedIcon fontSize="small" color="primary" /> : <LockOpenOutlinedIcon fontSize="small" />}
-                  </IconButton>
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label={lockedMonths.has(index + 1) ? `Снять фиксацию: ${month}` : `Зафиксировать: ${month}`}
+                      disabled={disabled}
+                      onClick={() => setLockedMonths((current) => {
+                        const next = new Set(current);
+                        if (next.has(index + 1)) next.delete(index + 1);
+                        else next.add(index + 1);
+                        return next;
+                      })}
+                      sx={{ mt: 0.5 }}
+                    >
+                      {lockedMonths.has(index + 1) ? <LockOutlinedIcon fontSize="small" color="primary" /> : <LockOpenOutlinedIcon fontSize="small" />}
+                    </IconButton>
+                  </span>
                 </Tooltip>
               </Box>
             ))}
@@ -1457,16 +1463,18 @@ function ItemsTable({
                   value={local.name ?? item.name}
                   editable
                   ariaLabel="Название строки"
-                  title="Нажмите, чтобы изменить название строки"
+                  tooltip="Нажмите, чтобы изменить название строки"
                   onCommit={(name) => setDrafts((current) => ({
                     ...current,
                     [item.id]: { ...current[item.id], name },
                   }))}
                 />
               ) : (
-                <Typography variant="body2" title={item.name || '—'} sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {item.name || '—'}
-                </Typography>
+                <Tooltip title={item.name || '—'}>
+                  <Typography variant="body2" sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.name || '—'}
+                  </Typography>
+                </Tooltip>
               )}
               {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" sx={{ mt: 0.25, height: 20, fontSize: 10 }} />}
             </Box>
@@ -1500,7 +1508,7 @@ function ItemsTable({
                 editable
                 multiline
                 ariaLabel="Обоснование"
-                title="Нажмите, чтобы изменить обоснование"
+                tooltip="Нажмите, чтобы изменить обоснование"
                 onCommit={(justification) => setDrafts((current) => ({
                   ...current,
                   [item.id]: { ...current[item.id], justification },
@@ -1523,7 +1531,7 @@ function ItemsTable({
                 }}
                 validate={(amount) => amount >= 0}
                 ariaLabel="Запрошенная сумма"
-                title="Нажмите, чтобы изменить запрошенную сумму"
+                tooltip="Нажмите, чтобы изменить запрошенную сумму"
                 onCommit={(sum_plan) => {
                   const month_plans = evenlyDistributeMonthPlans(monthAmountToCents(String(sum_plan)));
                   setDrafts((current) => ({
@@ -1586,7 +1594,7 @@ function ItemsTable({
                 }}
                 validate={(amount) => amount >= 0}
                 ariaLabel="Фактическая сумма"
-                title="Нажмите, чтобы изменить фактическую сумму"
+                tooltip="Нажмите, чтобы изменить фактическую сумму"
                 onDraftChange={(sum_fact) => setDrafts((current) => ({
                   ...current,
                   [item.id]: { ...current[item.id], sum_fact },
@@ -1658,7 +1666,7 @@ function ItemsTable({
                 value={value}
                 editable
                 ariaLabel={ANALYTICS_FIELD_LABELS[columnId]}
-                title={`Нажмите, чтобы изменить «${ANALYTICS_FIELD_LABELS[columnId]}»`}
+                tooltip={`Нажмите, чтобы изменить «${ANALYTICS_FIELD_LABELS[columnId]}»`}
                 onCommit={(analyticsValue) => setDrafts((current) => ({
                   ...current,
                   [item.id]: { ...current[item.id], [columnId]: analyticsValue },
@@ -1710,27 +1718,31 @@ function ItemsTable({
                     onUpload={(file) => stageFile(item.id, file)}
                   />
                   <Tooltip title="Перераспределить в другую статью или категорию">
-                    <IconButton
-                      size="small"
-                      color="primary"
-                      onClick={() => setRedistributionTarget(item)}
-                      disabled={saveTableChanges.isPending}
-                      aria-label="Перераспределить строку"
-                    >
-                      <SwapHorizIcon fontSize="small" />
-                    </IconButton>
+                    <span>
+                      <IconButton
+                        size="small"
+                        color="primary"
+                        onClick={() => setRedistributionTarget(item)}
+                        disabled={saveTableChanges.isPending}
+                        aria-label="Перераспределить строку"
+                      >
+                        <SwapHorizIcon fontSize="small" />
+                      </IconButton>
+                    </span>
                   </Tooltip>
                   {canDeleteItem && (
                     <Tooltip title="Удалить строку">
-                      <IconButton
-                        size="small"
-                        color="error"
-                        onClick={() => setDeleteTarget(item)}
-                        disabled={saveTableChanges.isPending}
-                        aria-label="Удалить строку"
-                      >
-                        <DeleteOutlineIcon fontSize="small" />
-                      </IconButton>
+                      <span>
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => setDeleteTarget(item)}
+                          disabled={saveTableChanges.isPending}
+                          aria-label="Удалить строку"
+                        >
+                          <DeleteOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </span>
                     </Tooltip>
                   )}
                 </>
@@ -1965,9 +1977,11 @@ function ItemsTable({
                   {expanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}
                 </IconButton>
                 <Box minWidth={0}>
-                  <Typography variant="body2" fontWeight={level === 'article' ? 700 : 600} noWrap title={label} sx={{ fontSize: 13, lineHeight: 1.25 }}>
-                    {level === 'article' ? 'Статья' : 'Категория'}: {label}
-                  </Typography>
+                  <Tooltip title={label || '—'}>
+                    <Typography variant="body2" fontWeight={level === 'article' ? 700 : 600} noWrap sx={{ fontSize: 13, lineHeight: 1.25 }}>
+                      {level === 'article' ? 'Статья' : 'Категория'}: {label}
+                    </Typography>
+                  </Tooltip>
                   <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, lineHeight: 1.2 }}>
                     {totals.total} {totals.total === 1 ? 'строка' : totals.total < 5 ? 'строки' : 'строк'}
                   </Typography>
@@ -2282,7 +2296,7 @@ function ItemsTable({
                                     align="right"
                                     displayValue={displayAmount}
                                     ariaLabel={`План ${month}`}
-                                    title={`Нажмите, чтобы изменить план на ${month}`}
+                                    tooltip={`Нажмите, чтобы изменить план на ${month}`}
                                     onCommit={(next) => {
                                       const nextPlans = completeMonthPlans(visibleMonthPlans).map((entry) => (
                                         entry.month === index + 1

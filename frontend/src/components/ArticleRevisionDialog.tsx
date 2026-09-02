@@ -276,7 +276,7 @@ export function ArticleRevisionDialog({
                                 }}
                                 validate={(amount) => amount >= 0}
                                 ariaLabel="Согласованная сумма"
-                                title="Нажмите, чтобы изменить сумму"
+                                tooltip="Нажмите, чтобы изменить сумму"
                                 onCommit={(amount) => setLineValues((current) => ({
                                   ...current,
                                   [line.id]: {
@@ -311,7 +311,7 @@ export function ArticleRevisionDialog({
                                 editable={checked}
                                 placeholder="Комментарий к строке"
                                 ariaLabel="Комментарий к строке"
-                                title="Нажмите, чтобы добавить комментарий к строке"
+                                tooltip="Нажмите, чтобы добавить комментарий к строке"
                                 onCommit={(comment) => setLineValues((current) => ({
                                   ...current,
                                   [line.id]: {

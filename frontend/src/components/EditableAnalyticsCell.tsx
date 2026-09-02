@@ -41,7 +41,7 @@ export function EditableAnalyticsCell({
       multiline={multiline}
       pending={save.isPending}
       ariaLabel={ANALYTICS_FIELD_LABELS[field]}
-      title={`Нажмите, чтобы изменить ${ANALYTICS_FIELD_LABELS[field].toLowerCase()}`}
+      tooltip={`Нажмите, чтобы изменить ${ANALYTICS_FIELD_LABELS[field].toLowerCase()}`}
       onCommit={(next) => save.mutate(next)}
     />
   );

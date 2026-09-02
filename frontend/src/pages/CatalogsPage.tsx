@@ -269,7 +269,7 @@ export default function CatalogsPage({ user }: { user: User }) {
                 value={article.name}
                 editable={user.role === 'admin'}
                 ariaLabel={meta.article}
-                title={`Нажмите, чтобы изменить: ${meta.article.toLocaleLowerCase()}`}
+                tooltip={`Нажмите, чтобы изменить: ${meta.article.toLocaleLowerCase()}`}
                 onCommit={(name) => update.mutate({ id: article.id, body: { name, is_active: article.is_active } })}
               />
             </TableCell>
@@ -294,7 +294,7 @@ export default function CatalogsPage({ user }: { user: User }) {
                 value={row.name}
                 editable={canManageCategories}
                 ariaLabel="Категория"
-                title="Нажмите, чтобы изменить категорию"
+                tooltip="Нажмите, чтобы изменить категорию"
                 onCommit={(name) => update.mutate({ id: row.id, body: { name, is_active: row.is_active } })}
               />
             </TableCell>

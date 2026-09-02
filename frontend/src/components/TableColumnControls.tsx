@@ -298,6 +298,7 @@ export function TableColumnHeader({
                   size="small"
                   color={columnSorted ? 'primary' : 'default'}
                   onClick={toggleSort}
+                  aria-label={columnSorted ? 'Изменить направление сортировки' : 'Сортировать'}
                   sx={{ opacity: columnSorted ? 1 : 0.72, p: 0.35 }}
                 >
                   <ArrowDownwardIcon
@@ -312,7 +313,7 @@ export function TableColumnHeader({
             )}
             {filterable && (
               <Tooltip title={menuActive ? filterSummary : 'Фильтр'}>
-                <IconButton size="small" color={menuActive ? 'primary' : 'default'} onClick={openFilterMenu} sx={{ p: 0.35 }}>
+                <IconButton size="small" color={menuActive ? 'primary' : 'default'} onClick={openFilterMenu} aria-label={menuActive ? filterSummary : 'Фильтр'} sx={{ p: 0.35 }}>
                   {columnFiltered ? <FilterAltOutlinedIcon fontSize="inherit" /> : <ArrowDropDownIcon fontSize="inherit" />}
                 </IconButton>
               </Tooltip>

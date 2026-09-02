@@ -69,9 +69,9 @@ type ArticleCfoBreakdown = Breakdown & {
   cfo: Breakdown[];
 };
 
-function DashboardDrillLink({ to, title, children }: { to: string; title: string; children: ReactNode }) {
+function DashboardDrillLink({ to, tooltip, children }: { to: string; tooltip: string; children: ReactNode }) {
   return (
-    <Tooltip title={title} arrow>
+    <Tooltip title={tooltip}>
       <Box
         component={RouterLink}
         to={to}
@@ -97,16 +97,16 @@ function DashboardDrillLink({ to, title, children }: { to: string; title: string
   );
 }
 
-function DashboardDrillButton({ to, title }: { to: string; title: string }) {
+function DashboardDrillButton({ to, tooltip }: { to: string; tooltip: string }) {
   return (
-    <Tooltip title={title} arrow>
+    <Tooltip title={tooltip}>
       <IconButton
         component={RouterLink}
         to={to}
         target="_blank"
         rel="noopener noreferrer"
         size="small"
-        aria-label={title}
+        aria-label={tooltip}
         sx={{ color: 'text.secondary', '&:hover': { color: 'primary.main' } }}
       >
         <OpenInNewIcon sx={{ fontSize: 16 }} />
@@ -247,18 +247,18 @@ function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
             <Stack direction="row" spacing={0.9} minWidth={0} alignItems="center" className="dashboard-legend-name">
               <Box className="dashboard-legend-dot" sx={{ backgroundColor: segment.color }} />
               {getRowHref?.(segment) ? (
-                <DashboardDrillLink to={getRowHref(segment)!} title="Открыть строки в реестре">
-                  <Typography variant="body2" noWrap title={segment.name}>{segment.name}</Typography>
+                <DashboardDrillLink to={getRowHref(segment)!} tooltip={`Открыть строки в реестре: ${segment.name}`}>
+                  <Typography variant="body2" noWrap>{segment.name}</Typography>
                 </DashboardDrillLink>
               ) : (
-                <Typography variant="body2" noWrap title={segment.name}>{segment.name}</Typography>
+                <Tooltip title={segment.name || '—'}><Typography variant="body2" noWrap>{segment.name}</Typography></Tooltip>
               )}
               {showType && <Chip size="small" label={segment.kind === 'invest' ? 'Инвест' : 'ДДС'} className={`dashboard-type-chip dashboard-type-chip-${segment.kind}`} />}
             </Stack>
             <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0} className="dashboard-legend-values">
               <Tooltip title={money(segment.planned)} arrow><Typography variant="body2" color="text.secondary">{compactMoney(segment.planned)}</Typography></Tooltip>
               <Typography variant="body2" color="text.secondary" fontWeight={700}>{segment.percentage.toFixed(0)}%</Typography>
-              {getRowHref?.(segment) ? <DashboardDrillButton to={getRowHref(segment)!} title="Открыть строки в реестре" /> : null}
+              {getRowHref?.(segment) ? <DashboardDrillButton to={getRowHref(segment)!} tooltip="Открыть строки в реестре" /> : null}
             </Stack>
           </Stack>
         ))}
@@ -290,11 +290,11 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts, getRowHref 
                 <Stack direction="row" justifyContent="space-between" spacing={1.5} alignItems="baseline">
                   <Stack direction="row" spacing={0.8} alignItems="center" minWidth={0}>
                   {getRowHref?.(row) ? (
-                    <DashboardDrillLink to={getRowHref(row)!} title="Открыть строки статьи в реестре">
-                      <Typography variant="body2" fontWeight={650} noWrap title={row.name}>{row.name}</Typography>
+                    <DashboardDrillLink to={getRowHref(row)!} tooltip={`Открыть строки статьи в реестре: ${row.name}`}>
+                      <Typography variant="body2" fontWeight={650} noWrap>{row.name}</Typography>
                     </DashboardDrillLink>
                   ) : (
-                    <Typography variant="body2" fontWeight={650} noWrap title={row.name}>{row.name}</Typography>
+                    <Tooltip title={row.name || '—'}><Typography variant="body2" fontWeight={650} noWrap>{row.name}</Typography></Tooltip>
                   )}
                   {showType ? (
                     <Chip
@@ -303,7 +303,7 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts, getRowHref 
                       className={`dashboard-type-chip dashboard-type-chip-${row.kind}`}
                     />
                   ) : null}
-                  {getRowHref?.(row) ? <DashboardDrillButton to={getRowHref(row)!} title="Открыть строки статьи в реестре" /> : null}
+                  {getRowHref?.(row) ? <DashboardDrillButton to={getRowHref(row)!} tooltip="Открыть строки статьи в реестре" /> : null}
                 </Stack>
                   {showAmounts ? (
                     <Stack className="dashboard-article-amounts" spacing={0.15} alignItems="flex-end">
@@ -354,18 +354,18 @@ function CfoShareBars({ rows, getRowHref }: { rows: Breakdown[]; getRowHref?: (r
             <Stack key={row.id} className="dashboard-cfo-legend-item" direction="row" spacing={0.8} alignItems="center" minWidth={0}>
               <Box className="dashboard-legend-dot" sx={{ backgroundColor: chartColorForId(row.id) }} />
               {getRowHref?.(row) ? (
-                <DashboardDrillLink to={getRowHref(row)!} title="Открыть строки ЦФО в реестре">
-                  <Typography variant="body2" noWrap title={row.name} minWidth={0}>{row.name}</Typography>
+                <DashboardDrillLink to={getRowHref(row)!} tooltip={`Открыть строки ЦФО в реестре: ${row.name}`}>
+                  <Typography variant="body2" noWrap minWidth={0}>{row.name}</Typography>
                 </DashboardDrillLink>
               ) : (
-                <Typography variant="body2" noWrap title={row.name} minWidth={0}>{row.name}</Typography>
+                <Tooltip title={row.name || '—'}><Typography variant="body2" noWrap minWidth={0}>{row.name}</Typography></Tooltip>
               )}
               <Stack direction="row" spacing={0.8} alignItems="baseline" flexShrink={0} className="dashboard-cfo-values">
                 <Tooltip title={money(row.planned)} arrow>
                   <Typography variant="body2" color="text.secondary">{compactMoney(row.planned)}</Typography>
                 </Tooltip>
                 <Typography variant="body2" color="primary.main" fontWeight={700}>{share.toFixed(0)}%</Typography>
-                {getRowHref?.(row) ? <DashboardDrillButton to={getRowHref(row)!} title="Открыть строки ЦФО в реестре" /> : null}
+                {getRowHref?.(row) ? <DashboardDrillButton to={getRowHref(row)!} tooltip="Открыть строки ЦФО в реестре" /> : null}
               </Stack>
             </Stack>
           );
@@ -528,13 +528,13 @@ export default function DashboardPage({ user }: { user: User }) {
                 <LinearProgress variant="determinate" value={approvalRate} sx={{ mt: 1, height: 9, borderRadius: 9 }} />
               </Box>
               <Box className="dashboard-status-summary">
-                <DashboardDrillLink to={requestsApprovedHref} title="Открыть детализацию утверждённых">
+                <DashboardDrillLink to={requestsApprovedHref} tooltip="Открыть детализацию утверждённых">
                   <Box><Typography variant="h6">{data.totals.approved_requests_count}</Typography><Typography variant="body2" color="text.secondary">утверждено</Typography></Box>
                 </DashboardDrillLink>
-                <DashboardDrillLink to={requestsReviewHref} title="Открыть детализацию заявок на проверке">
+                <DashboardDrillLink to={requestsReviewHref} tooltip="Открыть детализацию заявок на проверке">
                   <Box><Typography variant="h6">{data.totals.review_requests_count}</Typography><Typography variant="body2" color="text.secondary">на проверке</Typography></Box>
                 </DashboardDrillLink>
-                <DashboardDrillLink to={requestsAllHref} title="Открыть детализацию реестра">
+                <DashboardDrillLink to={requestsAllHref} tooltip="Открыть детализацию реестра">
                   <Box><Typography variant="h6">{data.totals.requests_count}</Typography><Typography variant="body2" color="text.secondary">всего заявок</Typography></Box>
                 </DashboardDrillLink>
               </Box>
@@ -571,13 +571,13 @@ export default function DashboardPage({ user }: { user: User }) {
                       <Stack direction="row" spacing={0.8} alignItems="center" minWidth={0}>
                         {articleRegisterHref(article) ? (
                           <>
-                            <DashboardDrillLink to={articleRegisterHref(article)!} title="Открыть строки статьи в реестре">
-                              <Typography variant="body1" fontWeight={700} noWrap title={article.name}>{article.name}</Typography>
+                            <DashboardDrillLink to={articleRegisterHref(article)!} tooltip={`Открыть строки статьи в реестре: ${article.name}`}>
+                              <Typography variant="body1" fontWeight={700} noWrap>{article.name}</Typography>
                             </DashboardDrillLink>
-                            <DashboardDrillButton to={articleRegisterHref(article)!} title="Открыть строки статьи в реестре" />
+                            <DashboardDrillButton to={articleRegisterHref(article)!} tooltip="Открыть строки статьи в реестре" />
                           </>
                         ) : (
-                          <Typography variant="body1" fontWeight={700} noWrap title={article.name}>{article.name}</Typography>
+                          <Tooltip title={article.name || '—'}><Typography variant="body1" fontWeight={700} noWrap>{article.name}</Typography></Tooltip>
                         )}
                         <Chip size="small" label={article.kind === 'invest' ? 'Инвест-проект' : 'Статья ДДС'} className={`dashboard-type-chip dashboard-type-chip-${article.kind}`} />
                       </Stack>

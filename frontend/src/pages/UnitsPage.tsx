@@ -223,15 +223,17 @@ function UnitFormDialog({
         {title}
         {isEdit && onDelete && (
           <Tooltip title="Удалить объединение">
-            <IconButton
-              color="error"
-              onClick={onDelete}
-              disabled={pending || deletePending}
-              sx={{ position: 'absolute', top: 18, right: 18 }}
-              aria-label="Удалить объединение"
-            >
-              <DeleteOutlineIcon />
-            </IconButton>
+            <span>
+              <IconButton
+                color="error"
+                onClick={onDelete}
+                disabled={pending || deletePending}
+                sx={{ position: 'absolute', top: 18, right: 18 }}
+                aria-label="Удалить объединение"
+              >
+                <DeleteOutlineIcon />
+              </IconButton>
+            </span>
           </Tooltip>
         )}
       </DialogTitle>
@@ -300,32 +302,36 @@ function UnitFormDialog({
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}>
                   <UserAutocomplete users={employees} value={employeeId} label="Ответственный сотрудник" size="small" onChange={setEmployeeId} />
                   <Tooltip title={employeeId ? 'Сохранить назначение' : 'Снять ответственного'}>
-                    <Button
-                      variant="outlined"
-                      disabled={assignPending || (!employeeId && !responsibleUserId)}
-                      onClick={() => employeeId ? onAssignResponsible(employeeId) : onUnassignResponsible()}
-                      aria-label={employeeId ? 'Сохранить назначение' : 'Снять ответственного'}
-                      sx={{ minWidth: 44, width: 44, px: 0 }}
-                    >
-                      {employeeId ? <SaveOutlinedIcon fontSize="small" /> : <PersonRemoveOutlinedIcon fontSize="small" />}
-                    </Button>
+                    <span>
+                      <Button
+                        variant="outlined"
+                        disabled={assignPending || (!employeeId && !responsibleUserId)}
+                        onClick={() => employeeId ? onAssignResponsible(employeeId) : onUnassignResponsible()}
+                        aria-label={employeeId ? 'Сохранить назначение' : 'Снять ответственного'}
+                        sx={{ minWidth: 44, width: 44, px: 0 }}
+                      >
+                        {employeeId ? <SaveOutlinedIcon fontSize="small" /> : <PersonRemoveOutlinedIcon fontSize="small" />}
+                      </Button>
+                    </span>
                   </Tooltip>
                 </Stack>
 
               {canAssignEconomist && <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}>
                 <UserAutocomplete users={economists} value={economistId} label="Экономист" size="small" onChange={setEconomistId} />
                 <Tooltip title={economistId ? 'Сохранить назначение' : 'Снять экономиста'}>
-                  <Button
-                    variant="outlined"
-                    disabled={assignPending || (!economistId && linkedEconomists.length === 0)}
-                    onClick={() => economistId
-                      ? onAssignEconomist(economistId, mode.kind === 'edit' ? mode.unit.id : '')
-                      : onUnassignEconomist(linkedEconomists[0].id)}
-                    aria-label={economistId ? 'Сохранить назначение' : 'Снять экономиста'}
-                    sx={{ minWidth: 44, width: 44, px: 0 }}
-                  >
-                    {economistId ? <SaveOutlinedIcon fontSize="small" /> : <PersonRemoveOutlinedIcon fontSize="small" />}
-                  </Button>
+                  <span>
+                    <Button
+                      variant="outlined"
+                      disabled={assignPending || (!economistId && linkedEconomists.length === 0)}
+                      onClick={() => economistId
+                        ? onAssignEconomist(economistId, mode.kind === 'edit' ? mode.unit.id : '')
+                        : onUnassignEconomist(linkedEconomists[0].id)}
+                      aria-label={economistId ? 'Сохранить назначение' : 'Снять экономиста'}
+                      sx={{ minWidth: 44, width: 44, px: 0 }}
+                    >
+                      {economistId ? <SaveOutlinedIcon fontSize="small" /> : <PersonRemoveOutlinedIcon fontSize="small" />}
+                    </Button>
+                  </span>
                 </Tooltip>
               </Stack>}
 

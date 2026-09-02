@@ -58,7 +58,7 @@ export function GroupAnalyticsCell({
       emphasizedWhenEmpty={mixed || !committed}
       pending={save.isPending}
       ariaLabel={`${ANALYTICS_FIELD_LABELS[field]} для группы`}
-      title={mixed
+      tooltip={mixed
         ? 'Нажмите, чтобы задать одно значение для всех строк группы'
         : `Нажмите, чтобы изменить ${ANALYTICS_FIELD_LABELS[field].toLowerCase()} для всех строк`}
       onCommit={(next) => {

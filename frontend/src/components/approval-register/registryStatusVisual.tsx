@@ -471,31 +471,38 @@ function StatusTooltip({ presentation }: { presentation: StatusVisualPresentatio
   );
 }
 
-export function StatusVisualCell({ presentation }: { presentation: StatusVisualPresentation }) {
+export function StatusVisualCell({ presentation, disableTooltip = false }: { presentation: StatusVisualPresentation; disableTooltip?: boolean }) {
   const showActionIndicator = presentation.showActionIndicator && !presentation.primaryIconOnly;
-
-  return (
-    <Tooltip title={<StatusTooltip presentation={presentation} />} arrow placement="top">
-      <Box sx={{ minWidth: 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 0.25, py: 0.15 }}>
-        <Box sx={{ height: BADGE_HEIGHT, display: 'flex', alignItems: 'center', gap: 0.35, minWidth: 0 }}>
-          <Box sx={{ minWidth: 0, flex: presentation.primaryIconOnly ? '0 0 auto' : 1, height: BADGE_HEIGHT, display: 'flex', alignItems: 'center' }}>
-            <StatusVisualBadge spec={presentation.primary} iconOnly={presentation.primaryIconOnly} />
-          </Box>
-          {showActionIndicator ? <ActionIndicatorIcon /> : null}
-        </Box>
-        {presentation.footnote ? (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            noWrap
-            sx={{ display: 'block', fontSize: 10, lineHeight: 1.2, maxWidth: '100%' }}
-          >
-            {presentation.footnote}
-          </Typography>
-        ) : null}
-      </Box>
-    </Tooltip>
+  const hasTooltip = Boolean(
+    presentation.hint
+    || presentation.meta
+    || presentation.tooltipLines?.some(Boolean),
   );
+
+  const content = (
+    <Box sx={{ minWidth: 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 0.25, py: 0.15 }}>
+      <Box sx={{ height: BADGE_HEIGHT, display: 'flex', alignItems: 'center', gap: 0.35, minWidth: 0 }}>
+        <Box sx={{ minWidth: 0, flex: presentation.primaryIconOnly ? '0 0 auto' : 1, height: BADGE_HEIGHT, display: 'flex', alignItems: 'center' }}>
+          <StatusVisualBadge spec={presentation.primary} iconOnly={presentation.primaryIconOnly} />
+        </Box>
+        {showActionIndicator ? <ActionIndicatorIcon /> : null}
+      </Box>
+      {presentation.footnote ? (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          noWrap
+          sx={{ display: 'block', fontSize: 10, lineHeight: 1.2, maxWidth: '100%' }}
+        >
+          {presentation.footnote}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+
+  return hasTooltip && !disableTooltip ? (
+    <Tooltip title={<StatusTooltip presentation={presentation} />} arrow placement="top">{content}</Tooltip>
+  ) : content;
 }
 
 export function rowStatusVisual(status: RegistryStatusDisplay, item?: ApprovalRegisterRow): StatusVisualSpec {

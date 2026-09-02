@@ -15,7 +15,7 @@ export function InlineEditMoneyCell({
   onCancel,
   saveOnBlur = true,
   ariaLabel = 'Сумма',
-  title = 'Нажмите, чтобы изменить сумму',
+  tooltip = 'Нажмите, чтобы изменить сумму',
 }: {
   value: number;
   editable: boolean;
@@ -27,7 +27,7 @@ export function InlineEditMoneyCell({
   onCancel?: () => void;
   saveOnBlur?: boolean;
   ariaLabel?: string;
-  title?: string;
+  tooltip?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => formatValue(value));
@@ -70,7 +70,8 @@ export function InlineEditMoneyCell({
     return (
       <ClickToEditTrigger
         align="right"
-        title={title}
+        tooltip={tooltip}
+        ariaLabel={ariaLabel}
         onActivate={() => {
           // `formatValue` is a display format and may contain a currency sign.
           // Never carry it over to a numeric editor.
