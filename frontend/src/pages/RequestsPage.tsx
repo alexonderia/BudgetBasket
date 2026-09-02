@@ -581,8 +581,8 @@ function RequestsListPage({ user }: { user: User }) {
     setDraggedRequestColumn(null);
   };
   const renderRequestCell = (item: BudgetRequest, columnId: RequestTableColumn) => {
-    const canDelete = item.status === 'draft' && user.role === 'employee';
-    const canCancel = item.status === 'draft'
+    const canDelete = item.status === 'draft' && user.role === 'employee' && item.available_actions?.includes('delete');
+    const canCancel = item.status === 'on_review'
       && user.role === 'employee'
       && item.available_actions?.includes('cancel')
       && !item.frozen;
@@ -635,12 +635,12 @@ function RequestsListPage({ user }: { user: User }) {
               </Tooltip>
             ) : null}
             {canDelete ? (
-              <Tooltip title="Удалить">
+              <Tooltip title="Удалить черновик">
                 <IconButton
                   size="small"
                   color="error"
                   onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }}
-                  aria-label="Удалить"
+                  aria-label="Удалить черновик"
                 >
                   <DeleteOutlineIcon fontSize="small" />
                 </IconButton>
@@ -940,7 +940,7 @@ function RequestsListPage({ user }: { user: User }) {
           </TableHead>
           <TableBody>
             {tableRequests.map((item) => {
-              const canDelete = item.status === 'draft' && user.role === 'employee';
+              const canDelete = item.status === 'draft' && user.role === 'employee' && item.available_actions?.includes('delete');
               const unitName = formatUnitName(item.unit_id);
               const packageItem = packageByRequestId.get(item.id);
               const isPackageStart = packageItem?.requests[0]?.id === item.id;
@@ -1004,12 +1004,12 @@ function RequestsListPage({ user }: { user: User }) {
                     <TableCell>
                       <Stack direction="row" spacing={0.5} justifyContent="flex-start">
                         {canDelete ? (
-                          <Tooltip title="Удалить">
+                          <Tooltip title="Удалить черновик">
                             <IconButton
                               size="small"
                               color="error"
                               onClick={(event) => { event.stopPropagation(); setDeleteTarget(item); }}
-                              aria-label="Удалить"
+                              aria-label="Удалить черновик"
                             >
                               <DeleteOutlineIcon fontSize="small" />
                             </IconButton>
@@ -1076,7 +1076,7 @@ function RequestsListPage({ user }: { user: User }) {
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title="Удалить заявку?"
+        title="Удалить черновик?"
         maxWidth="md"
         description={
           deleteTarget ? (
@@ -1136,7 +1136,7 @@ function RequestsListPage({ user }: { user: User }) {
             </Stack>
           ) : null
         }
-        confirmLabel="Удалить"
+        confirmLabel="Удалить черновик"
         confirmColor="error"
         pending={deleteRequest.isPending}
         onClose={() => setDeleteTarget(null)}

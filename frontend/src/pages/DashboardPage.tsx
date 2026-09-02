@@ -235,7 +235,7 @@ function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
           classes={{ popper: 'dashboard-donut-tooltip' }}
           title={<Box><Typography variant="caption" component="div">Общая сумма</Typography><Typography variant="body2" component="div" fontWeight={700}>{money(total)}</Typography></Box>}
         >
-          <Box className="dashboard-donut-value" sx={{ inset: '43px', pointerEvents: 'auto', cursor: 'help' }}>
+          <Box className="dashboard-donut-value" sx={{ inset: '43px', pointerEvents: 'auto', cursor: 'default' }}>
             <Typography variant="caption" color="text.secondary">Расчет</Typography>
             <Typography variant="subtitle2">{compactMoney(total)}</Typography>
           </Box>
@@ -405,19 +405,19 @@ export default function DashboardPage({ user }: { user: User }) {
     if (!articleId) return null;
     if (user.role === 'economist') {
       const cfoId = row.cfo_id;
-      return buildRegisterHref(user, { view: 'cfo', articleId, ...(cfoId ? { cfoId } : {}) });
+      return buildRegisterHref(user, { view: 'cfo', articleId, ...(cfoId ? { cfoId } : {}), positionedOnly: true });
     }
-    return buildRegisterHref(user, { view: 'article', articleId });
+    return buildRegisterHref(user, { view: 'article', articleId, positionedOnly: true });
   }, [user]);
   const cfoRegisterHref = useMemo(() => (row: Breakdown) => {
     const cfoId = row.cfo_id || row.id;
-    return cfoId ? buildRegisterHref(user, { view: 'cfo', cfoId }) : null;
+    return cfoId ? buildRegisterHref(user, { view: 'cfo', cfoId, positionedOnly: true }) : null;
   }, [user]);
   const articleCfoRegisterHref = useMemo(() => (article: ArticleCfoBreakdown, cfo: Breakdown) => {
     const articleId = article.article_id || parseArticleKey(article.id);
     const cfoId = cfo.cfo_id || cfo.id;
     return articleId && cfoId
-      ? buildRegisterHref(user, { view: 'cfo', articleId, cfoId })
+      ? buildRegisterHref(user, { view: 'cfo', articleId, cfoId, positionedOnly: true })
       : null;
   }, [user]);
   const detailView = user.role === 'economist' || user.role === 'approver' || user.role === 'zgd' ? 'cfo' : 'article';
@@ -427,10 +427,10 @@ export default function DashboardPage({ user }: { user: User }) {
     flow: isIncomeDashboard ? 'income' : 'expense',
   }));
   const requestsApprovedHref = metricHref('approved');
-  const requestsReviewHref = buildRegisterHref(user, { view: detailView, requestStatus: 'on_review', cfoId: unitId || undefined, flow: isIncomeDashboard ? 'income' : 'expense' });
+  const requestsReviewHref = buildRegisterHref(user, { view: detailView, requestStatus: 'on_review', cfoId: unitId || undefined, flow: isIncomeDashboard ? 'income' : 'expense', positionedOnly: true });
   const requestsAllHref = metricHref('planned');
   const frozenRequestsHref = metricHref('frozen');
-  const registerHref = buildRegisterHref(user, { view: detailView });
+  const registerHref = buildRegisterHref(user, { view: detailView, positionedOnly: true });
 
   if (isLoading || !data) {
     return <Skeleton variant="rounded" height={420} sx={{ borderRadius: 4 }} />;

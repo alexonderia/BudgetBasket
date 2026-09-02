@@ -321,12 +321,14 @@ class ExcelService:
         article_name: str,
         unit_id: str | None,
         is_active: bool,
+        repo: Repository | None = None,
     ) -> dict:
+        storage = repo or self.repo
         name_key = article_name.strip()
         match = next(
             (
                 item
-                for item in self.repo.load_all(collection)
+                for item in storage.load_all(collection)
                 if not item.get("parent_id")
                 and item.get("name", "").strip().lower() == name_key.lower()
                 and item.get("unit_id") == unit_id
@@ -335,7 +337,7 @@ class ExcelService:
         )
         if match:
             return match
-        return self.repo.create(
+        return storage.create(
             collection,
             {
                 "parent_id": None,
@@ -345,17 +347,142 @@ class ExcelService:
             },
         )
 
-    def _find_leaf(self, collection: str, *, name: str, parent_id: str | None, unit_id: str | None) -> dict | None:
+    def _find_leaf(
+        self,
+        collection: str,
+        *,
+        name: str,
+        parent_id: str | None,
+        unit_id: str | None,
+        repo: Repository | None = None,
+    ) -> dict | None:
+        storage = repo or self.repo
         return next(
             (
                 item
-                for item in self.repo.load_all(collection)
+                for item in storage.load_all(collection)
                 if item.get("name", "").strip().lower() == name.strip().lower()
                 and item.get("parent_id") == parent_id
                 and item.get("unit_id") == unit_id
             ),
             None,
         )
+
+    @staticmethod
+    def _catalog_key(value: object) -> str:
+        return str(value or "").strip().casefold()
+
+    def _catalog_import_plan(
+        self,
+        collection: str,
+        prepared: list[dict],
+        *,
+        repo: Repository,
+    ) -> dict:
+        catalog = [dict(item) for item in repo.load_all(collection)]
+        errors: list[str] = []
+        operations: list[dict] = []
+        preview_rows: list[dict] = []
+        temporary_index = 0
+
+        for item in prepared:
+            unit = repo.get_by_id("units", item["unit_id"]) if item.get("unit_id") else None
+            if not unit or unit.get("parent_id"):
+                errors.append(f"Строка {item['row']}: объединение больше не существует")
+                preview_rows.append({**item, "action": "skip"})
+                continue
+
+            article_matches = [
+                entry
+                for entry in catalog
+                if not entry.get("parent_id")
+                and entry.get("unit_id") == item["unit_id"]
+                and self._catalog_key(entry.get("name")) == self._catalog_key(item["name"])
+            ]
+            if len(article_matches) > 1:
+                errors.append(f"Строка {item['row']}: найдено несколько одинаковых статей")
+                preview_rows.append({**item, "action": "skip"})
+                continue
+            parent = article_matches[0] if article_matches else None
+            row_created = False
+            if parent is None:
+                temporary_index += 1
+                parent = {
+                    "id": f"__import_root_{temporary_index}",
+                    "parent_id": None,
+                    "name": item["name"].strip(),
+                    "unit_id": item["unit_id"],
+                    "is_active": True,
+                }
+                catalog.append(parent)
+                operations.append({"action": "create", "item": dict(parent)})
+                row_created = True
+
+            children = [entry for entry in catalog if entry.get("parent_id") == parent["id"]]
+            category_name = item["category"] or item["name"]
+            if not item["category"] and children:
+                preview_rows.append({**item, "action": "create" if row_created else "skip"})
+                continue
+
+            leaf_matches = [
+                entry
+                for entry in children
+                if entry.get("unit_id") == item["unit_id"]
+                and self._catalog_key(entry.get("name")) == self._catalog_key(category_name)
+            ]
+            if len(leaf_matches) > 1:
+                errors.append(f"Строка {item['row']}: найдено несколько одинаковых категорий")
+                preview_rows.append({**item, "action": "skip"})
+                continue
+            payload = {
+                "name": category_name.strip(),
+                "parent_id": parent["id"],
+                "unit_id": item["unit_id"],
+                "is_active": item["is_active"],
+            }
+            existing = leaf_matches[0] if leaf_matches else None
+            if existing is None:
+                temporary_index += 1
+                virtual = {"id": f"__import_leaf_{temporary_index}", **payload}
+                catalog.append(virtual)
+                operations.append({"action": "create", "item": virtual})
+                action = "create"
+            elif (
+                existing.get("name") != payload["name"]
+                or bool(existing.get("is_active", True)) != payload["is_active"]
+            ):
+                existing.update(payload)
+                if str(existing["id"]).startswith("__import_"):
+                    # The item was created earlier in this same import plan.
+                    # Keep it as one create operation and carry the latest
+                    # values forward instead of trying to update a virtual id
+                    # in the database during commit.
+                    create_operation = next(
+                        operation
+                        for operation in operations
+                        if operation["action"] == "create"
+                        and str(operation["item"].get("id")) == str(existing["id"])
+                    )
+                    create_operation["item"].update(payload)
+                    action = "update"
+                else:
+                    operations.append({"action": "update", "id": existing["id"], "item": payload})
+                    action = "update"
+            else:
+                action = "create" if row_created else "skip"
+            preview_rows.append({**item, "action": action})
+
+        return {
+            "operations": operations,
+            "rows": preview_rows,
+            "errors": errors,
+            "created": sum(operation["action"] == "create" for operation in operations),
+            # Count row-level updates as shown to the user. A repeated item
+            # created earlier in this same batch is still an update from the
+            # importer's perspective, even though it remains one DB create.
+            "updated": sum(row.get("action") == "update" for row in preview_rows),
+            "skipped": sum(row.get("action") == "skip" for row in preview_rows),
+        }
 
     async def import_catalog(self, user: dict, collection: str, upload: UploadFile, *, preview: bool = False) -> dict:
         require_role(user, "admin")
@@ -422,89 +549,56 @@ class ExcelService:
                 "collection": collection,
             }
 
+        plan = self._catalog_import_plan(collection, prepared, repo=self.repo)
         if preview:
-            preview_rows = []
-            created = 0
-            updated = 0
-            catalog = self.repo.load_all(collection)
-            for item in prepared:
-                parent = next(
-                    (
-                        entry
-                        for entry in catalog
-                if not entry.get("parent_id")
-                        and entry.get("unit_id") == item["unit_id"]
-                        and entry.get("name", "").strip().casefold() == item["name"].casefold()
-                    ),
-                    None,
-                )
-                category_name = item["category"]
-                children = [entry for entry in catalog if parent and entry.get("parent_id") == parent["id"]]
-                # A blank category asks for a fallback only while the article
-                # has no children. This matches manual creation exactly.
-                if not category_name and children:
-                    action = "skip"
-                else:
-                    existing = self._find_leaf(
-                        collection,
-                        name=category_name or item["name"],
-                        parent_id=parent["id"] if parent else None,
-                        unit_id=item["unit_id"],
-                    )
-                    action = "update" if existing else "create"
-                    updated += int(bool(existing))
-                    created += int(not existing)
-                preview_rows.append({**item, "action": action})
             return {
                 "preview": True,
-                "created": created,
-                "updated": updated,
-                "errors": [],
-                "rows": preview_rows,
+                "created": plan["created"],
+                "updated": plan["updated"],
+                "skipped": plan["skipped"],
+                "errors": plan["errors"],
+                "rows": plan["rows"],
                 "collection": collection,
             }
 
-        created = 0
-        updated = 0
-        for item in prepared:
-            parent = self._ensure_article(
-                collection,
-                article_name=item["name"],
-                unit_id=item["unit_id"],
-                is_active=True,
-            )
-            children = [
-                entry for entry in self.repo.load_all(collection)
-                if entry.get("parent_id") == parent["id"]
-            ]
-            # Do not append an article-name fallback after any category exists.
-            if not item["category"] and children:
-                continue
-            payload = {
-                "name": item["category"] or item["name"],
-                "parent_id": parent["id"],
-                "unit_id": item["unit_id"],
-                "is_active": item["is_active"],
+        if plan["errors"]:
+            return {
+                "preview": False,
+                "created": 0,
+                "updated": 0,
+                "skipped": plan["skipped"],
+                "errors": plan["errors"],
+                "rows": plan["rows"],
+                "collection": collection,
             }
-            existing = self._find_leaf(
-                collection,
-                name=payload["name"],
-                parent_id=payload["parent_id"],
-                unit_id=item["unit_id"],
-            )
-            if existing:
-                self.repo.update(collection, existing["id"], payload)
-                updated += 1
-            else:
-                self.repo.create(collection, payload)
-                created += 1
+
+        with self.repo.transaction() as repo:
+            # Rebuild the plan under the transaction so stale previews and
+            # concurrent catalog changes are validated before any mutation.
+            commit_plan = self._catalog_import_plan(collection, prepared, repo=repo)
+            if commit_plan["errors"]:
+                raise HTTPException(status_code=409, detail={"message": "НСИ изменилась после предпросмотра", "errors": commit_plan["errors"]})
+            created_ids: dict[str, str] = {}
+            for operation in commit_plan["operations"]:
+                payload = dict(operation["item"])
+                temporary_id = str(payload.pop("id", ""))
+                parent_id = payload.get("parent_id")
+                if parent_id in created_ids:
+                    payload["parent_id"] = created_ids[parent_id]
+                if operation["action"] == "create":
+                    created_item = repo.create(collection, payload)
+                    if temporary_id:
+                        created_ids[temporary_id] = created_item["id"]
+                else:
+                    repo.update(collection, operation["id"], payload)
 
         return {
             "preview": False,
-            "created": created,
-            "updated": updated,
+            "created": commit_plan["created"],
+            "updated": commit_plan["updated"],
+            "skipped": commit_plan["skipped"],
             "errors": [],
-            "rows": prepared,
+            "rows": commit_plan["rows"],
             "collection": collection,
         }
 

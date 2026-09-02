@@ -1281,7 +1281,7 @@
     display: block;
     width: 100%;
     height: 100%;
-    cursor: help;
+    cursor: default;
   }
 
   .dashboard-donut-track {
@@ -1294,7 +1294,7 @@
   }
 
   .dashboard-donut-segment {
-    cursor: pointer;
+    cursor: default;
     outline: none;
     transition: opacity 120ms ease;
   }

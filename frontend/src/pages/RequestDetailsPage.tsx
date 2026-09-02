@@ -163,6 +163,13 @@ const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
   ...ANALYTICS_COLUMN_WIDTHS,
 };
 
+type FilteredRequestSummary = {
+  active: boolean;
+  requested: number;
+  approved: number;
+  count: number;
+};
+
 const PENDING_TABLE_CHANGE_SX = {
   bgcolor: 'rgba(245, 158, 11, 0.12)',
   boxShadow: 'inset 3px 0 0 #f59e0b',
@@ -1136,6 +1143,7 @@ function ItemsTable({
   cfoRevisionItemIds,
   focusArticleId,
   focusCategoryId,
+  onFilteredSummaryChange,
 }: {
   title: string;
   kind: 'dds' | 'invest';
@@ -1149,6 +1157,7 @@ function ItemsTable({
   cfoRevisionItemIds: Set<string>;
   focusArticleId?: string | null;
   focusCategoryId?: string | null;
+  onFilteredSummaryChange: (summary: FilteredRequestSummary) => void;
 }) {
   const queryClient = useQueryClient();
   const toast = useAppToast();
@@ -1259,6 +1268,24 @@ function ItemsTable({
     visibility: itemVisibility,
     visibleColumns: visibleItemColumns,
   } = useTableColumnControls({ rows: items, columns: itemTableDefinitions });
+  const filteredTotals = useMemo(() => groupFinancialTotals(visibleItems), [visibleItems]);
+  const hasAnalyticsFilter = ANALYTICS_FIELD_KEYS.some(
+    (key) => selectedItemFilterValues[key] !== null,
+  );
+  useEffect(() => {
+    onFilteredSummaryChange({
+      active: hasAnalyticsFilter,
+      requested: filteredTotals.requested,
+      approved: filteredTotals.approved,
+      count: filteredTotals.total,
+    });
+  }, [
+    filteredTotals.approved,
+    filteredTotals.requested,
+    filteredTotals.total,
+    hasAnalyticsFilter,
+    onFilteredSummaryChange,
+  ]);
   const groupedVisibleItems = useMemo<RequestItemArticleGroup[]>(() => {
     const articles = new Map<string, { name: string; items: BudgetItem[]; categories: Map<string, RequestItemCategoryGroup> }>();
     visibleItems.forEach((item) => {
@@ -2442,6 +2469,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const [confirmAction, setConfirmAction] = useState<'approve-all-items' | null>(null);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnComment, setReturnComment] = useState('');
+  const [expenseFilteredSummary, setExpenseFilteredSummary] = useState<FilteredRequestSummary>({ active: false, requested: 0, approved: 0, count: 0 });
+  const [incomeFilteredSummary, setIncomeFilteredSummary] = useState<FilteredRequestSummary>({ active: false, requested: 0, approved: 0, count: 0 });
+  const updateExpenseFilteredSummary = useCallback((summary: FilteredRequestSummary) => setExpenseFilteredSummary((current) => (
+    current.active === summary.active
+    && current.requested === summary.requested
+    && current.approved === summary.approved
+    && current.count === summary.count ? current : summary
+  )), []);
+  const updateIncomeFilteredSummary = useCallback((summary: FilteredRequestSummary) => setIncomeFilteredSummary((current) => (
+    current.active === summary.active
+    && current.requested === summary.requested
+    && current.approved === summary.approved
+    && current.count === summary.count ? current : summary
+  )), []);
   const focusArticleId = searchParams.get('article_id');
   const focusCategoryId = searchParams.get('category_id');
 
@@ -2843,7 +2884,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     && !itemsPending
     && allItems.length > 0;
   const canCancel = user.role === 'employee'
-    && request?.status === 'draft'
+    && request?.status === 'on_review'
     && request.available_actions?.includes('cancel')
     && !request.frozen;
   const canRestore = user.role === 'employee'
@@ -2853,7 +2894,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const canApproveAllItems = false;
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
   const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
-  const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.frozen;
+  const canDelete = !!request
+    && request.status === 'draft'
+    && user.role === 'employee'
+    && request.available_actions?.includes('delete')
+    && !request.frozen;
   const canApproveRequest = !!request && !approvalActionPending && !!approvalAction?.can_approve;
   const canForwardApprovalPackage = !!request && !approvalActionPending && !!approvalAction?.can_forward;
   const canReturnForRevision = !!request
@@ -2906,6 +2951,15 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     ))
     || (activeRouteOwner?.id && activeRouteOwner.id === user.id && ['on_approval', 'on_revision'].includes(activeRouteStep?.request_status || activeRouteStep?.status || '')),
   );
+  const filteredRequestSummary = {
+    active: expenseFilteredSummary.active || incomeFilteredSummary.active,
+    requested: (expenseFilteredSummary.active ? expenseFilteredSummary.requested : 0)
+      + (incomeFilteredSummary.active ? incomeFilteredSummary.requested : 0),
+    approved: (expenseFilteredSummary.active ? expenseFilteredSummary.approved : 0)
+      + (incomeFilteredSummary.active ? incomeFilteredSummary.approved : 0),
+    count: (expenseFilteredSummary.active ? expenseFilteredSummary.count : 0)
+      + (incomeFilteredSummary.active ? incomeFilteredSummary.count : 0),
+  };
 
   return (
     <Stack spacing={3}>
@@ -2968,7 +3022,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                           },
                         }}
                       >
-                        Удалить заявку
+                        Удалить черновик
                       </Button>
                     )}
                     {canSubmit && (
@@ -3058,17 +3112,23 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               </Box>
               <Box className="request-summary-metrics">
                 <Box className="request-summary-metric request-summary-metric-primary">
-                  <Typography variant="caption" color="text.secondary">План</Typography>
-                  <Typography variant="h6">{money(request.summary?.planned_sum)}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {filteredRequestSummary.active ? 'По выбранным строкам' : 'Сумма заявки'}
+                  </Typography>
+                  <Typography variant="h6">{money(filteredRequestSummary.active ? filteredRequestSummary.requested : request.summary?.planned_sum)}</Typography>
                 </Box>
                 <Box className="request-summary-metric request-summary-metric-approved">
-                  <Typography variant="caption" color="text.secondary">Утверждено</Typography>
-                  <Typography variant="h6">{money(request.summary?.approved_sum)}</Typography>
+                  <Typography variant="caption" color="text.secondary">{filteredRequestSummary.active ? 'Утверждено по выбранным' : 'Утверждено'}</Typography>
+                  <Typography variant="h6">{money(filteredRequestSummary.active ? filteredRequestSummary.approved : request.summary?.approved_sum)}</Typography>
                 </Box>
                 <Box className="request-summary-metric">
-                  <Typography variant="caption" color="text.secondary">Строк</Typography>
-                  <Typography variant="h6">{request.summary?.items_count || 0}</Typography>
+                  <Typography variant="caption" color="text.secondary">{filteredRequestSummary.active ? 'Выбрано строк' : 'Строк'}</Typography>
+                  <Typography variant="h6">{filteredRequestSummary.active ? filteredRequestSummary.count : request.summary?.items_count || 0}</Typography>
                 </Box>
+                {filteredRequestSummary.active && <Box className="request-summary-metric">
+                  <Typography variant="caption" color="text.secondary">Всего в заявке</Typography>
+                  <Typography variant="h6">{money(request.summary?.planned_sum)}</Typography>
+                </Box>}
                 <Box className="request-summary-metric">
                   <Typography variant="caption" color="text.secondary">Принято</Typography>
                   <Typography variant="h6" color="success.main">{request.summary?.accepted_count || 0}</Typography>
@@ -3279,14 +3339,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           {itemsPending ? (
             <Typography color="text.secondary">Загрузка строк заявки…</Typography>
           ) : (
-            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} cfoRevisionItemIds={cfoRevisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
+            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} cfoRevisionItemIds={cfoRevisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} onFilteredSummaryChange={updateExpenseFilteredSummary} />
           )}
         </Paper>
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
           {itemsPending ? (
             <Typography color="text.secondary">Загрузка строк заявки…</Typography>
           ) : (
-            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} cfoRevisionItemIds={cfoRevisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
+            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} cfoRevisionItemIds={cfoRevisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} onFilteredSummaryChange={updateIncomeFilteredSummary} />
           )}
         </Paper>
       </Stack>
@@ -3317,7 +3377,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
 
       <ConfirmDialog
         open={deleteOpen}
-        title="Удалить заявку?"
+        title="Удалить черновик?"
         maxWidth="md"
         description={
           <Stack spacing={1.5}>
@@ -3378,7 +3438,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
             </Table>
           </Stack>
         }
-        confirmLabel="Удалить"
+        confirmLabel="Удалить черновик"
         confirmColor="error"
         pending={deleteRequest.isPending}
         onClose={() => setDeleteOpen(false)}

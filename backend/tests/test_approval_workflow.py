@@ -230,6 +230,35 @@ def test_zgd_can_fix_final_position_lines_one_by_one(tmp_path):
     assert by_id[items[0]["id"]]["fixed"] is True
     assert by_id[items[1]["id"]]["is_final_approval_actionable"] is True
 
+    logs_before_repeat = len([
+        row for row in client.app.state.repo.load_all("cfo_position_logs")
+        if row.get("cfo_position_id") == position_id
+        and (row.get("log") or {}).get("action") in {"position_items_fixed", "position_fixed"}
+    ])
+    repeated = client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Repeat fixed line", "item_ids": [items[0]["id"]]},
+        headers=zgd,
+    )
+    assert repeated.status_code == 409
+    mixed = client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "No partial mutation", "item_ids": [items[1]["id"], items[0]["id"]]},
+        headers=zgd,
+    )
+    assert mixed.status_code == 409
+    assert client.app.state.repo.get_by_id("req_items", items[1]["id"])["fixed"] is False
+    assert len([
+        row for row in client.app.state.repo.load_all("cfo_position_logs")
+        if row.get("cfo_position_id") == position_id
+        and (row.get("log") or {}).get("action") in {"position_items_fixed", "position_fixed"}
+    ]) == logs_before_repeat
+    assert client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Unknown line", "item_ids": ["foreign-item"]},
+        headers=zgd,
+    ).status_code == 422
+
     second = client.post(
         f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
         json={"comment": "Fix second line", "item_ids": [items[1]["id"]]},
@@ -238,6 +267,96 @@ def test_zgd_can_fix_final_position_lines_one_by_one(tmp_path):
     assert second.status_code == 200, second.text
     assert second.json()["all_items_fixed"] is True
     assert second.json()["current_step_id"] is None
+
+
+def test_request_cancel_is_blocked_after_economist_forwards_to_general_route(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client,
+        employee,
+        request["id"],
+        [(items[0]["id"], "approved")],
+    )["affected_cfo_position_ids"][0]
+
+    assert "cancel" in client.get(f"/requests/{request['id']}", headers=employee).json()["available_actions"]
+    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+    assert "cancel" in client.get(f"/requests/{request['id']}", headers=employee).json()["available_actions"]
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": "Forward to common route"},
+        headers=economist,
+    ).status_code == 200
+
+    request_after_forward = client.get(f"/requests/{request['id']}", headers=employee).json()
+    assert "cancel" not in request_after_forward["available_actions"]
+    assert client.post(f"/requests/{request['id']}/cancel", headers=employee).status_code == 409
+
+
+def test_zgd_group_status_does_not_keep_fixed_module_actionable_for_shared_position(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    zgd = auth(client, "zgd", "zgd")
+
+    shared_module = client.post(
+        "/units",
+        json={"name": "Shared workflow module", "parent_id": CFO_ID, "type": "module", "uses_invest_projects": False},
+        headers=admin,
+    ).json()
+    # The production UI prevents one person from owning both a CFO and its
+    # module.  The fixture deliberately creates that visibility scope directly
+    # so this test can exercise one shared CFO position across two modules.
+    client.app.state.repo.create(
+        "units_responsibles",
+        {"unit_id": shared_module["id"], "user_id": "00000000-0000-0000-0000-000000000003", "is_active": True},
+    )
+    first, first_items = create_submitted_request(client, employee)
+    second = client.post("/requests", json={"unit_id": shared_module["id"]}, headers=employee).json()
+    second_item = client.post(
+        f"/requests/{second['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Shared position sibling", "sum_plan": 200},
+        headers=employee,
+    ).json()
+    assert client.post(f"/requests/{second['id']}/submit", headers=employee).status_code == 200
+
+    first_position = complete_cfo(client, employee, first["id"], [(first_items[0]["id"], "approved")])["affected_cfo_position_ids"][0]
+    second_position = complete_cfo(client, employee, second["id"], [(second_item["id"], "approved")])["affected_cfo_position_ids"][0]
+    assert first_position == second_position
+    send_and_review_by_economist(
+        client,
+        employee,
+        economist,
+        first_position,
+        [first_items[0]["id"], second_item["id"]],
+    )
+    assert client.post(
+        f"/cfo-positions/{first_position}/freeze",
+        json={"comment": "Freeze shared position"},
+        headers=economist,
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{first_position}/approve",
+        json={"comment": "Approve shared position"},
+        headers=approver,
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{first_position}/approve",
+        json={"comment": "Fix first module line", "item_ids": [first_items[0]["id"]]},
+        headers=zgd,
+    ).status_code == 200
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "request_id": first["id"], "page_size": 25},
+        headers=zgd,
+    ).json()
+    assert rows["group"]["aggregates"]["aggregate_status"] == "approved"
+    assert rows["group"]["aggregates"]["actionable_positions"] == 0
 
 
 def test_cfo_return_is_revision_and_module_can_resubmit(tmp_path):

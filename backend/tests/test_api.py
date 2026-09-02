@@ -227,6 +227,189 @@ def test_nsi_fallback_category_is_created_once(tmp_path):
     assert [item["name"] for item in children] == ["Article without category"]
 
 
+def _catalog_workbook(rows: list[tuple[str, str, str]]) -> bytes:
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["Наименование", "Категория", "Подразделение"])
+    for row in rows:
+        sheet.append(row)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def test_catalog_import_preview_is_read_only_and_commit_is_repeatable(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    content = _catalog_workbook([("Atomic article", "Explicit category", "Департамент цифровых продуктов")])
+    before = list(client.app.state.repo.load_all("dds_catalog"))
+
+    preview = client.post(
+        "/catalog/dds/import",
+        params={"preview": "true"},
+        files={"file": ("catalog.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin,
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["created"] == 2, preview.text
+    assert client.app.state.repo.load_all("dds_catalog") == before
+
+    committed = client.post(
+        "/catalog/dds/import",
+        files={"file": ("catalog.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin,
+    )
+    assert committed.status_code == 200, committed.text
+    catalog = client.app.state.repo.load_all("dds_catalog")
+    article = next(item for item in catalog if item["name"] == "Atomic article" and not item.get("parent_id"))
+    assert [item["name"] for item in catalog if item.get("parent_id") == article["id"]] == ["Explicit category"]
+
+    repeated = client.post(
+        "/catalog/dds/import",
+        files={"file": ("catalog.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin,
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["created"] == 0
+    assert repeated.json()["updated"] == 0
+    assert repeated.json()["skipped"] == 1
+
+
+def test_catalog_import_handles_duplicate_virtual_category_updates(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    client.app.state.repo.update("units", DEPARTMENT_ID, {"name": "Департамент цифровых продуктов"})
+    content = _catalog_workbook([
+        ("Case article", "Case category", "Р”РµРїР°СЂС‚Р°РјРµРЅС‚ С†РёС„СЂРѕРІС‹С… РїСЂРѕРґСѓРєС‚РѕРІ"),
+        ("Case article", "case category", "Р”РµРїР°СЂС‚Р°РјРµРЅС‚ С†РёС„СЂРѕРІС‹С… РїСЂРѕРґСѓРєС‚РѕРІ"),
+    ])
+
+    # Use the stable unit id so this regression test is independent of seed text encoding.
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["name", "category", "unit_id"])
+    sheet.append(["Case article", "Case category", DEPARTMENT_ID])
+    sheet.append(["Case article", "case category", DEPARTMENT_ID])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    content = buffer.getvalue()
+
+    preview = client.post(
+        "/catalog/dds/import",
+        params={"preview": "true"},
+        files={"file": ("catalog.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin,
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["created"] == 2, preview.text
+    assert preview.json()["updated"] == 1
+    assert [row["action"] for row in preview.json()["rows"]] == ["create", "update"]
+
+    committed = client.post(
+        "/catalog/dds/import",
+        files={"file": ("catalog.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        headers=admin,
+    )
+    assert committed.status_code == 200, committed.text
+    assert committed.json()["created"] == 2
+    assert committed.json()["updated"] == 1
+    catalog = client.get("/catalog/dds", params={"unit_id": DEPARTMENT_ID}, headers=admin).json()
+    article = next(item for item in catalog if item["name"] == "Case article" and not item.get("parent_id"))
+    assert [item["name"] for item in catalog if item.get("parent_id") == article["id"]] == ["case category"]
+
+
+def test_catalog_import_rolls_back_entire_batch_on_runtime_error(tmp_path, monkeypatch):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    repo = client.app.state.repo
+    before = list(repo.load_all("dds_catalog"))
+    original_create = repo.create
+    create_count = 0
+
+    def fail_third_create(collection_name, item):
+        nonlocal create_count
+        if collection_name == "dds_catalog":
+            create_count += 1
+            if create_count == 3:
+                raise RuntimeError("injected catalog import failure")
+        return original_create(collection_name, item)
+
+    monkeypatch.setattr(repo, "create", fail_third_create)
+    content = _catalog_workbook([
+        ("Batch article 1", "Category 1", "Департамент цифровых продуктов"),
+        ("Batch article 2", "Category 2", "Департамент цифровых продуктов"),
+    ])
+    with pytest.raises(RuntimeError, match="catalog import failure"):
+        client.post(
+            "/catalog/dds/import",
+            files={"file": ("catalog.xlsx", content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            headers=admin,
+        )
+    assert repo.load_all("dds_catalog") == before
+
+
+def test_catalog_delete_and_deactivate_rules_preserve_history(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    economist = auth(client, "economist", "economist")
+    employee = auth(client, "employee", "employee")
+
+    unused_root = client.post(
+        "/catalog/dds",
+        json={"name": "Unused root", "unit_id": DEPARTMENT_ID, "create_default_category": False},
+        headers=admin,
+    ).json()
+    assert client.delete(f"/catalog/dds/{unused_root['id']}", headers=admin).status_code == 200
+
+    root = client.post(
+        "/catalog/dds",
+        json={"name": "Managed root", "unit_id": DEPARTMENT_ID, "create_default_category": False},
+        headers=admin,
+    ).json()
+    category = client.post(
+        "/catalog/dds",
+        json={"parent_id": root["id"], "name": "Managed category", "unit_id": DEPARTMENT_ID},
+        headers=economist,
+    ).json()
+    blocked_root = client.delete(f"/catalog/dds/{root['id']}", headers=admin)
+    assert blocked_root.status_code == 409
+    assert "категории" in blocked_root.json()["detail"]
+
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    assert client.post(
+        f"/requests/{request['id']}/items",
+        json={"dds_id": category["id"], "name": "Historical line", "sum_plan": 10},
+        headers=employee,
+    ).status_code == 200
+    blocked_category = client.delete(f"/catalog/dds/{category['id']}", headers=economist)
+    assert blocked_category.status_code == 409
+    assert "Деактивируйте" in blocked_category.json()["detail"]
+    assert client.patch(
+        f"/catalog/dds/{category['id']}",
+        json={"is_active": False},
+        headers=economist,
+    ).status_code == 200
+    historical_catalog = client.get(
+        "/catalog/dds", params={"unit_id": DEPARTMENT_ID}, headers=employee
+    ).json()
+    assert next(item for item in historical_catalog if item["id"] == category["id"])["name"] == "Managed category"
+    active_catalog = client.get(
+        "/catalog/dds", params={"unit_id": DEPARTMENT_ID, "active_only": True}, headers=employee
+    ).json()
+    assert category["id"] not in {item["id"] for item in active_catalog}
+
+    unused_category = client.post(
+        "/catalog/dds",
+        json={"parent_id": root["id"], "name": "Unused category", "unit_id": DEPARTMENT_ID},
+        headers=economist,
+    ).json()
+    assert client.delete(f"/catalog/dds/{unused_category['id']}", headers=economist).status_code == 200
+
+
 def test_delete_linked_user_returns_a_clear_conflict(tmp_path):
     client = make_client(tmp_path)
     admin = auth(client, "admin", "admin")
@@ -299,6 +482,18 @@ def test_expense_and_income_dashboards_are_separate(tmp_path):
     incomes = client.get("/dashboard/income", headers=admin).json()
     assert expenses["totals"]["planned"] == initial_expense_total + 100
     assert incomes["totals"]["planned"] == initial_income_total + 250
+
+    register = client.get(
+        "/approval-register",
+        params={"view": "article", "is_income": False, "positioned_only": True},
+        headers=admin,
+    )
+    assert register.status_code == 200
+    assert register.json()["aggregates"]["requested_sum"] == expenses["totals"]["planned"]
+    assert register.json()["aggregates"]["approved_sum"] == expenses["totals"]["approved"]
+    assert register.json()["aggregates"]["difference"] == (
+        expenses["totals"]["approved"] - expenses["totals"]["planned"]
+    )
 
 
 def test_dashboard_table_returns_hierarchical_request_rows(tmp_path):
@@ -564,6 +759,59 @@ def test_approval_register_groups_by_analytics_with_filtered_aggregates_and_pagi
     assert invalid.status_code == 422
 
 
+def test_all_analytics_filters_share_filtered_aggregate_before_pagination(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee).json()
+    for label, amount in (("A", 100), ("B", 200)):
+        payload = {
+            "dds_id": DDS_LICENSE_ID,
+            "name": f"Analytics {label}",
+            "sum_plan": amount,
+            **{f"analytics_{index}": label for index in range(1, 6)},
+        }
+        assert client.post(f"/requests/{request['id']}/items", json=payload, headers=employee).status_code == 200
+
+    assert client.get(f"/requests/{request['id']}", headers=employee).json()["summary"]["planned_sum"] == 300
+    for field in (f"analytics_{index}" for index in range(1, 6)):
+        page_one = client.get(
+            "/approval-register/rows",
+            params={"request_id": request["id"], field: "A", "page_size": 1},
+            headers=employee,
+        )
+        page_ten = client.get(
+            "/approval-register/rows",
+            params={"request_id": request["id"], field: "A", "page_size": 10},
+            headers=employee,
+        )
+        assert page_one.status_code == page_ten.status_code == 200
+        assert page_one.json()["group"]["aggregates"]["requested_sum"] == 100
+        assert page_ten.json()["group"]["aggregates"]["requested_sum"] == 100
+        assert page_one.json()["pagination"]["total_items"] == 1
+
+        grouped = client.get(
+            "/approval-register",
+            params=[
+                ("request_id", request["id"]),
+                (field, "A"),
+                ("group_by[]", "cfo"),
+                ("group_by[]", "article"),
+                ("group_by[]", "category"),
+                ("group_by[]", "module"),
+                ("group_by[]", "request"),
+            ],
+            headers=employee,
+        )
+        assert grouped.status_code == 200, grouped.text
+        assert grouped.json()["aggregates"]["requested_sum"] == 100
+
+        node = grouped.json()["groups"][0]
+        while node.get("children"):
+            assert node["aggregates"]["requested_sum"] == 100
+            node = node["children"][0]
+        assert node["aggregates"]["requested_sum"] == 100
+
+
 def test_approval_register_analytics_fields_and_filters(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
@@ -813,12 +1061,26 @@ def test_cancel_restore_lifecycle_allows_new_request_and_is_idempotent(tmp_path)
     )
     assert created_item.status_code == 200
 
+    draft_body = client.get(f"/requests/{original['id']}", headers=employee).json()
+    assert "delete" in draft_body["available_actions"]
+    assert "cancel" not in draft_body["available_actions"]
+    assert client.post(f"/requests/{original['id']}/cancel", headers=employee).status_code == 409
+    submitted = client.post(f"/requests/{original['id']}/submit", headers=employee)
+    assert submitted.status_code == 200
+    assert "cancel" in submitted.json()["available_actions"]
+
     cancelled = client.post(f"/requests/{original['id']}/cancel", headers=employee)
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
     assert client.post(f"/requests/{original['id']}/cancel", headers=employee).status_code == 200
     logs_after_cancel = client.get(f"/requests/{original['id']}/logs", headers=employee).json()
     assert [entry["log"]["action"] for entry in logs_after_cancel].count("request_cancelled") == 1
+    assert client.get("/cfo-positions", headers=employee).json() == []
+    assert client.get(
+        "/approval-register/rows",
+        params={"request_id": original["id"], "page_size": 25},
+        headers=employee,
+    ).json()["items"] == []
 
     replacement = client.post("/requests", json={"unit_id": MODULE_ALPHA_ID}, headers=employee)
     assert replacement.status_code == 200
@@ -832,10 +1094,18 @@ def test_cancel_restore_lifecycle_allows_new_request_and_is_idempotent(tmp_path)
     restored = client.post(f"/requests/{original['id']}/restore", headers=employee)
     assert restored.status_code == 200
     assert restored.json()["status"] == "draft"
-    assert len(client.get(f"/requests/{original['id']}/items", headers=employee).json()) == 1
+    restored_items = client.get(f"/requests/{original['id']}/items", headers=employee).json()
+    assert len(restored_items) == 1
+    assert restored_items[0]["cfo_position_id"] is None
+    assert restored_items[0]["sum_fact"] == 0
+    assert restored_items[0]["frozen"] is False
+    assert restored_items[0]["fixed"] is False
     assert client.post(f"/requests/{original['id']}/restore", headers=employee).status_code == 200
     logs_after_restore = client.get(f"/requests/{original['id']}/logs", headers=employee).json()
     assert [entry["log"]["action"] for entry in logs_after_restore].count("request_restored") == 1
+    resubmitted = client.post(f"/requests/{original['id']}/submit", headers=employee)
+    assert resubmitted.status_code == 200
+    assert resubmitted.json()["affected_cfo_position_ids"]
 
 
 def test_cfo_responsible_cannot_view_another_modules_draft_before_submit(tmp_path):

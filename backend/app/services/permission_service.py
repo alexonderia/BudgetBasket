@@ -242,7 +242,12 @@ class PermissionService:
         self.require_employee_edit_request(user, request)
 
     def require_employee_cancel_request(self, user: dict, request: dict) -> None:
-        self.require_employee_edit_request(user, request)
+        self.require_employee_unit_access(user, request["unit_id"])
+        if request.get("status") != RequestStatus.on_review:
+            raise HTTPException(
+                status_code=409,
+                detail="Отменить можно только уже отправленную заявку",
+            )
 
     def require_employee_upload_file(self, user: dict, request: dict) -> None:
         self.require_employee_edit_request(user, request)

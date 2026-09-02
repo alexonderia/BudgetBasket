@@ -149,21 +149,91 @@ class RequestService:
         # in the requests table.
         return get_required(repo or self.repo, "requests", request_id)
 
-    def public_request(self, request: dict, summary: dict | None = None) -> dict:
+    def _has_module_access(self, user: dict | None, request: dict) -> bool:
+        return bool(
+            user
+            and user.get("role") == "employee"
+            and request.get("unit_id") in self.permissions.employee_module_ids(user["id"])
+        )
+
+    def _has_cfo_access(self, user: dict | None, request: dict) -> bool:
+        if not user or user.get("role") != "employee":
+            return False
+        cfo_id = self.permissions.cfo_for_module(request["unit_id"])
+        return bool(cfo_id and cfo_id in self.permissions.employee_cfo_ids(user["id"]))
+
+    def _can_cancel_before_general_route(
+        self,
+        request: dict,
+        *,
+        repo: Repository | None = None,
+    ) -> bool:
+        storage = repo or self.repo
+        if request.get("status") != RequestStatus.on_review:
+            return False
+        position_ids = {
+            item.get("cfo_position_id")
+            for item in self._items(request["id"], repo=storage)
+            if item.get("cfo_position_id")
+        }
+        if not position_ids:
+            return False
+        positions = {
+            row["id"]: row
+            for row in storage.load_all("cfo_positions")
+            if row["id"] in position_ids
+        }
+        if len(positions) != len(position_ids):
+            return False
+        steps = {row["id"]: row for row in storage.load_all("steps")}
+        users = {row["id"]: row for row in storage.load_all("users")}
+        cfo_id = self.permissions.cfo_for_module(request["unit_id"])
+        if not cfo_id:
+            return False
+        for position in positions.values():
+            step = steps.get(cfo_position_current_step_id(storage, position))
+            step_user = users.get(step.get("user_id"), {}) if step else {}
+            if not step or not (
+                step.get("unit_id") == cfo_id
+                or step_user.get("role") == "economist"
+            ):
+                return False
+        downstream_actions = {
+            "position_frozen_and_forwarded",
+            "position_approved_at_step",
+            "position_returned",
+            "position_items_fixed",
+            "position_fixed",
+        }
+        return not any(
+            row.get("cfo_position_id") in position_ids
+            and (row.get("log") or {}).get("action") in downstream_actions
+            for row in storage.load_all("cfo_position_logs")
+        )
+
+    def public_request(
+        self,
+        request: dict,
+        summary: dict | None = None,
+        *,
+        user: dict | None = None,
+    ) -> dict:
         summary = summary or self.summary(request["id"])
         active_items = self._items(request["id"])
         all_items_frozen = bool(active_items) and all(bool(item.get("frozen")) for item in active_items)
         all_items_fixed = bool(active_items) and all(bool(item.get("fixed")) for item in active_items)
         cfo_id = self.permissions.cfo_for_module(request["unit_id"])
         actions: list[str] = []
-        if request.get("status") == RequestStatus.draft:
-            actions.extend(["edit", "submit", "cancel"])
-        elif request.get("status") == RequestStatus.cancelled:
+        if request.get("status") == RequestStatus.draft and self._has_module_access(user, request):
+            actions.extend(["edit", "submit", "delete"])
+        elif request.get("status") == RequestStatus.cancelled and self._has_module_access(user, request):
             actions.append("restore")
         elif request.get("status") == RequestStatus.on_review:
-            if self.returned_item_ids(request["id"]):
+            if self._has_module_access(user, request) and self._can_cancel_before_general_route(request):
+                actions.append("cancel")
+            if self.returned_item_ids(request["id"]) and self._has_module_access(user, request):
                 actions.extend(["edit_revision", "submit"])
-            elif not self.cfo_review_completed(request["id"]):
+            elif not self.cfo_review_completed(request["id"]) and self._has_cfo_access(user, request):
                 actions.append("complete_cfo_review")
         return {
             **request,
@@ -211,13 +281,13 @@ class RequestService:
                 continue
             if created_to and created_at > created_to:
                 continue
-            result.append(self.public_request(request))
+            result.append(self.public_request(request, user=user))
         return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
     def get_request(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_view_request(user, request)
-        return self.public_request(request)
+        return self.public_request(request, user=user)
 
     def list_cfo_incoming(self, user: dict) -> list[dict]:
         cfo_ids = self.permissions.employee_cfo_ids(user["id"])
@@ -225,7 +295,7 @@ class RequestService:
             return []
         module_ids = self.permissions.modules_for_cfos(cfo_ids)
         return [
-            self.public_request(request)
+            self.public_request(request, user=user)
             for request in self.repo.load_all("requests")
             if request.get("unit_id") in module_ids
             and request.get("status") == RequestStatus.on_review
@@ -233,9 +303,15 @@ class RequestService:
 
     @staticmethod
     def _items_for_position(repo: Repository, position_id: str) -> list[dict]:
+        active_request_ids = {
+            request["id"]
+            for request in repo.load_all("requests")
+            if request.get("status") != RequestStatus.cancelled
+        }
         return [
             row for row in repo.load_all("req_items")
             if row.get("cfo_position_id") == position_id and row.get("status") != ItemStatus.deleted
+            and row.get("request_id") in active_request_ids
         ]
 
     def cfo_review_completed(self, request_id: str, *, repo: Repository | None = None) -> bool:
@@ -261,6 +337,9 @@ class RequestService:
         )
         for row in rows:
             log = row.get("log") or {}
+            if log.get("action") == "request_restored":
+                decisions.clear()
+                continue
             if log.get("action") == "cfo_items_returned_for_revision":
                 for item_id in log.get("item_ids") or []:
                     decisions.pop(str(item_id), None)
@@ -312,7 +391,7 @@ class RequestService:
                 },
             )
             self.log(user, created["id"], "request_created", after=created, repo=repo)
-        return self.public_request(created)
+        return self.public_request(created, user=user)
 
     def delete_request(self, user: dict, request_id: str) -> None:
         request = get_required(self.repo, "requests", request_id)
@@ -324,7 +403,7 @@ class RequestService:
         self.permissions.require_employee_edit_request(user, request)
         if patch:
             raise HTTPException(status_code=400, detail="У заявки нет свободно редактируемых полей")
-        return self.public_request(request)
+        return self.public_request(request, user=user)
 
     def submit(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
@@ -489,7 +568,7 @@ class RequestService:
                     {"request_id": request_id, "cfo_unit_id": cfo_id},
                     repo=repo,
                 )
-        result = self.public_request(updated)
+        result = self.public_request(updated, user=user)
         result["notification_user_ids"] = [responsible_id]
         result["affected_cfo_position_ids"] = sorted(affected_positions)
         return result
@@ -498,17 +577,32 @@ class RequestService:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_employee_unit_access(user, request["unit_id"])
         if request.get("status") == RequestStatus.cancelled:
-            return self.public_request(request)
-        self.permissions.require_employee_cancel_request(user, request)
-        updated = self.repo.update("requests", request_id, {"status": RequestStatus.cancelled})
-        self.log(user, request_id, "request_cancelled", before=request, after=updated)
-        return self.public_request(updated)
+            return self.public_request(request, user=user)
+        with self.repo.transaction() as repo:
+            locked = repo.lock_by_id("requests", request_id)
+            if not locked:
+                raise HTTPException(status_code=404, detail="Заявка не найдена")
+            if locked.get("status") == RequestStatus.cancelled:
+                updated = locked
+            else:
+                self.permissions.require_employee_cancel_request(user, locked)
+                if not self._can_cancel_before_general_route(locked, repo=repo):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Заявку можно отменить только до передачи на общий маршрут согласования",
+                    )
+                updated = repo.update("requests", request_id, {"status": RequestStatus.cancelled})
+                self.log(user, request_id, "request_cancelled", before=locked, after=updated, repo=repo)
+                approval_service = getattr(self, "approval_service", None)
+                if approval_service:
+                    approval_service._sync_step_statuses(repo)
+        return self.public_request(updated, user=user)
 
     def restore(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_employee_unit_access(user, request["unit_id"])
         if request.get("status") == RequestStatus.draft:
-            return self.public_request(request)
+            return self.public_request(request, user=user)
         if request.get("status") != RequestStatus.cancelled:
             raise HTTPException(status_code=409, detail="Восстановить можно только отмененную заявку")
         with self.repo.transaction() as repo:
@@ -516,31 +610,49 @@ class RequestService:
             if not locked:
                 raise HTTPException(status_code=404, detail="Заявка не найдена")
             if locked.get("status") == RequestStatus.draft:
-                return self.public_request(locked)
-            if locked.get("status") != RequestStatus.cancelled:
+                updated = locked
+            elif locked.get("status") != RequestStatus.cancelled:
                 raise HTTPException(status_code=409, detail="Восстановить можно только отмененную заявку")
-            active_request = next(
-                (
-                    candidate
-                    for candidate in repo.load_all("requests")
-                    if candidate["id"] != locked["id"]
-                    and candidate.get("unit_id") == locked["unit_id"]
-                    and int(candidate.get("budget_year") or 0) == int(locked.get("budget_year") or 0)
-                    and candidate.get("status") != RequestStatus.cancelled
-                ),
-                None,
-            )
-            if active_request:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "message": "Нельзя восстановить заявку: для модуля уже существует активная заявка этого года",
-                        "request_id": active_request["id"],
-                    },
+            else:
+                active_request = next(
+                    (
+                        candidate
+                        for candidate in repo.load_all("requests")
+                        if candidate["id"] != locked["id"]
+                        and candidate.get("unit_id") == locked["unit_id"]
+                        and int(candidate.get("budget_year") or 0) == int(locked.get("budget_year") or 0)
+                        and candidate.get("status") != RequestStatus.cancelled
+                    ),
+                    None,
                 )
-            updated = repo.update("requests", request_id, {"status": RequestStatus.draft})
-            self.log(user, request_id, "request_restored", before=locked, after=updated, repo=repo)
-        return self.public_request(updated)
+                if active_request:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "message": "Нельзя восстановить заявку: для модуля уже существует активная заявка этого года",
+                            "request_id": active_request["id"],
+                        },
+                    )
+                for item in self._items(request_id, repo=repo):
+                    repo.update(
+                        "req_items",
+                        item["id"],
+                        {
+                            "status": ItemStatus.on_review,
+                            # req_items.sum_fact is NOT NULL in PostgreSQL;
+                            # restored drafts have no accepted fact yet.
+                            "sum_fact": 0,
+                            "frozen": False,
+                            "fixed": False,
+                            "cfo_position_id": None,
+                        },
+                    )
+                updated = repo.update("requests", request_id, {"status": RequestStatus.draft})
+                self.log(user, request_id, "request_restored", before=locked, after=updated, repo=repo)
+                approval_service = getattr(self, "approval_service", None)
+                if approval_service:
+                    approval_service._sync_step_statuses(repo)
+        return self.public_request(updated, user=user)
 
     def _position_key(self, repo: Repository, cfo_id: str, request: dict, item: dict) -> tuple:
         dds_id = self._catalog_article_id(
@@ -627,7 +739,7 @@ class RequestService:
                     repo=repo,
                 )
         return {
-            **self.public_request(updated),
+            **self.public_request(updated, user=user),
             "affected_cfo_position_ids": affected,
             "notification_user_ids": [
                 user_id
@@ -1658,6 +1770,7 @@ class RequestService:
         analytics_5: str | None = None,
         item_ids: set[str] | list[str] | None = None,
         is_income: bool | None = None,
+        positioned_only: bool = False,
         fixed_only: bool = False,
         module_ids: set[str] | None = None,
     ) -> list[dict]:
@@ -1791,8 +1904,13 @@ class RequestService:
                 and bool(item.get("frozen"))
             )
 
-        def can_act_on_position_block(position: dict | None) -> bool:
+        def can_act_on_position_block(position: dict | None, item: dict | None = None) -> bool:
             if not position:
+                return False
+            # A shared CFO position may contain lines from several modules.
+            # Once this particular line is fixed, it must not keep its module
+            # aggregate in «Ваше решение» while sibling-module lines remain open.
+            if item and item.get("fixed"):
                 return False
             step = steps.get(cfo_position_current_step_id(self.repo, position))
             if not step or step.get("unit_id"):
@@ -1821,7 +1939,9 @@ class RequestService:
                 return all(row.get("frozen") or row.get("fixed") for row in items)
             return False
 
-        def can_submit_position(position: dict | None) -> bool:
+        def can_submit_position(position: dict | None, item: dict | None = None) -> bool:
+            if item and item.get("fixed"):
+                return False
             step = steps.get(cfo_position_current_step_id(self.repo, position)) if position else None
             return bool(
                 position
@@ -1869,6 +1989,13 @@ class RequestService:
         for item in self.repo.load_all("req_items"):
             if item.get("status") == ItemStatus.deleted:
                 continue
+            # Dashboard drill-downs are based on CFO-position lines only and
+            # use the same non-rejected planned amount as the dashboard.
+            if positioned_only and (
+                not positions.get(item.get("cfo_position_id"))
+                or item.get("status") == ItemStatus.rejected
+            ):
+                continue
             if is_income is not None and bool(item.get("is_income", False)) != is_income:
                 continue
             if fixed_only and not item.get("fixed"):
@@ -1877,6 +2004,8 @@ class RequestService:
                 continue
             request = requests.get(item.get("request_id"))
             if not request or (visible is not None and request["id"] not in visible):
+                continue
+            if request.get("status") == RequestStatus.cancelled:
                 continue
             if mine_only and request_author_id(self.repo, request["id"]) != user.get("id"):
                 continue
@@ -1968,12 +2097,12 @@ class RequestService:
                 "is_final_approval_actionable": (
                     user.get("role") == "zgd" and can_act_on_position(position, item)
                 ),
-                "is_position_submission_actionable": can_submit_position(position),
+                "is_position_submission_actionable": can_submit_position(position, item),
                 "is_economist_completion_actionable": can_complete_economist_position(position),
                 "is_position_actionable": (
                     can_act_on_position(position, item)
-                    or can_submit_position(position)
-                    or can_act_on_position_block(position)
+                    or can_submit_position(position, item)
+                    or can_act_on_position_block(position, item)
                 ),
                 "approval_stage": approval_stage(position, item),
                 "frozen": bool(item.get("frozen")),
@@ -2047,7 +2176,11 @@ class RequestService:
         return entries[start:start + page_size]
 
     @staticmethod
-    def _register_aggregates(entries: list[dict]) -> dict:
+    def _register_aggregates(
+        entries: list[dict],
+        *,
+        include_interim_facts: bool = True,
+    ) -> dict:
         approved = sum(entry["status"] in {ItemStatus.approved, ItemStatus.approved_with_changes} for entry in entries)
         rejected = sum(entry["status"] == ItemStatus.rejected for entry in entries)
         revision = sum(bool(entry.get("is_revision")) for entry in entries)
@@ -2065,7 +2198,12 @@ class RequestService:
         else:
             aggregate_status = "in_progress"
         requested = sum(entry["requested_sum"] for entry in entries)
-        approved_sum = sum(entry["approved_sum"] for entry in entries)
+        approved_sum = sum(
+            entry["approved_sum"]
+            for entry in entries
+            if include_interim_facts
+            or entry["status"] in {ItemStatus.approved, ItemStatus.approved_with_changes}
+        )
         rejected_sum = sum(
             entry["requested_sum"] for entry in entries
             if entry["status"] == ItemStatus.rejected
@@ -2134,7 +2272,12 @@ class RequestService:
             "economist_completion_positions": len(economist_completion_positions),
         }
 
-    def _register_analytics_summary(self, entries: list[dict]) -> list[dict]:
+    def _register_analytics_summary(
+        self,
+        entries: list[dict],
+        *,
+        include_interim_facts: bool = True,
+    ) -> list[dict]:
         """Aggregate populated analytics after all register filters are applied."""
         result: list[dict] = []
         for field in ANALYTICS_FIELDS:
@@ -2165,7 +2308,10 @@ class RequestService:
                 )
                 rows.append({
                     "value": value,
-                    "aggregates": self._register_aggregates(value_entries),
+                    "aggregates": self._register_aggregates(
+                        value_entries,
+                        include_interim_facts=include_interim_facts,
+                    ),
                     "top_cfo": top_cfo,
                 })
             result.append({
@@ -2186,6 +2332,7 @@ class RequestService:
             raise HTTPException(status_code=422, detail="Укажите уникальные допустимые уровни группировки")
 
         entries = self._sort_register_entries(self._register_entries(user, **filters))
+        include_interim_facts = not bool(filters.get("positioned_only"))
         labels = {
             "cfo": "ЦФО", "category": "Категория", "article": "Статья / инвестпроект",
             "module": "Модуль", "request": "Заявка",
@@ -2245,7 +2392,10 @@ class RequestService:
                     "module_id": node["module_id"], "article_id": node["article_id"],
                     "category_id": node["category_id"], "scope": node["scope"],
                     "request_ids": sorted(node["request_ids"]),
-                    "aggregates": self._register_aggregates(node["entries"]),
+                    "aggregates": self._register_aggregates(
+                        node["entries"],
+                        include_interim_facts=include_interim_facts,
+                    ),
                     "children": children,
                     "can_load_rows": can_load_rows,
                     "label": labels[node["type"]],
@@ -2259,8 +2409,14 @@ class RequestService:
             "view": view,
             "group_by": list(levels),
             "groups": serialize(roots),
-            "aggregates": self._register_aggregates(entries),
-            "analytics_summary": self._register_analytics_summary(entries),
+            "aggregates": self._register_aggregates(
+                entries,
+                include_interim_facts=include_interim_facts,
+            ),
+            "analytics_summary": self._register_analytics_summary(
+                entries,
+                include_interim_facts=include_interim_facts,
+            ),
             "summary_items": entries,
         }
 
@@ -2549,8 +2705,11 @@ class RequestService:
     ) -> dict:
         if page < 1:
             raise HTTPException(status_code=422, detail="Номер страницы должен быть не меньше 1")
-        if page_size not in {25, 50, 100, 200}:
-            raise HTTPException(status_code=422, detail="Допустимый размер страницы: 25, 50, 100 или 200")
+        if page_size not in {1, 10, 25, 50, 100, 200}:
+            raise HTTPException(
+                status_code=422,
+                detail="Допустимый размер страницы: 1, 10, 25, 50, 100 или 200",
+            )
         scope_keys = ("module_id", "article_id", "category_id", "cfo_id", "request_id", *ANALYTICS_FIELDS)
         if request_id:
             filters = {**filters, "request_id": request_id}
@@ -2560,6 +2719,7 @@ class RequestService:
                 detail="Укажите область строк: module_id, article_id, category_id, cfo_id или request_id",
             )
         entries = self._sort_register_entries(self._register_entries(user, **filters))
+        include_interim_facts = not bool(filters.get("positioned_only"))
         total_items = len(entries)
         pagination = self._register_pagination(total_items, page, page_size)
         items = self._slice_register_page(entries, pagination["page"], page_size)
@@ -2570,7 +2730,13 @@ class RequestService:
         }
         return {
             "items": items,
-            "group": {**group_meta, "aggregates": self._register_aggregates(entries)},
+            "group": {
+                **group_meta,
+                "aggregates": self._register_aggregates(
+                    entries,
+                    include_interim_facts=include_interim_facts,
+                ),
+            },
             "pagination": pagination,
         }
 

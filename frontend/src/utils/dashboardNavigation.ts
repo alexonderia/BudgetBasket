@@ -9,6 +9,7 @@ export type RegisterDrillParams = {
   requestStatus?: RequestStatus | '';
   flow?: '' | 'expense' | 'income';
   frozen?: 'frozen' | 'fixed';
+  positionedOnly?: boolean;
 };
 
 export type DashboardMetric = 'planned' | 'correction' | 'approved' | 'frozen' | 'processed';
@@ -23,9 +24,9 @@ export function dashboardMetricFilters(
     ...(options.cfoId ? { cfoId: options.cfoId } : {}),
     flow: options.flow,
   };
-  if (metric === 'approved' || metric === 'processed') return { ...scope, requestStatus: 'approved' };
-  if (metric === 'frozen') return { ...scope, frozen: 'frozen' };
-  return scope;
+  if (metric === 'approved' || metric === 'processed') return { ...scope, requestStatus: 'approved', positionedOnly: true };
+  if (metric === 'frozen') return { ...scope, frozen: 'frozen', positionedOnly: true };
+  return { ...scope, positionedOnly: true };
 }
 
 export function parseArticleKey(articleKey: string): string | null {
@@ -42,6 +43,7 @@ export function buildRegisterHref(user: User, params: RegisterDrillParams): stri
   if (params.requestStatus) search.set('request_status', params.requestStatus);
   if (params.flow) search.set('flow', params.flow);
   if (params.frozen) search.set('frozen', params.frozen);
+  if (params.positionedOnly) search.set('positioned_only', 'true');
 
   if (user.role === 'admin') {
     search.set('view', 'table');
@@ -63,5 +65,6 @@ export function registerDrillFromSearchParams(searchParams: URLSearchParams): Re
     requestStatus: (searchParams.get('request_status') as RequestStatus | null) || undefined,
     flow: (searchParams.get('flow') as RegisterDrillParams['flow']) || undefined,
     frozen: (searchParams.get('frozen') as RegisterDrillParams['frozen']) || undefined,
+    positionedOnly: searchParams.get('positioned_only') === 'true',
   };
 }

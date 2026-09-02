@@ -4,10 +4,12 @@ import {
   buildRegisterControlRows,
   computeRegisterVisibility,
   filterRegisterGroups,
+  adjustRegisterStatusFilterValues,
   REGISTRY_TABLE_COLUMN_DEFINITIONS,
   sortRegisterGroups,
   sortRegisterItems,
 } from './registryTableColumns';
+import { groupRegistryStatus, rowRegistryStatus } from './registryConfig';
 
 const baseAggregates = {
   requested_sum: 100,
@@ -182,6 +184,42 @@ describe('registryTableColumns', () => {
       expect.stringMatching(/^row:/),
       expect.stringMatching(/^group:/),
     ]));
+  });
+
+  it('closes a line status when a selected group status covers all lines with it', () => {
+    const approvedGroup = {
+      ...makeGroup('article:approved', 'РЎРѕРіР»Р°СЃРѕРІР°РЅРЅР°СЏ'),
+      can_load_rows: true,
+      aggregates: {
+        ...baseAggregates,
+        total_rows: 1,
+        approved_rows: 1,
+        pending_rows: 0,
+        cfo_review_requests: 0,
+        cfo_review_actionable_requests: 0,
+        aggregate_status: 'approved' as const,
+      },
+    };
+    const item = { ...makeItem('line-approved', 'РЎС‚СЂРѕРєР°'), status: 'approved' as const, is_cfo_review: false, is_cfo_review_actionable: false };
+    const rows = buildRegisterControlRows([approvedGroup], [{ item, groupId: approvedGroup.id }]);
+    const groupStatus = `group:${groupRegistryStatus(approvedGroup.aggregates).label}`;
+    const rowStatus = `row:${rowRegistryStatus(item).label}`;
+    const availableValues = [groupStatus, rowStatus];
+
+    expect(adjustRegisterStatusFilterValues(rows, groupStatus, [rowStatus], availableValues)).toEqual([]);
+
+    const mixedGroup = { ...makeGroup('article:mixed', 'РЎРјРµС€Р°РЅРЅР°СЏ'), can_load_rows: true };
+    const mixedItem = { ...makeItem('line-approved-elsewhere', 'РЎС‚СЂРѕРєР° 2'), status: 'approved' as const, is_cfo_review: false, is_cfo_review_actionable: false };
+    const mixedRows = buildRegisterControlRows(
+      [approvedGroup, mixedGroup],
+      [{ item, groupId: approvedGroup.id }, { item: mixedItem, groupId: mixedGroup.id }],
+    );
+    const mixedAvailableValues = [
+      groupStatus,
+      `group:${groupRegistryStatus(mixedGroup.aggregates).label}`,
+      rowStatus,
+    ];
+    expect(adjustRegisterStatusFilterValues(mixedRows, groupStatus, mixedAvailableValues.slice(1), mixedAvailableValues)).toContain(rowStatus);
   });
 
   it('recalculates every visible aggregate from the same detail rows', () => {

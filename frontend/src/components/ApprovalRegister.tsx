@@ -94,6 +94,7 @@ import {
   computeRegisterVisibility,
   filterRegisterGroups,
   getRegisterAutoFitValues,
+  adjustRegisterStatusFilterValues,
   REGISTRY_COLUMN_MIN_WIDTHS,
   REGISTRY_TABLE_COLUMN_DEFINITIONS,
   sortRegisterGroups,
@@ -164,10 +165,11 @@ const DRILL_FILTER_KEYS = ['cfoId', 'articleId', 'requestStatus', 'flow', 'froze
 function filtersForPersistence(filters: RegistryFilters): RegistryFilters {
   const persisted = { ...filters };
   DRILL_FILTER_KEYS.forEach((key) => { persisted[key] = ''; });
+  persisted.positionedOnly = false;
   return persisted;
 }
 
-const EMPTY_FILTERS: RegistryFilters = { search: '', flow: '', status: '', budgetYear: '', cfoId: '', articleId: '', requestStatus: '', frozen: '', ...EMPTY_ANALYTICS_FILTERS };
+const EMPTY_FILTERS: RegistryFilters = { search: '', flow: '', status: '', budgetYear: '', cfoId: '', articleId: '', requestStatus: '', frozen: '', positionedOnly: false, ...EMPTY_ANALYTICS_FILTERS };
 
 type RowDecision = 'approved' | 'approved_with_changes' | 'rejected';
 type DecisionTarget = {
@@ -561,6 +563,7 @@ function RegistryFilterBar({
     || filters.articleId
     || filters.requestStatus
     || filters.frozen
+    || filters.positionedOnly
     || ANALYTICS_FIELD_KEYS.some((key) => filters[key]),
   );
   const moveGroupingLevel = (index: number, direction: -1 | 1) => {
@@ -658,6 +661,7 @@ function RegistryFilterBar({
             />
           ) : null}
           {filters.frozen ? <Chip label={filters.frozen === 'fixed' ? 'Фиксация: ЗГД' : 'Фиксация: есть'} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} /> : null}
+          {filters.positionedOnly ? <Chip label="Отчёт дашборда" size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} /> : null}
           {filters.cfoId ? (
             <Chip
               label={drillLabels?.cfoName ? `ЦФО: ${drillLabels.cfoName}` : 'Фильтр по ЦФО'}
@@ -764,6 +768,49 @@ function RegistrySummary({ aggregates }: { aggregates: RegisterAggregates }) {
       </Stack>
     </Paper>
   );
+}
+
+function buildRegisterAnalyticsSummary(rows: ApprovalRegisterRow[], baseAggregates: RegisterAggregates): RegisterAnalyticsSummary[] {
+  return ANALYTICS_FIELD_KEYS.flatMap((field) => {
+    const byValue = new Map<string, ApprovalRegisterRow[]>();
+    rows.forEach((row) => {
+      const value = String(row[field] || '').trim();
+      if (!value) return;
+      const bucket = byValue.get(value) || [];
+      bucket.push(row);
+      byValue.set(value, bucket);
+    });
+    if (!byValue.size) return [];
+    const values = [...byValue.entries()].map(([value, valueRows]) => {
+      const cfoLoads = new Map<string, { cfo_id: string; cfo_name: string; requested_sum: number; total_rows: number }>();
+      valueRows.forEach((row) => {
+        const cfoId = row.cfo_id || 'unassigned';
+        const load = cfoLoads.get(cfoId) || {
+          cfo_id: cfoId,
+          cfo_name: row.cfo_name,
+          requested_sum: 0,
+          total_rows: 0,
+        };
+        load.requested_sum += Number(row.requested_sum || 0);
+        load.total_rows += 1;
+        cfoLoads.set(cfoId, load);
+      });
+      const topCfo = [...cfoLoads.values()].sort(
+        (left, right) => right.requested_sum - left.requested_sum
+          || right.total_rows - left.total_rows
+          || left.cfo_name.localeCompare(right.cfo_name, 'ru'),
+      )[0];
+      return {
+        value,
+        aggregates: aggregateRegisterRows(baseAggregates, valueRows),
+        top_cfo: topCfo,
+      };
+    }).sort(
+      (left, right) => right.aggregates.requested_sum - left.aggregates.requested_sum
+        || left.value.localeCompare(right.value, 'ru'),
+    );
+    return [{ field, label: ANALYTICS_FIELD_LABELS[field], values }];
+  });
 }
 
 function AnalyticsSummaryList({ summary }: { summary: RegisterAnalyticsSummary[] }) {
@@ -2273,7 +2320,7 @@ export function ApprovalRegister({
   const queryClient = useQueryClient();
   useEffect(() => {
     const drill = registerDrillFromSearchParams(searchParams);
-    if (!drill.cfoId && !drill.articleId && !drill.search && !drill.requestStatus && !drill.flow && !drill.frozen && !drill.view) return;
+    if (!drill.cfoId && !drill.articleId && !drill.search && !drill.requestStatus && !drill.flow && !drill.frozen && !drill.positionedOnly && !drill.view) return;
     setFilters((current) => ({
       ...current,
       cfoId: drill.cfoId || '',
@@ -2282,6 +2329,7 @@ export function ApprovalRegister({
       requestStatus: drill.requestStatus || '',
       flow: drill.flow || '',
       frozen: drill.frozen || '',
+      positionedOnly: drill.positionedOnly || false,
     }));
     if (drill.view && availableViews.includes(drill.view)) {
       setView(drill.view);
@@ -2298,7 +2346,7 @@ export function ApprovalRegister({
       JSON.stringify({ version: 2, view, groupBy, filters: filtersForPersistence(filters), ...preferences }),
     );
   }, [filters, groupBy, preferences, user.id, view]);
-  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, filters.frozen, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, filters.frozen, filters.positionedOnly, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isLoading, error, isFetching } = useQuery({
     queryKey: ['approval-register', requestId, view, groupBy, effectiveFilters],
     queryFn: async ({ signal }) => (await api.get<ApprovalRegisterResponse>('/approval-register', {
@@ -2311,7 +2359,7 @@ export function ApprovalRegister({
     setExpanded((current) => (
       current.size > 0 ? current : new Set(collectDefaultExpandedGroupIds(data.groups, view))
     ));
-  }, [data?.groups, view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, filters.frozen, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  }, [data?.groups, view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, filters.frozen, filters.positionedOnly, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   useEffect(() => {
     if (!data?.groups?.length || !filters.articleId) return;
     const matches: ApprovalRegisterGroup[] = [];
@@ -2579,6 +2627,11 @@ export function ApprovalRegister({
   const columnControls = useTableColumnControls({
     rows: controlRows,
     columns: REGISTRY_TABLE_COLUMN_DEFINITIONS,
+    adjustFilterSelection: ({ columnId, optionValue, nextValues, availableValues, rows }) => (
+      columnId === 'status'
+        ? adjustRegisterStatusFilterValues(rows, optionValue, nextValues, availableValues)
+        : undefined
+    ),
   });
   const { visibleGroupIds, visibleItemIds } = useMemo(
     () => computeRegisterVisibility(data?.groups || [], columnControls.rows, columnControls.hasActiveFilters, controlRows),
@@ -2603,6 +2656,15 @@ export function ApprovalRegister({
       .filter((row) => !columnControls.hasActiveFilters || visibleItemIds?.has(row.item.id)),
     [columnControls.hasActiveFilters, controlRows, visibleItemIds],
   );
+  const analyticsSummary = useMemo(() => {
+    if (!data) return [];
+    const sourceRows = columnControls.hasActiveFilters
+      ? visibleItemControlRows.map((row) => row.item)
+      : data.summary_items || null;
+    return sourceRows
+      ? buildRegisterAnalyticsSummary(sourceRows, data.aggregates)
+      : (data.analytics_summary || []);
+  }, [columnControls.hasActiveFilters, data, visibleItemControlRows]);
   const displayRegisterGroups = useMemo(
     () => (columnControls.hasActiveFilters
       ? filterRegisterGroups(data?.groups || [], visibleGroupIds, visibleItemControlRows)
@@ -3031,7 +3093,7 @@ export function ApprovalRegister({
       hideFlowSelect={Boolean(flow)}
     />
     {summaryAggregates && !approvalMode && <RegistrySummary aggregates={summaryAggregates} />}
-    {!approvalMode && <AnalyticsSummaryList summary={data?.analytics_summary || []} />}
+    {!approvalMode && <AnalyticsSummaryList summary={analyticsSummary} />}
     {approvalMode && hasSelection && (
       <SelectionBar
         selectionRoots={selectionRoots}

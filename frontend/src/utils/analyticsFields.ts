@@ -47,6 +47,7 @@ export function buildRegisterFilterParams(
     articleId?: string;
     requestStatus?: string;
     frozen?: '' | 'frozen' | 'fixed';
+    positionedOnly?: boolean;
   } & Record<AnalyticsFieldKey, string>,
   extras?: Record<string, unknown>,
 ) {
@@ -58,6 +59,7 @@ export function buildRegisterFilterParams(
     article_id: filters.articleId || undefined,
     request_status: filters.requestStatus || undefined,
     frozen: filters.frozen || undefined,
+    positioned_only: filters.positionedOnly || undefined,
     is_income: filters.flow === 'income' ? true : filters.flow === 'expense' ? false : undefined,
     ...extras,
   };

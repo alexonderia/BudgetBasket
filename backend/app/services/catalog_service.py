@@ -207,17 +207,21 @@ class CatalogService:
 
     def delete_impact(self, collection: str, target: dict) -> str | None:
         reference_field = "dds_id" if collection == "dds_catalog" else "invest_id"
-        if any(item.get(reference_field) == target["id"] for item in self.repo.load_all("req_items")):
-            return "Нельзя удалить: запись используется в заявках. Деактивируйте её, чтобы сохранить историю."
         if self._children(collection, target["id"]):
-            return "Нельзя удалить: у статьи или проекта есть категории."
+            entity = "статью" if collection == "dds_catalog" else "инвест-проект"
+            return f"Нельзя удалить {entity}: у неё существуют категории." if entity == "статью" else f"Нельзя удалить {entity}: у него существуют категории."
+        if any(item.get(reference_field) == target["id"] for item in self.repo.load_all("req_items")):
+            return "Запись используется в заявках и не может быть удалена. Деактивируйте её."
         return None
 
     def delete_catalog(self, user: dict, collection: str, item_id: str) -> None:
-        require_role(user, "admin")
         target = self.repo.get_by_id(collection, item_id)
         if not target:
             raise HTTPException(status_code=404, detail="Запись не найдена")
+        if target.get("parent_id"):
+            self._require_category_manager(user, target.get("unit_id"))
+        else:
+            require_role(user, "admin")
         impact = self.delete_impact(collection, target)
         if impact:
             raise HTTPException(status_code=409, detail=impact)

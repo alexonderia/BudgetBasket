@@ -13,6 +13,7 @@ export type RegistryFilters = {
   articleId: string;
   requestStatus: string;
   frozen: '' | 'frozen' | 'fixed';
+  positionedOnly: boolean;
 } & Record<AnalyticsFieldKey, string>;
 
 export const REGISTRY_VIEW_LABELS: Record<RegistryView, string> = {

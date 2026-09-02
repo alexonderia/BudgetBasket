@@ -497,7 +497,11 @@ class ApprovalService:
 
     def _sync_step_statuses(self, repo: Repository) -> None:
         steps = list(repo.load_all("steps"))
-        positions = list(repo.load_all("cfo_positions"))
+        positions = [
+            position
+            for position in repo.load_all("cfo_positions")
+            if self._position_items(repo, position["id"])
+        ]
         edges = self._edges(repo)
         for step in steps:
             status = self._step_runtime_status(repo, step, positions, edges)
@@ -1070,10 +1074,16 @@ class ApprovalService:
         return self.sync_automatic_steps(user)
 
     def _position_items(self, repo: Repository, position_id: str) -> list[dict]:
+        active_request_ids = {
+            request["id"]
+            for request in repo.load_all("requests")
+            if request.get("status") != RequestStatus.cancelled
+        }
         return [
             row for row in repo.load_all("req_items")
             if row.get("cfo_position_id") == position_id
             and row.get("status") != ItemStatus.deleted
+            and row.get("request_id") in active_request_ids
         ]
 
     @staticmethod
@@ -1152,6 +1162,7 @@ class ApprovalService:
         rows = [
             row for row in self.repo.load_all("cfo_positions")
             if (visible is None or row["id"] in visible)
+            and bool(self._position_items(self.repo, row["id"]))
             and (budget_year is None or int(row["budget_year"]) == budget_year)
             and (cfo_unit_id is None or row["cfo_unit_id"] == cfo_unit_id)
             and (status is None or row["status"] == status)
@@ -1507,6 +1518,7 @@ class ApprovalService:
             self.public_position(row)
             for row in self.repo.load_all("cfo_positions")
             if self._current_step_id(self.repo, row) == step_id
+            and bool(self._position_items(self.repo, row["id"]))
         ]
 
     def step_dashboard(self, user: dict, step_id: str) -> dict:
@@ -1552,10 +1564,33 @@ class ApprovalService:
             if actor.get("role") == "zgd":
                 if parents:
                     raise HTTPException(status_code=409, detail="Шаг ЗГД должен завершать маршрут")
-                selected_ids = set(item_ids or [row["id"] for row in items if not row.get("fixed")])
-                selected = [row for row in items if row["id"] in selected_ids]
-                if not selected or any(not row.get("frozen") for row in selected):
-                    raise HTTPException(status_code=422, detail="Выберите замороженные строки позиции")
+                requested_ids = (
+                    list(item_ids)
+                    if item_ids
+                    else [row["id"] for row in items if not row.get("fixed")]
+                )
+                if not requested_ids:
+                    raise HTTPException(status_code=409, detail="В позиции нет строк для фиксации")
+                if len(set(requested_ids)) != len(requested_ids):
+                    raise HTTPException(status_code=422, detail="Идентификаторы строк не должны повторяться")
+                all_items_by_id = {row["id"]: row for row in repo.load_all("req_items")}
+                selected = []
+                for item_id in requested_ids:
+                    item = all_items_by_id.get(item_id)
+                    if not item or item.get("cfo_position_id") != position_id:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Строка {item_id} не относится к выбранной позиции",
+                        )
+                    item_request = repo.get_by_id("requests", item.get("request_id"))
+                    if not item_request or item_request.get("status") == RequestStatus.cancelled:
+                        raise HTTPException(status_code=409, detail=f"Строка {item_id} недоступна в текущем workflow")
+                    if item.get("status") == ItemStatus.deleted or not item.get("frozen"):
+                        raise HTTPException(status_code=409, detail=f"Строка {item_id} недоступна для фиксации")
+                    if item.get("fixed"):
+                        raise HTTPException(status_code=409, detail=f"Строка {item_id} уже зафиксирована")
+                    selected.append(item)
+                selected_ids = set(requested_ids)
                 for item in selected:
                     repo.update("req_items", item["id"], {"fixed": True, "frozen": True})
                 fixed_items = self._position_items(repo, position_id)
@@ -1580,7 +1615,7 @@ class ApprovalService:
                 repo, user, after, action, before=before, after=after,
                 comment=comment, event_id=event_id, step_id=step_id,
                 current_step_id=next_step["id"] if next_step else self._current_step_id(repo, after),
-                item_ids=sorted(item_ids or [row["id"] for row in items]),
+                item_ids=sorted(selected_ids if actor.get("role") == "zgd" else [row["id"] for row in items]),
             )
             self._step_log(
                 repo, user, step, action, event_id=event_id, comment=comment,

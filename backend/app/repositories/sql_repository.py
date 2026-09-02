@@ -46,6 +46,16 @@ class SqlRepository:
             if key in table.c
         }
 
+    @staticmethod
+    def _raise_integrity_error(exc: IntegrityError) -> None:
+        constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+        if constraint_name == "ux_requests_active_unit_budget_year":
+            raise HTTPException(
+                status_code=409,
+                detail="Для модуля уже существует активная заявка этого года",
+            ) from exc
+        raise HTTPException(status_code=400, detail="Database constraint violation") from exc
+
     def _user_payload(self, session, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
         role_name = normalized.pop("role", None)
@@ -110,7 +120,7 @@ class SqlRepository:
                     )
                     session.execute(insert(table).values(**payload))
             except IntegrityError as exc:
-                raise HTTPException(status_code=400, detail="Database constraint violation") from exc
+                self._raise_integrity_error(exc)
 
     def get_by_id(self, collection_name: str, item_id: str | int) -> dict[str, Any] | None:
         table = self._table(collection_name)
@@ -147,7 +157,7 @@ class SqlRepository:
                 )
                 row = session.execute(insert(table).values(**payload).returning(table)).first()
             except IntegrityError as exc:
-                raise HTTPException(status_code=400, detail="Database constraint violation") from exc
+                self._raise_integrity_error(exc)
             created = self._row_to_dict(row)
             if table.name == "users":
                 created["role"] = session.execute(
@@ -185,7 +195,7 @@ class SqlRepository:
                 if not row:
                     raise HTTPException(status_code=404, detail="Запись не найдена")
             except IntegrityError as exc:
-                raise HTTPException(status_code=400, detail="Database constraint violation") from exc
+                self._raise_integrity_error(exc)
             updated = self._row_to_dict(row)
             if table.name == "users":
                 updated["role"] = session.execute(
@@ -217,7 +227,7 @@ class SqlRepository:
                     update(table).where(*self._where_clause(table, filters)).values(**payload)
                 )
             except IntegrityError as exc:
-                raise HTTPException(status_code=400, detail="Database constraint violation") from exc
+                self._raise_integrity_error(exc)
         return result.rowcount or 0
 
     def delete_where(self, collection_name: str, filters: dict[str, Any]) -> int:
