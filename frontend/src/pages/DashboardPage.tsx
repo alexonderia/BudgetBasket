@@ -10,6 +10,7 @@ import Autocomplete from '@mui/material/Autocomplete';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Card from '@mui/material/Card';
+import CardActionArea from '@mui/material/CardActionArea';
 import CardContent from '@mui/material/CardContent';
 import Chip from '@mui/material/Chip';
 import Grid from '@mui/material/Grid';
@@ -29,7 +30,7 @@ import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { ApprovalRegister } from '../components/ApprovalRegister';
 import type { User } from '../types';
-import { buildRegisterHref, parseArticleKey } from '../utils/dashboardNavigation';
+import { buildRegisterHref, dashboardMetricFilters, parseArticleKey, type DashboardMetric } from '../utils/dashboardNavigation';
 import { money } from '../utils/labels';
 
 type Breakdown = {
@@ -123,9 +124,10 @@ function compactMoney(value: number) {
   return `${formatted}${suffix ? ` ${suffix}` : ''} ₽`;
 }
 
-function Metric({ title, value, exactValue, hint, icon, tone = 'blue' }: { title: string; value: string | number; exactValue?: string; hint: ReactNode; icon: React.ReactNode; tone?: string }) {
+function Metric({ title, value, exactValue, hint, icon, tone = 'blue', to }: { title: string; value: string | number; exactValue?: string; hint: ReactNode; icon: React.ReactNode; tone?: string; to: string }) {
   return (
     <Card className="metric-card dashboard-metric" elevation={0}>
+      <CardActionArea component={RouterLink} to={to} aria-label={`Открыть реестр: ${title}`} sx={{ height: '100%', textAlign: 'inherit', '&:focus-visible': { outline: '3px solid', outlineColor: 'primary.light', outlineOffset: -3 } }}>
       <CardContent sx={{ p: 2.5 }}>
         <Stack direction="row" justifyContent="space-between" spacing={1.5}>
           <Box minWidth={0} flex={1}>
@@ -138,6 +140,7 @@ function Metric({ title, value, exactValue, hint, icon, tone = 'blue' }: { title
           <Box className={`metric-icon metric-icon-${tone}`}>{icon}</Box>
         </Stack>
       </CardContent>
+      </CardActionArea>
     </Card>
   );
 }
@@ -418,10 +421,15 @@ export default function DashboardPage({ user }: { user: User }) {
       : null;
   }, [user]);
   const detailView = user.role === 'economist' || user.role === 'approver' || user.role === 'zgd' ? 'cfo' : 'article';
-  const requestsApprovedHref = buildRegisterHref(user, { view: detailView, requestStatus: 'approved' });
-  const requestsReviewHref = buildRegisterHref(user, { view: detailView, requestStatus: 'on_review' });
-  const requestsAllHref = buildRegisterHref(user, { view: detailView });
-  const frozenRequestsHref = buildRegisterHref(user, { view: detailView });
+  const metricHref = (metric: DashboardMetric) => buildRegisterHref(user, dashboardMetricFilters(metric, {
+    view: detailView,
+    cfoId: unitId || undefined,
+    flow: isIncomeDashboard ? 'income' : 'expense',
+  }));
+  const requestsApprovedHref = metricHref('approved');
+  const requestsReviewHref = buildRegisterHref(user, { view: detailView, requestStatus: 'on_review', cfoId: unitId || undefined, flow: isIncomeDashboard ? 'income' : 'expense' });
+  const requestsAllHref = metricHref('planned');
+  const frozenRequestsHref = metricHref('frozen');
   const registerHref = buildRegisterHref(user, { view: detailView });
 
   if (isLoading || !data) {
@@ -471,11 +479,11 @@ export default function DashboardPage({ user }: { user: User }) {
       ) : <>
 
       <Grid container spacing={2}>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={compactMoney(data.totals.planned)} exactValue={money(data.totals.planned)} hint="Запланированная объединениями" icon={<PaymentsOutlinedIcon fontSize="small" />} /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Корректировка" value={`${correction > 0 ? '+' : ''}${compactMoney(correction)}`} exactValue={money(correction)} hint={correctionLabel} icon={<TrendingUpIcon fontSize="small" />} tone="purple" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Утверждено" value={compactMoney(data.totals.approved)} exactValue={money(data.totals.approved)} hint={`${approvalRate}% от расчета`} icon={<AssignmentTurnedInIcon fontSize="small" />} tone="green" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Зафиксировано" value={compactMoney(data.totals.frozen)} exactValue={money(data.totals.frozen)} hint={<DashboardDrillLink to={frozenRequestsHref} title="Открыть детализацию реестра">{`${data.totals.frozen_requests_count} заявок зафиксировано`}</DashboardDrillLink>} icon={<LockOutlinedIcon fontSize="small" />} tone="amber" /></Grid>
-        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Обработано" value={data.totals.approved_requests_count} hint={<DashboardDrillLink to={requestsApprovedHref} title="Открыть детализацию утверждённых">{`заявок из ${data.totals.requests_count}`}</DashboardDrillLink>} icon={<FactCheckIcon fontSize="small" />} tone="amber" /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={compactMoney(data.totals.planned)} exactValue={money(data.totals.planned)} hint="Запланированная объединениями" icon={<PaymentsOutlinedIcon fontSize="small" />} to={metricHref('planned')} /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Корректировка" value={`${correction > 0 ? '+' : ''}${compactMoney(correction)}`} exactValue={money(correction)} hint={correctionLabel} icon={<TrendingUpIcon fontSize="small" />} tone="purple" to={metricHref('correction')} /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Утверждено" value={compactMoney(data.totals.approved)} exactValue={money(data.totals.approved)} hint={`${approvalRate}% от расчета`} icon={<AssignmentTurnedInIcon fontSize="small" />} tone="green" to={metricHref('approved')} /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Зафиксировано" value={compactMoney(data.totals.frozen)} exactValue={money(data.totals.frozen)} hint={`${data.totals.frozen_requests_count} заявок зафиксировано`} icon={<LockOutlinedIcon fontSize="small" />} tone="amber" to={frozenRequestsHref} /></Grid>
+        <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title="Обработано" value={data.totals.approved_requests_count} hint={`заявок из ${data.totals.requests_count}`} icon={<FactCheckIcon fontSize="small" />} tone="amber" to={metricHref('processed')} /></Grid>
       </Grid>
 
       <Grid container spacing={2.5}>

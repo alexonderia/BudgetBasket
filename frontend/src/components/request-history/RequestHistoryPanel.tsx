@@ -113,7 +113,7 @@ function HistoryEntry({
       <Typography className="request-history-meta" variant="caption" color="text.secondary">
         {new Date(entry.created_at).toLocaleString('ru-RU')} · {historyActorName(entry.user)}
       </Typography>
-      {entry.request_id && (
+      {entry.request_id && entry.log.action !== 'request_created' && (
         <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
           Заявка №{entry.request_id.slice(0, 8)}{entry.request_unit_name ? ` · ${entry.request_unit_name}` : ''}
         </Typography>

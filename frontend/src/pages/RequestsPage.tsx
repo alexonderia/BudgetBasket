@@ -136,7 +136,7 @@ function RequestsListPage({ user }: { user: User }) {
     setFilters({
       status: searchParams.get('status') || '',
       frozen: searchParams.get('frozen') || '',
-      flow: '',
+      flow: (searchParams.get('flow') as '' | 'expense' | 'income') || '',
     });
   }, [searchParams]);
   const [expandedZgdDepartments, setExpandedZgdDepartments] = useState<string[]>([]);

@@ -29,9 +29,18 @@ describe('historyChanges', () => {
   });
 
   it('never exposes a raw object in a history field', () => {
-    const [change] = historyChanges(entry({ metadata: { from: {}, to: { internal: true } } }));
+    expect(historyChanges(entry({ metadata: { from: {}, to: { internal: true } } }))).toEqual([]);
+  });
 
-    expect(change.from).toBe('Указано значение');
-    expect(change.to).toBe('Указано значение');
+  it('shows only business fields for a newly created request', () => {
+    const changes = historyChanges(entry({
+      id: { from: null, to: '8c48d77e-718c-4c14-a3e0-0233e181b6c6' },
+      unit_id: { from: null, to: '42bd4301-b3f3-4fd1-8491-85534299bac4' },
+      budget_year: { from: null, to: 2026 },
+      created_at: { from: null, to: '2026-09-01T10:00:00Z' },
+      status: { from: null, to: 'draft' },
+    }));
+
+    expect(changes).toEqual([{ field: 'Статус', from: '—', to: 'Черновик' }]);
   });
 });

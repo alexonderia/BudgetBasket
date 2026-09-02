@@ -7,7 +7,26 @@ export type RegisterDrillParams = {
   articleId?: string;
   search?: string;
   requestStatus?: RequestStatus | '';
+  flow?: '' | 'expense' | 'income';
+  frozen?: 'frozen' | 'fixed';
 };
+
+export type DashboardMetric = 'planned' | 'correction' | 'approved' | 'frozen' | 'processed';
+
+/** Keep the navigation target of a metric card and its caption in one place. */
+export function dashboardMetricFilters(
+  metric: DashboardMetric,
+  options: { view: RegistryView; cfoId?: string; flow: 'expense' | 'income' },
+): RegisterDrillParams {
+  const scope = {
+    view: options.view,
+    ...(options.cfoId ? { cfoId: options.cfoId } : {}),
+    flow: options.flow,
+  };
+  if (metric === 'approved' || metric === 'processed') return { ...scope, requestStatus: 'approved' };
+  if (metric === 'frozen') return { ...scope, frozen: 'frozen' };
+  return scope;
+}
 
 export function parseArticleKey(articleKey: string): string | null {
   const separatorIndex = articleKey.indexOf(':');
@@ -21,6 +40,8 @@ export function buildRegisterHref(user: User, params: RegisterDrillParams): stri
   if (params.articleId) search.set('article_id', params.articleId);
   if (params.search) search.set('search', params.search);
   if (params.requestStatus) search.set('request_status', params.requestStatus);
+  if (params.flow) search.set('flow', params.flow);
+  if (params.frozen) search.set('frozen', params.frozen);
 
   if (user.role === 'admin') {
     search.set('view', 'table');
@@ -40,5 +61,7 @@ export function registerDrillFromSearchParams(searchParams: URLSearchParams): Re
     articleId: searchParams.get('article_id') || undefined,
     search: searchParams.get('search') || undefined,
     requestStatus: (searchParams.get('request_status') as RequestStatus | null) || undefined,
+    flow: (searchParams.get('flow') as RegisterDrillParams['flow']) || undefined,
+    frozen: (searchParams.get('frozen') as RegisterDrillParams['frozen']) || undefined,
   };
 }

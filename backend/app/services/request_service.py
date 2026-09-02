@@ -1648,6 +1648,7 @@ class RequestService:
         request_id: str | None = None,
         status: str | None = None,
         request_status: str | None = None,
+        frozen: str | None = None,
         search: str | None = None,
         mine_only: bool = False,
         analytics_1: str | None = None,
@@ -2008,6 +2009,10 @@ class RequestService:
             if status and entry["status"] != status:
                 continue
             if request_statuses and entry["request_status"] not in request_statuses:
+                continue
+            if frozen == "frozen" and not entry["frozen"]:
+                continue
+            if frozen == "fixed" and not entry["fixed"]:
                 continue
             if any((entry.get(field) or "").strip() != expected for field, expected in analytics_filters.items()):
                 continue

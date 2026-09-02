@@ -747,12 +747,26 @@ function ApprovalGraph({
         cfoPools.push({ id: cfoKey(step), name: cfo, y: top, height });
       }
     });
+    const graphNodes = [
+      ...steps.map((step) => {
+        const position = positions.get(step.id)!;
+        return { x: position.x, y: position.y, width: nodeWidth, height: nodeHeights.get(step.id) || minCardHeight };
+      }),
+      ...moduleCards.map((card) => ({ x: card.x, y: card.y, width: moduleCardWidth, height: card.height })),
+    ];
+    const graphBounds = {
+      x: Math.min(...graphNodes.map((node) => node.x)),
+      y: Math.min(...graphNodes.map((node) => node.y)),
+      width: Math.max(...graphNodes.map((node) => node.x + node.width)) - Math.min(...graphNodes.map((node) => node.x)),
+      height: Math.max(...graphNodes.map((node) => node.y + node.height)) - Math.min(...graphNodes.map((node) => node.y)),
+    };
     return {
       positions,
       moduleCards,
       departmentPools,
       cfoPools,
       longestRouteBounds,
+      graphBounds,
       poolLeft,
       poolWidth,
       poolGap,
@@ -765,26 +779,52 @@ function ApprovalGraph({
     };
   }, [steps, cfoOrder, viewerUserId]);
 
+  const clampPan = (nextPan: { x: number; y: number }, nextZoom = zoom) => {
+    const viewport = graphViewportRef.current;
+    if (!viewport) return nextPan;
+    const padding = 28;
+    const clampAxis = (translation: number, start: number, length: number, viewportLength: number) => {
+      const scaledLength = length * nextZoom;
+      if (scaledLength <= viewportLength - padding * 2) {
+        return (viewportLength - scaledLength) / 2 - start * nextZoom;
+      }
+      const minimum = viewportLength - padding - (start + length) * nextZoom;
+      const maximum = padding - start * nextZoom;
+      return Math.min(maximum, Math.max(minimum, translation));
+    };
+    return {
+      x: clampAxis(nextPan.x, layout.graphBounds.x, layout.graphBounds.width, viewport.clientWidth),
+      y: clampAxis(nextPan.y, layout.graphBounds.y, layout.graphBounds.height, viewport.clientHeight),
+    };
+  };
+
+  const fitViewport = () => {
+    const viewport = graphViewportRef.current;
+    if (!viewport) return;
+    const availableWidth = Math.max(1, viewport.clientWidth - 56);
+    const availableHeight = Math.max(1, viewport.clientHeight - 56);
+    const fittedZoom = Math.max(0.1, Math.min(
+      1,
+      Number(Math.min(availableWidth / layout.graphBounds.width, availableHeight / layout.graphBounds.height).toFixed(2)),
+    ));
+    setZoom(fittedZoom);
+    setPan(clampPan({ x: 0, y: 0 }, fittedZoom));
+  };
+
   useEffect(() => {
     const viewport = graphViewportRef.current;
     if (!viewport || !steps.length || hasAutoFramedGraph.current) return;
-    const availableWidth = Math.max(1, viewport.clientWidth - 48);
-    const availableHeight = Math.max(1, viewport.clientHeight - 48);
-    const { longestRouteBounds } = layout;
-    const fittedZoom = Math.max(0.1, Math.min(
-      1,
-      Number(Math.min(
-        availableWidth / longestRouteBounds.width,
-        availableHeight / longestRouteBounds.height,
-      ).toFixed(2)),
-    ));
-    setZoom(fittedZoom);
-    setPan({
-      x: (viewport.clientWidth - longestRouteBounds.width * fittedZoom) / 2 - longestRouteBounds.x * fittedZoom,
-      y: (viewport.clientHeight - longestRouteBounds.height * fittedZoom) / 2 - longestRouteBounds.y * fittedZoom,
-    });
+    fitViewport();
     hasAutoFramedGraph.current = true;
-  }, [layout.longestRouteBounds, steps.length]);
+  }, [layout.graphBounds, steps.length]);
+
+  useEffect(() => {
+    const viewport = graphViewportRef.current;
+    if (!viewport) return;
+    const observer = new ResizeObserver(() => setPan((current) => clampPan(current)));
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [layout.graphBounds, zoom]);
 
   useEffect(() => {
     const cancelPendingConnection = (event: KeyboardEvent) => {
@@ -802,11 +842,12 @@ function ApprovalGraph({
   }
 
   const changeZoom = (delta: number) => {
-    setZoom((current) => Math.max(0.1, Number((current + delta).toFixed(2))));
+    const nextZoom = Math.max(0.1, Number((zoom + delta).toFixed(2)));
+    setZoom(nextZoom);
+    setPan((current) => clampPan(current, nextZoom));
   };
   const resetViewport = () => {
-    setZoom(0.75);
-    setPan({ x: 72, y: 56 });
+    fitViewport();
   };
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -840,7 +881,7 @@ function ApprovalGraph({
       return;
     }
     if (!isPanning) return;
-    setPan({ x: panStart.current.x + event.clientX - panStart.current.pointerX, y: panStart.current.y + event.clientY - panStart.current.pointerY });
+    setPan(clampPan({ x: panStart.current.x + event.clientX - panStart.current.pointerX, y: panStart.current.y + event.clientY - panStart.current.pointerY }));
   };
   const stopPanning = (event: PointerEvent<HTMLDivElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -878,10 +919,10 @@ function ApprovalGraph({
       const anchorX = (gesture.pointerX - gesture.pan.x) / gesture.zoom;
       const anchorY = (gesture.pointerY - gesture.pan.y) / gesture.zoom;
       setZoom(nextZoom);
-      setPan({
+      setPan(clampPan({
         x: gesture.pointerX - anchorX * nextZoom,
         y: gesture.pointerY - anchorY * nextZoom,
-      });
+      }, nextZoom));
       if (zoomGestureTimer.current) clearTimeout(zoomGestureTimer.current);
       zoomGestureTimer.current = setTimeout(() => {
         zoomGestureRef.current = null;
@@ -889,7 +930,7 @@ function ApprovalGraph({
       }, 140);
       return;
     }
-    setPan((current) => ({ ...current, y: current.y - event.deltaY }));
+    setPan((current) => clampPan({ ...current, y: current.y - event.deltaY }));
   };
   const reorderCfo = (sourceKey: string, targetKey: string) => {
     if (sourceKey === targetKey || sourceKey.split('\u0000')[0] !== targetKey.split('\u0000')[0]) return;

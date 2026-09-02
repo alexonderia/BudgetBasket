@@ -159,7 +159,7 @@ function normalizedGrouping(value: unknown): RegisterGroupingLevel[] | undefined
   ));
   return levels.length === value.length && levels.length === new Set(levels).size ? levels : undefined;
 }
-const DRILL_FILTER_KEYS = ['cfoId', 'articleId', 'requestStatus'] as const;
+const DRILL_FILTER_KEYS = ['cfoId', 'articleId', 'requestStatus', 'flow', 'frozen'] as const;
 
 function filtersForPersistence(filters: RegistryFilters): RegistryFilters {
   const persisted = { ...filters };
@@ -167,7 +167,7 @@ function filtersForPersistence(filters: RegistryFilters): RegistryFilters {
   return persisted;
 }
 
-const EMPTY_FILTERS: RegistryFilters = { search: '', flow: '', status: '', budgetYear: '', cfoId: '', articleId: '', requestStatus: '', ...EMPTY_ANALYTICS_FILTERS };
+const EMPTY_FILTERS: RegistryFilters = { search: '', flow: '', status: '', budgetYear: '', cfoId: '', articleId: '', requestStatus: '', frozen: '', ...EMPTY_ANALYTICS_FILTERS };
 
 type RowDecision = 'approved' | 'approved_with_changes' | 'rejected';
 type DecisionTarget = {
@@ -560,6 +560,7 @@ function RegistryFilterBar({
     || filters.cfoId
     || filters.articleId
     || filters.requestStatus
+    || filters.frozen
     || ANALYTICS_FIELD_KEYS.some((key) => filters[key]),
   );
   const moveGroupingLevel = (index: number, direction: -1 | 1) => {
@@ -656,6 +657,7 @@ function RegistryFilterBar({
               sx={{ height: 22, fontSize: 11 }}
             />
           ) : null}
+          {filters.frozen ? <Chip label={filters.frozen === 'fixed' ? 'Фиксация: ЗГД' : 'Фиксация: есть'} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} /> : null}
           {filters.cfoId ? (
             <Chip
               label={drillLabels?.cfoName ? `ЦФО: ${drillLabels.cfoName}` : 'Фильтр по ЦФО'}
@@ -2271,13 +2273,15 @@ export function ApprovalRegister({
   const queryClient = useQueryClient();
   useEffect(() => {
     const drill = registerDrillFromSearchParams(searchParams);
-    if (!drill.cfoId && !drill.articleId && !drill.search && !drill.requestStatus && !drill.view) return;
+    if (!drill.cfoId && !drill.articleId && !drill.search && !drill.requestStatus && !drill.flow && !drill.frozen && !drill.view) return;
     setFilters((current) => ({
       ...current,
       cfoId: drill.cfoId || '',
       articleId: drill.articleId || '',
       search: drill.search || current.search,
       requestStatus: drill.requestStatus || '',
+      flow: drill.flow || '',
+      frozen: drill.frozen || '',
     }));
     if (drill.view && availableViews.includes(drill.view)) {
       setView(drill.view);
@@ -2294,7 +2298,7 @@ export function ApprovalRegister({
       JSON.stringify({ version: 2, view, groupBy, filters: filtersForPersistence(filters), ...preferences }),
     );
   }, [filters, groupBy, preferences, user.id, view]);
-  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, filters.frozen, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isLoading, error, isFetching } = useQuery({
     queryKey: ['approval-register', requestId, view, groupBy, effectiveFilters],
     queryFn: async ({ signal }) => (await api.get<ApprovalRegisterResponse>('/approval-register', {
@@ -2307,7 +2311,7 @@ export function ApprovalRegister({
     setExpanded((current) => (
       current.size > 0 ? current : new Set(collectDefaultExpandedGroupIds(data.groups, view))
     ));
-  }, [data?.groups, view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  }, [data?.groups, view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, filters.frozen, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   useEffect(() => {
     if (!data?.groups?.length || !filters.articleId) return;
     const matches: ApprovalRegisterGroup[] = [];
@@ -2879,6 +2883,7 @@ export function ApprovalRegister({
     || filters.cfoId
     || filters.articleId
     || filters.requestStatus
+    || filters.frozen
     || ANALYTICS_FIELD_KEYS.some((key) => filters[key])
     || columnControls.hasActiveFilters,
   );
@@ -2887,7 +2892,7 @@ export function ApprovalRegister({
     columnControls.resetFilters();
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
-      ['register_view', 'cfo_id', 'article_id', 'request_status', 'search'].forEach((key) => next.delete(key));
+      ['register_view', 'cfo_id', 'article_id', 'request_status', 'flow', 'frozen', 'search'].forEach((key) => next.delete(key));
       return next;
     }, { replace: true });
   }, [columnControls, setSearchParams]);

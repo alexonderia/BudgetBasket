@@ -89,10 +89,11 @@ const historyFieldLabels: Record<string, string> = {
   ...ANALYTICS_FIELD_LABELS,
 };
 
-const technicalHistoryFields = new Set([
-  'id', 'item_id', 'request_id', 'req_id', 'unit_id', 'economist_id', 'created_at', 'updated_at',
-  'step_id', 'current_step_id', 'target_step_id', 'cfo_position_id', 'event_id', 'item_ids',
-]);
+// Logs deliberately retain the full entity snapshot for audit purposes.  The
+// history shown to a person is a separate, public projection: only fields that
+// have a business label may be rendered.  This prevents a newly added storage
+// field (including identifiers) from leaking into UI or exports by default.
+const publicHistoryFields = new Set(Object.keys(historyFieldLabels));
 
 const approvalOnlyActions = new Set([
   'request_submitted_to_cfo',
@@ -154,9 +155,9 @@ export type HistoryChange = { field: string; from: string; to: string };
 
 export function historyChanges(entry: RequestLog): HistoryChange[] {
   return Object.entries(entry.log.changes || {})
-    .filter(([field]) => !technicalHistoryFields.has(field))
+    .filter(([field]) => publicHistoryFields.has(field))
     .map(([field, change]) => ({
-      field: historyFieldLabels[field] || 'Параметр заявки',
+      field: historyFieldLabels[field],
       from: historyValue(change.from, field, entry.log.entity, entry.log.action),
       to: historyValue(change.to, field, entry.log.entity, entry.log.action),
     }));

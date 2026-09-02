@@ -471,6 +471,8 @@ export default function UnitsPage() {
   const [orgPan, setOrgPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef({ pointerX: 0, pointerY: 0, x: 0, y: 0 });
+  const orgViewportRef = useRef<HTMLDivElement>(null);
+  const orgForestRef = useRef<HTMLDivElement>(null);
 
   const unitLevels = useMemo(() => new Map(units.map((unit) => [unit.id, unitLevel(unit.id, units)])), [units]);
   const assignableUnits = units.filter((unit) => [2, 3].includes(unitLevels.get(unit.id) || 0));
@@ -517,6 +519,38 @@ export default function UnitsPage() {
 
     return filterNodes(scopedTree);
   }, [tree, orgSearch, rootUnitId]);
+
+  const clampOrgPan = (nextPan: { x: number; y: number }, nextZoom = orgZoom) => {
+    const viewport = orgViewportRef.current;
+    const forest = orgForestRef.current;
+    if (!viewport || !forest) return nextPan;
+    const padding = 28;
+    const clampAxis = (translation: number, start: number, length: number, viewportLength: number) => {
+      const scaledLength = length * nextZoom;
+      if (scaledLength <= viewportLength - padding * 2) {
+        return (viewportLength - scaledLength) / 2 - start * nextZoom;
+      }
+      const minimum = viewportLength - padding - (start + length) * nextZoom;
+      const maximum = padding - start * nextZoom;
+      return Math.min(maximum, Math.max(minimum, translation));
+    };
+    return {
+      x: clampAxis(nextPan.x, forest.offsetLeft, forest.offsetWidth, viewport.clientWidth),
+      y: clampAxis(nextPan.y, forest.offsetTop, forest.offsetHeight, viewport.clientHeight),
+    };
+  };
+
+  useEffect(() => {
+    const viewport = orgViewportRef.current;
+    if (!viewport || !visibleTree.length) return;
+    const frame = requestAnimationFrame(() => setOrgPan((current) => clampOrgPan(current)));
+    const observer = new ResizeObserver(() => setOrgPan((current) => clampOrgPan(current)));
+    observer.observe(viewport);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [visibleTree, orgZoom]);
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['units'] });
@@ -712,12 +746,15 @@ export default function UnitsPage() {
   };
 
   const changeOrgZoom = (delta: number) => {
-    setOrgZoom((current) => Math.min(1.8, Math.max(0.6, Number((current + delta).toFixed(2)))));
+    const nextZoom = Math.min(1.8, Math.max(0.6, Number((orgZoom + delta).toFixed(2))));
+    setOrgZoom(nextZoom);
+    setOrgPan((current) => clampOrgPan(current, nextZoom));
   };
 
   const resetOrgViewport = () => {
-    setOrgZoom(0.6);
-    setOrgPan({ x: 0, y: 0 });
+    const nextZoom = 0.6;
+    setOrgZoom(nextZoom);
+    setOrgPan(clampOrgPan({ x: 0, y: 0 }, nextZoom));
   };
 
   const handleOrgPointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -729,10 +766,10 @@ export default function UnitsPage() {
 
   const handleOrgPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     if (!isPanning) return;
-    setOrgPan({
+    setOrgPan(clampOrgPan({
       x: panStart.current.x + event.clientX - panStart.current.pointerX,
       y: panStart.current.y + event.clientY - panStart.current.pointerY,
-    });
+    }));
   };
 
   const stopOrgPanning = (event: PointerEvent<HTMLDivElement>) => {
@@ -758,6 +795,7 @@ export default function UnitsPage() {
               </Tooltip>
             </Stack>
             <Box
+              ref={orgViewportRef}
               className={`org-chart-viewport ${isPanning ? 'is-panning' : ''}`}
               onPointerDown={handleOrgPointerDown}
               onPointerMove={handleOrgPointerMove}
@@ -765,7 +803,7 @@ export default function UnitsPage() {
               onPointerCancel={stopOrgPanning}
             >
               <Box className="org-chart-stage" style={{ transform: `translate3d(${orgPan.x}px, ${orgPan.y}px, 0) scale(${orgZoom})` }}>
-                <Box className="org-forest">
+                <Box ref={orgForestRef} className="org-forest">
                   {visibleTree.map((root) => (
                     <Box key={root.id} className="org-chart">
                       {renderNode(root, 0)}

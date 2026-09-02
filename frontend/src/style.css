@@ -707,6 +707,11 @@
     align-self: flex-end;
   }
 
+  .chat-inbox-messages .request-chat-message-system {
+    min-width: 0;
+    align-self: center;
+  }
+
   .chat-inbox-messages .request-chat-bubble {
     flex: 1;
     background: #fff;
@@ -841,6 +846,7 @@
 
   .request-chat-message-system {
     align-self: center;
+    min-width: 0;
     max-width: min(82%, 460px);
   }
 
@@ -1532,10 +1538,15 @@
   }
 
   .request-chat-message-system .request-chat-bubble {
-    border-color: #dbe3ee;
+    width: 100%;
+    max-width: 100%;
+    padding: 8px 12px 7px;
+    border-color: #e2e8f0;
     border-radius: 12px;
-    background: #f8fafc;
+    background: #f1f5f9;
     text-align: center;
+    box-shadow: none;
+    box-sizing: border-box;
   }
 
   .request-chat-system-label {
@@ -1546,7 +1557,22 @@
   }
 
   .request-chat-message-system .request-chat-time {
+    margin-top: 3px;
+    font-size: 0.66rem;
     text-align: center;
+  }
+
+  .request-chat-message-system .chat-message-content {
+    align-items: center;
+    flex-direction: column !important;
+  }
+
+  .request-chat-message-system .chat-message-content .request-chat-text {
+    width: 100%;
+  }
+
+  .request-chat-message-system .chat-message-meta {
+    padding-bottom: 0;
   }
 
   .org-chart-toolbar {
