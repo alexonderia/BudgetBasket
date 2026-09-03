@@ -815,6 +815,7 @@ class RequestService:
                 float(item.get("sum_fact") or 0)
                 for item in items
                 if item.get("status") in APPROVED_ITEM_STATUSES
+                or (item.get("fixed") and item.get("status") != ItemStatus.rejected)
             ),
             len(items),
         )
@@ -826,26 +827,47 @@ class RequestService:
             if not unit_id or item.get("cfo_unit_id") == unit_id
         ]
         units = {item["id"]: item for item in self.repo.load_all("units")}
-        rows: list[dict] = []
+        rows_by_cfo: dict[str, dict] = {}
         for position in positions:
             planned, approved, count = self._position_sum(position["id"], is_income=is_income)
-            rows.append(
+            cfo_id = position["cfo_unit_id"]
+            row = rows_by_cfo.setdefault(
+                cfo_id,
                 {
-                    "id": position["id"],
-                    "cfo_id": position["cfo_unit_id"],
-                    "name": units.get(position["cfo_unit_id"], {}).get("name", "ЦФО"),
+                    "id": cfo_id,
+                    "cfo_id": cfo_id,
+                    "name": units.get(cfo_id, {}).get("name", "ЦФО"),
                     "kind": "cfo",
-                    "planned": planned,
-                    "approved": approved,
-                    "items_count": count,
-                }
+                    "planned": 0,
+                    "approved": 0,
+                    "items_count": 0,
+                },
             )
+            row["planned"] += planned
+            row["approved"] += approved
+            row["items_count"] += count
+        rows = list(rows_by_cfo.values())
         position_ids = {position["id"] for position in positions}
         requests = {item["id"]: item for item in self.repo.load_all("requests")}
         scoped_request_ids = {
             item["request_id"]
             for item in self.repo.load_all("req_items")
             if item.get("cfo_position_id") in position_ids
+        }
+        active_items_by_request: dict[str, list[dict]] = {}
+        for item in self.repo.load_all("req_items"):
+            if item.get("request_id") not in scoped_request_ids or item.get("status") == ItemStatus.deleted:
+                continue
+            active_items_by_request.setdefault(item["request_id"], []).append(item)
+        closed_request_ids = {
+            request_id
+            for request_id, items in active_items_by_request.items()
+            if items
+            and all(
+                item.get("fixed")
+                and item.get("status") != ItemStatus.rejected
+                for item in items
+            )
         }
         articles = self.dashboard_articles_cfo(user, unit_id, is_income=is_income)
         by_article = [
@@ -877,7 +899,11 @@ class RequestService:
                     float(item.get("sum_fact") or 0)
                     for item in self.repo.load_all("req_items")
                     if item.get("cfo_position_id") in {position["id"] for position in positions}
-                    and item.get("frozen") and item.get("status") in APPROVED_ITEM_STATUSES
+                    and item.get("frozen")
+                    and (
+                        item.get("status") in APPROVED_ITEM_STATUSES
+                        or (item.get("fixed") and item.get("status") != ItemStatus.rejected)
+                    )
                 ),
                 "remaining": max(
                     sum(item["planned"] for item in rows)
@@ -888,10 +914,12 @@ class RequestService:
                 "approved_requests_count": sum(
                     1 for request_id in scoped_request_ids
                     if requests.get(request_id, {}).get("status") == "approved"
+                    or request_id in closed_request_ids
                 ),
                 "review_requests_count": sum(
                     1 for request_id in scoped_request_ids
                     if requests.get(request_id, {}).get("status") == "on_review"
+                    and request_id not in closed_request_ids
                 ),
                 "frozen_requests_count": len({
                     item.get("request_id") for item in self.repo.load_all("req_items")
@@ -914,7 +942,7 @@ class RequestService:
         kind, separator, article_id = article_key.partition(":")
         if not separator or kind not in {"dds", "invest"}:
             return []
-        result: list[dict] = []
+        rows_by_cfo: dict[str, dict] = {}
         units = {item["id"]: item for item in self.repo.load_all("units")}
         catalog = {
             item["id"]: item
@@ -930,17 +958,22 @@ class RequestService:
             if leaf_id != article_id and resolved != requested_article_id:
                 continue
             planned, approved, count = self._position_sum(position["id"], is_income=is_income)
-            result.append(
+            cfo_id = position["cfo_unit_id"]
+            row = rows_by_cfo.setdefault(
+                cfo_id,
                 {
-                    "id": position["cfo_unit_id"],
-                    "cfo_id": position["cfo_unit_id"],
-                    "name": units.get(position["cfo_unit_id"], {}).get("name", "ЦФО"),
-                    "planned": planned,
-                    "approved": approved,
-                    "items_count": count,
-                }
+                    "id": cfo_id,
+                    "cfo_id": cfo_id,
+                    "name": units.get(cfo_id, {}).get("name", "ЦФО"),
+                    "planned": 0,
+                    "approved": 0,
+                    "items_count": 0,
+                },
             )
-        return result
+            row["planned"] += planned
+            row["approved"] += approved
+            row["items_count"] += count
+        return list(rows_by_cfo.values())
 
     def dashboard_articles_cfo(
         self,

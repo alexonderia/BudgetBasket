@@ -71,7 +71,7 @@ type ArticleCfoBreakdown = Breakdown & {
 
 function DashboardDrillLink({ to, tooltip, children }: { to: string; tooltip: string; children: ReactNode }) {
   return (
-    <Tooltip title={tooltip}>
+    <Tooltip title={tooltip} arrow={false}>
       <Box
         component={RouterLink}
         to={to}
@@ -99,7 +99,7 @@ function DashboardDrillLink({ to, tooltip, children }: { to: string; tooltip: st
 
 function DashboardDrillButton({ to, tooltip }: { to: string; tooltip: string }) {
   return (
-    <Tooltip title={tooltip}>
+    <Tooltip title={tooltip} arrow={false}>
       <IconButton
         component={RouterLink}
         to={to}
@@ -132,7 +132,7 @@ function Metric({ title, value, exactValue, hint, icon, tone = 'blue', to }: { t
         <Stack direction="row" justifyContent="space-between" spacing={1.5}>
           <Box minWidth={0} flex={1}>
             <Typography className="section-label">{title}</Typography>
-            <Tooltip title={exactValue || String(value)} arrow>
+            <Tooltip title={exactValue || String(value)} arrow={false}>
               <Typography className="dashboard-metric-value" variant="h5" sx={{ mt: 0.65 }}>{value}</Typography>
             </Tooltip>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>{hint}</Typography>
@@ -160,11 +160,16 @@ function chartColorForId(id: string) {
   return chartColors[hash % chartColors.length];
 }
 
-function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
+function formatPercentage(value: number) {
+  return value > 0 && value < 1 ? '<1%' : `${value.toFixed(0)}%`;
+}
+
+function ParetoChart({ rows, total, ariaLabel, showType = false, collapseRemainder = true, getRowHref }: {
   rows: Breakdown[];
   total: number;
   ariaLabel: string;
   showType?: boolean;
+  collapseRemainder?: boolean;
   getRowHref?: (row: Breakdown) => string | null;
 }) {
   const segments = useMemo(() => {
@@ -181,9 +186,9 @@ function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
         otherRows.push(row);
       }
     });
-    const chartRows = otherRows.length
+    const chartRows = collapseRemainder && otherRows.length
       ? [...mainRows, otherRows.reduce<Breakdown>((rest, row) => ({ ...rest, planned: rest.planned + row.planned, approved: rest.approved + row.approved, items_count: rest.items_count + row.items_count }), { id: 'other', name: 'Прочее', kind: 'dds', planned: 0, approved: 0, items_count: 0 })]
-      : mainRows;
+      : [...mainRows, ...otherRows];
     let offset = 0;
     return chartRows.map((row, index) => {
       const percentage = denominator ? (row.planned / denominator) * 100 : 0;
@@ -191,7 +196,7 @@ function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
       offset += percentage;
       return result;
     });
-  }, [rows, total]);
+  }, [collapseRemainder, rows, total]);
 
   if (!rows.length) return <Box className="dashboard-empty-chart">Нет данных для расчета</Box>;
 
@@ -216,7 +221,7 @@ function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
           {segments.map((segment) => (
             <Tooltip
               key={segment.id}
-              arrow
+              arrow={false}
               placement="top"
               classes={{ popper: 'dashboard-donut-tooltip' }}
               title={<Box><Typography variant="caption" component="div">{segment.name}</Typography><Typography variant="body2" component="div" fontWeight={700}>{money(segment.planned)}</Typography></Box>}
@@ -230,7 +235,7 @@ function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
           ))}
         </svg>
         <Tooltip
-          arrow
+          arrow={false}
           placement="top"
           classes={{ popper: 'dashboard-donut-tooltip' }}
           title={<Box><Typography variant="caption" component="div">Общая сумма</Typography><Typography variant="body2" component="div" fontWeight={700}>{money(total)}</Typography></Box>}
@@ -242,27 +247,70 @@ function ParetoChart({ rows, total, ariaLabel, showType = false, getRowHref }: {
         </Tooltip>
       </Box>
       <Stack spacing={1.15} className="dashboard-legend">
-        {segments.map((segment) => (
+        {segments.map((segment) => {
+          const href = segment.id === 'other' ? null : getRowHref?.(segment);
+          return (
           <Stack key={segment.id} className="dashboard-legend-row" direction="row" spacing={1} alignItems="center" justifyContent="space-between">
             <Stack direction="row" spacing={0.9} minWidth={0} alignItems="center" className="dashboard-legend-name">
               <Box className="dashboard-legend-dot" sx={{ backgroundColor: segment.color }} />
-              {getRowHref?.(segment) ? (
-                <DashboardDrillLink to={getRowHref(segment)!} tooltip={`Открыть строки в реестре: ${segment.name}`}>
+              {href ? (
+                <DashboardDrillLink to={href} tooltip={`Открыть строки в реестре: ${segment.name}`}>
                   <Typography variant="body2" noWrap>{segment.name}</Typography>
                 </DashboardDrillLink>
               ) : (
-                <Tooltip title={segment.name || '—'}><Typography variant="body2" noWrap>{segment.name}</Typography></Tooltip>
+                <Tooltip title={segment.name || '—'} arrow={false}><Typography variant="body2" noWrap>{segment.name}</Typography></Tooltip>
               )}
               {showType && <Chip size="small" label={segment.kind === 'invest' ? 'Инвест' : 'ДДС'} className={`dashboard-type-chip dashboard-type-chip-${segment.kind}`} />}
             </Stack>
             <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0} className="dashboard-legend-values">
-              <Tooltip title={money(segment.planned)} arrow><Typography variant="body2" color="text.secondary">{compactMoney(segment.planned)}</Typography></Tooltip>
-              <Typography variant="body2" color="text.secondary" fontWeight={700}>{segment.percentage.toFixed(0)}%</Typography>
-              {getRowHref?.(segment) ? <DashboardDrillButton to={getRowHref(segment)!} tooltip="Открыть строки в реестре" /> : null}
+              <Tooltip title={money(segment.planned)} arrow={false}><Typography variant="body2" color="text.secondary">{compactMoney(segment.planned)}</Typography></Tooltip>
+              <Typography variant="body2" color="text.secondary" fontWeight={700}>{formatPercentage(segment.percentage)}</Typography>
+              {href ? <DashboardDrillButton to={href} tooltip="Открыть строки в реестре" /> : null}
             </Stack>
           </Stack>
-        ))}
+          );
+        })}
       </Stack>
+    </Stack>
+  );
+}
+
+function BreakdownProgressBars({ rows, getRowHref }: { rows: Breakdown[]; getRowHref?: (row: Breakdown) => string | null }) {
+  const total = rows.reduce((sum, row) => sum + row.planned, 0);
+  const ordered = [...rows].sort((left, right) => right.planned - left.planned || left.name.localeCompare(right.name, 'ru'));
+
+  if (!rows.length) return null;
+
+  return (
+    <Stack spacing={1.25} sx={{ mt: 3 }}>
+      <Typography variant="subtitle2">Распределение по ЦФО</Typography>
+      {ordered.map((row) => {
+        const share = total ? (row.planned / total) * 100 : 0;
+        const href = getRowHref?.(row);
+        return (
+          <Box key={row.id}>
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+              {href ? (
+                <DashboardDrillLink to={href} tooltip={`Открыть строки ЦФО в реестре: ${row.name}`}>
+                  <Typography variant="body2" noWrap>{row.name}</Typography>
+                </DashboardDrillLink>
+              ) : (
+                <Tooltip title={row.name || '—'} arrow={false}><Typography variant="body2" noWrap>{row.name}</Typography></Tooltip>
+              )}
+              <Stack direction="row" spacing={0.5} alignItems="center" flexShrink={0}>
+                <Typography variant="body2" color="text.secondary">{compactMoney(row.planned)}</Typography>
+                <Typography variant="body2" color="primary.main" fontWeight={700}>{formatPercentage(share)}</Typography>
+                {href ? <DashboardDrillButton to={href} tooltip="Открыть строки ЦФО в реестре" /> : null}
+              </Stack>
+            </Stack>
+            <LinearProgress
+              variant="determinate"
+              value={share}
+              sx={{ mt: 0.7, height: 8, borderRadius: 8, bgcolor: '#edf0f5', '& .MuiLinearProgress-bar': { bgcolor: chartColorForId(row.id) } }}
+            />
+          </Box>
+        );
+      })}
     </Stack>
   );
 }
@@ -294,7 +342,7 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts, getRowHref 
                       <Typography variant="body2" fontWeight={650} noWrap>{row.name}</Typography>
                     </DashboardDrillLink>
                   ) : (
-                    <Tooltip title={row.name || '—'}><Typography variant="body2" fontWeight={650} noWrap>{row.name}</Typography></Tooltip>
+                    <Tooltip title={row.name || '—'} arrow={false}><Typography variant="body2" fontWeight={650} noWrap>{row.name}</Typography></Tooltip>
                   )}
                   {showType ? (
                     <Chip
@@ -330,55 +378,11 @@ function BudgetBars({ rows, title, emptyText, showType, showAmounts, getRowHref 
   );
 }
 
-function CfoShareBars({ rows, getRowHref }: { rows: Breakdown[]; getRowHref?: (row: Breakdown) => string | null }) {
-  const total = rows.reduce((sum, row) => sum + row.planned, 0);
-
-  if (!rows.length) return <Box className="dashboard-empty-chart">Нет данных по ЦФО для выбранной статьи</Box>;
-
-  return (
-    <Box className="dashboard-cfo-bars">
-      <Box className="dashboard-cfo-segmented-bar" role="img" aria-label="Распределение статьи по ЦФО">
-        {rows.map((row) => {
-          const share = total ? (row.planned / total) * 100 : 0;
-          return (
-            <Tooltip key={row.id} title={<Box><Typography variant="caption" component="div">{row.name}</Typography><Typography variant="body2" component="div" fontWeight={700}>{money(row.planned)} · {share.toFixed(1)}%</Typography></Box>} arrow>
-              <Box component="span" className="dashboard-cfo-segment" sx={{ width: `${share}%`, backgroundColor: chartColorForId(row.id) }} />
-            </Tooltip>
-          );
-        })}
-      </Box>
-      <Box className="dashboard-cfo-legend">
-        {rows.map((row) => {
-          const share = total ? (row.planned / total) * 100 : 0;
-          return (
-            <Stack key={row.id} className="dashboard-cfo-legend-item" direction="row" spacing={0.8} alignItems="center" minWidth={0}>
-              <Box className="dashboard-legend-dot" sx={{ backgroundColor: chartColorForId(row.id) }} />
-              {getRowHref?.(row) ? (
-                <DashboardDrillLink to={getRowHref(row)!} tooltip={`Открыть строки ЦФО в реестре: ${row.name}`}>
-                  <Typography variant="body2" noWrap minWidth={0}>{row.name}</Typography>
-                </DashboardDrillLink>
-              ) : (
-                <Tooltip title={row.name || '—'}><Typography variant="body2" noWrap minWidth={0}>{row.name}</Typography></Tooltip>
-              )}
-              <Stack direction="row" spacing={0.8} alignItems="baseline" flexShrink={0} className="dashboard-cfo-values">
-                <Tooltip title={money(row.planned)} arrow>
-                  <Typography variant="body2" color="text.secondary">{compactMoney(row.planned)}</Typography>
-                </Tooltip>
-                <Typography variant="body2" color="primary.main" fontWeight={700}>{share.toFixed(0)}%</Typography>
-                {getRowHref?.(row) ? <DashboardDrillButton to={getRowHref(row)!} tooltip="Открыть строки ЦФО в реестре" /> : null}
-              </Stack>
-            </Stack>
-          );
-        })}
-      </Box>
-    </Box>
-  );
-}
-
 export default function DashboardPage({ user }: { user: User }) {
   const [unitId, setUnitId] = useState('');
   const [mode, setMode] = useState<'expense' | 'income'>('expense');
-  const [articleFilterId, setArticleFilterId] = useState<string | null>(null);
+  const [breakdownDimension, setBreakdownDimension] = useState<'article' | 'cfo'>('article');
+  const [breakdownSelectionId, setBreakdownSelectionId] = useState<string | null>(null);
   const [searchParams] = useSearchParams();
   const view = searchParams.get('view') === 'table' ? 'table' : 'dashboard';
   const isIncomeDashboard = mode === 'income';
@@ -398,8 +402,26 @@ export default function DashboardPage({ user }: { user: User }) {
   const approvalRate = data?.totals.planned ? Math.round((data.totals.approved / data.totals.planned) * 100) : 0;
   const correction = data ? data.totals.approved - data.totals.planned : 0;
   const correctionLabel = correction === 0 ? 'Без корректировки' : correction > 0 ? 'Сумма увеличена' : 'Сумма уменьшена';
-  const selectedArticleFilter = articlesCfo.find((article) => article.id === articleFilterId) || null;
-  const visibleArticlesCfo = selectedArticleFilter ? [selectedArticleFilter] : articlesCfo;
+  const breakdownOptions = breakdownDimension === 'article' ? articlesCfo : (data?.by_unit || []);
+  const selectedBreakdown = breakdownOptions.find((item) => item.id === breakdownSelectionId)
+    || [...breakdownOptions].sort((left, right) => right.planned - left.planned)[0]
+    || null;
+  const selectedArticleBreakdown = breakdownDimension === 'article' && selectedBreakdown
+    ? selectedBreakdown as ArticleCfoBreakdown
+    : null;
+  const selectedCfoId = breakdownDimension === 'cfo' && selectedBreakdown
+    ? selectedBreakdown.cfo_id || selectedBreakdown.id
+    : null;
+  const selectedDetailRows = useMemo(() => {
+    if (selectedArticleBreakdown) return selectedArticleBreakdown.cfo;
+    if (!selectedCfoId) return [];
+    return articlesCfo.flatMap((article) => {
+      const cfoRow = article.cfo.find((row) => (row.cfo_id || row.id) === selectedCfoId);
+      return cfoRow
+        ? [{ ...cfoRow, id: article.id, article_id: article.article_id, name: article.name, kind: article.kind, cfo_id: selectedCfoId }]
+        : [];
+    });
+  }, [articlesCfo, selectedArticleBreakdown, selectedCfoId]);
   const articleRegisterHref = useMemo(() => (row: Breakdown) => {
     const articleId = row.article_id || parseArticleKey(row.id);
     if (!articleId) return null;
@@ -420,6 +442,13 @@ export default function DashboardPage({ user }: { user: User }) {
       ? buildRegisterHref(user, { view: 'cfo', articleId, cfoId, positionedOnly: true })
       : null;
   }, [user]);
+  const selectedDetailRegisterHref = useMemo(() => (row: Breakdown) => {
+    if (selectedArticleBreakdown) return articleCfoRegisterHref(selectedArticleBreakdown, row);
+    const articleId = row.article_id || parseArticleKey(row.id);
+    return articleId && selectedCfoId
+      ? buildRegisterHref(user, { view: 'cfo', articleId, cfoId: selectedCfoId, positionedOnly: true })
+      : null;
+  }, [articleCfoRegisterHref, selectedArticleBreakdown, selectedCfoId, user]);
   const detailView = user.role === 'economist' || user.role === 'approver' || user.role === 'zgd' ? 'cfo' : 'article';
   const metricHref = (metric: DashboardMetric) => buildRegisterHref(user, dashboardMetricFilters(metric, {
     view: detailView,
@@ -508,7 +537,7 @@ export default function DashboardPage({ user }: { user: User }) {
               </Box>
               <InsightsOutlinedIcon color="primary" />
             </Box>
-            <ParetoChart rows={data.by_unit} total={data.totals.planned} ariaLabel={`Парето ${subject} по ЦФО`} getRowHref={cfoRegisterHref} />
+            <ParetoChart rows={data.by_unit} total={data.totals.planned} ariaLabel={`Парето ${subject} по ЦФО`} collapseRemainder={false} getRowHref={cfoRegisterHref} />
           </Card>
         </Grid>
         <Grid size={{ xs: 12, lg: 7 }}>
@@ -545,52 +574,94 @@ export default function DashboardPage({ user }: { user: User }) {
           <Card className="surface dashboard-panel" elevation={0}>
             <Box className="dashboard-panel-heading">
               <Box>
-                <Typography variant="h6">Статьи в разрезе ЦФО</Typography>
+                <Typography variant="h6">Детализация по статье и ЦФО</Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }}>
-                  Доля каждого ЦФО в плановой сумме статьи
+                  Выберите статью для разбивки по ЦФО или ЦФО для разбивки по статьям
                 </Typography>
               </Box>
-              <Autocomplete
-                size="small"
-                options={articlesCfo}
-                value={selectedArticleFilter}
-                onChange={(_, article) => setArticleFilterId(article?.id || null)}
-                getOptionLabel={(article) => article.name}
-                isOptionEqualToValue={(option, value) => option.id === value.id}
-                className="dashboard-article-filter"
-                renderInput={(params) => <TextField {...params} label="Найти статью" placeholder="Введите название" />}
-              />
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} className="dashboard-breakdown-controls">
+                <Tabs
+                  value={breakdownDimension}
+                  onChange={(_, nextDimension: 'article' | 'cfo') => {
+                    setBreakdownDimension(nextDimension);
+                    setBreakdownSelectionId(null);
+                  }}
+                  aria-label="Разрез детализации"
+                  className="dashboard-breakdown-tabs"
+                >
+                  <Tab value="article" label="По статье" />
+                  <Tab value="cfo" label="По ЦФО" />
+                </Tabs>
+                <Autocomplete
+                  size="small"
+                  options={breakdownOptions}
+                  value={selectedBreakdown}
+                  onChange={(_, item) => setBreakdownSelectionId(item?.id || null)}
+                  getOptionLabel={(item) => item.name}
+                  isOptionEqualToValue={(option, value) => option.id === value.id}
+                  className="dashboard-breakdown-selection"
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label={breakdownDimension === 'article' ? 'Выбрать статью' : 'Выбрать ЦФО'}
+                      placeholder={breakdownDimension === 'article' ? 'Введите название статьи' : 'Введите название ЦФО'}
+                    />
+                  )}
+                />
+              </Stack>
             </Box>
             {articlesCfoLoading ? (
               <Skeleton variant="rounded" height={220} sx={{ borderRadius: 3 }} />
-            ) : visibleArticlesCfo.length ? (
-              <Stack spacing={2.5}>
-                {visibleArticlesCfo.map((article) => (
-                  <Box key={article.id} className="dashboard-cfo-article">
-                    <Stack direction="row" justifyContent="space-between" spacing={1.5} alignItems="baseline">
-                      <Stack direction="row" spacing={0.8} alignItems="center" minWidth={0}>
-                        {articleRegisterHref(article) ? (
-                          <>
-                            <DashboardDrillLink to={articleRegisterHref(article)!} tooltip={`Открыть строки статьи в реестре: ${article.name}`}>
-                              <Typography variant="body1" fontWeight={700} noWrap>{article.name}</Typography>
-                            </DashboardDrillLink>
-                            <DashboardDrillButton to={articleRegisterHref(article)!} tooltip="Открыть строки статьи в реестре" />
-                          </>
-                        ) : (
-                          <Tooltip title={article.name || '—'}><Typography variant="body1" fontWeight={700} noWrap>{article.name}</Typography></Tooltip>
-                        )}
-                        <Chip size="small" label={article.kind === 'invest' ? 'Инвест-проект' : 'Статья ДДС'} className={`dashboard-type-chip dashboard-type-chip-${article.kind}`} />
-                      </Stack>
-                      <Tooltip title={money(article.planned)} arrow>
-                        <Typography variant="body2" color="text.secondary" fontWeight={700} flexShrink={0}>{compactMoney(article.planned)}</Typography>
-                      </Tooltip>
-                    </Stack>
-                    <CfoShareBars rows={article.cfo} getRowHref={(cfo) => articleCfoRegisterHref(article, cfo)} />
-                  </Box>
-                ))}
-              </Stack>
+            ) : selectedBreakdown ? (
+              <Box className="dashboard-cfo-article">
+                <Stack direction="row" justifyContent="space-between" spacing={1.5} alignItems="baseline">
+                  <Stack direction="row" spacing={0.8} alignItems="center" minWidth={0}>
+                    <Typography variant="body1" fontWeight={700} noWrap>{selectedBreakdown.name}</Typography>
+                    {selectedArticleBreakdown ? (
+                      <Chip
+                        size="small"
+                        label={selectedArticleBreakdown.kind === 'invest' ? 'Инвест-проект' : 'Статья ДДС'}
+                        className={`dashboard-type-chip dashboard-type-chip-${selectedArticleBreakdown.kind}`}
+                      />
+                    ) : null}
+                  </Stack>
+                  <Tooltip title={money(selectedBreakdown.planned)} arrow={false}>
+                    <Typography variant="body2" color="text.secondary" fontWeight={700} flexShrink={0}>{compactMoney(selectedBreakdown.planned)}</Typography>
+                  </Tooltip>
+                </Stack>
+                <ParetoChart
+                  rows={selectedDetailRows}
+                  total={selectedBreakdown.planned}
+                  ariaLabel={breakdownDimension === 'article'
+                    ? `Распределение статьи ${selectedBreakdown.name} по ЦФО`
+                    : `Распределение ЦФО ${selectedBreakdown.name} по статьям`}
+                  getRowHref={selectedDetailRegisterHref}
+                />
+                {breakdownDimension === 'article' ? (
+                  <Stack spacing={2.5} sx={{ mt: 3 }}>
+                    {articlesCfo.map((article) => (
+                      <Box key={article.id} className="dashboard-cfo-article">
+                        <Stack direction="row" justifyContent="space-between" spacing={1.5} alignItems="baseline">
+                          <Stack direction="row" spacing={0.8} alignItems="center" minWidth={0}>
+                            {articleRegisterHref(article) ? (
+                              <DashboardDrillLink to={articleRegisterHref(article)!} tooltip={`Открыть строки статьи в реестре: ${article.name}`}>
+                                <Typography variant="body2" fontWeight={700} noWrap>{article.name}</Typography>
+                              </DashboardDrillLink>
+                            ) : (
+                              <Tooltip title={article.name || '—'} arrow={false}><Typography variant="body2" fontWeight={700} noWrap>{article.name}</Typography></Tooltip>
+                            )}
+                            <Chip size="small" label={article.kind === 'invest' ? 'Инвест-проект' : 'Статья ДДС'} className={`dashboard-type-chip dashboard-type-chip-${article.kind}`} />
+                          </Stack>
+                          <Typography variant="body2" color="text.secondary" fontWeight={700} flexShrink={0}>{compactMoney(article.planned)}</Typography>
+                        </Stack>
+                        <BreakdownProgressBars rows={article.cfo} getRowHref={(cfo) => articleCfoRegisterHref(article, cfo)} />
+                      </Box>
+                    ))}
+                  </Stack>
+                ) : null}
+              </Box>
             ) : (
-              <Box className="dashboard-empty-chart">Нет статей для отображения</Box>
+              <Box className="dashboard-empty-chart">Нет данных для детализации</Box>
             )}
           </Card>
         </Grid>

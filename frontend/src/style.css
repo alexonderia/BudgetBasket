@@ -1270,6 +1270,21 @@
     min-width: 240px;
   }
 
+  .dashboard-breakdown-controls {
+    flex: 0 1 560px;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+
+  .dashboard-breakdown-tabs {
+    flex: 0 0 auto;
+  }
+
+  .dashboard-breakdown-selection {
+    flex: 1 1 280px;
+    min-width: 240px;
+  }
+
   .dashboard-donut {
     position: relative;
     flex: 0 0 180px;
@@ -2389,6 +2404,11 @@
 
   .dashboard-article-filter {
     flex-basis: auto;
+    width: 100%;
+  }
+
+  .dashboard-breakdown-controls,
+  .dashboard-breakdown-selection {
     width: 100%;
   }
 

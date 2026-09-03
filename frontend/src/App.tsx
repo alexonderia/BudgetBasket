@@ -88,7 +88,7 @@ export default function App() {
     <Routes>
       <Route path="/file-preview/:fileId" element={<FilePreviewRoute />} />
       <Route element={<Layout user={user} onLogout={logout} onUserChange={persistUser} />}>
-        <Route path="/" element={user.role === 'employee' ? <Navigate to="/requests" replace /> : <DashboardPage user={user} />} />
+        <Route path="/" element={user.role === 'employee' || user.role === 'economist' ? <Navigate to="/requests" replace /> : <DashboardPage user={user} />} />
         <Route path="/income-dashboard" element={<Navigate to="/" replace />} />
         <Route path="/requests" element={<RequestsPage user={user} />} />
         <Route path="/register" element={<Navigate to="/requests" replace />} />

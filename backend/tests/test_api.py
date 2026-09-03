@@ -1194,6 +1194,74 @@ def test_dashboard_article_cfo_returns_selected_article_breakdown(tmp_path):
     assert leaf_rows[0]["planned"] >= 100
 
 
+def test_dashboard_aggregates_cfo_positions_without_article_split(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    repo = client.app.state.repo
+    second_category_id = "20000000-0000-0000-0000-000000000003"
+    repo.create(
+        "dds_catalog",
+        {
+            "id": second_category_id,
+            "parent_id": DDS_OPER_ID,
+            "unit_id": DEPARTMENT_ID,
+            "name": "Дополнительная категория",
+            "is_active": True,
+        },
+    )
+
+    for position_id, request_id, item_id, field, catalog_id, planned in (
+        ("60000000-0000-0000-0000-000000000001", "61000000-0000-0000-0000-000000000001", "62000000-0000-0000-0000-000000000001", "dds_id", DDS_LICENSE_ID, 100),
+        ("60000000-0000-0000-0000-000000000002", "61000000-0000-0000-0000-000000000002", "62000000-0000-0000-0000-000000000002", "dds_id", second_category_id, 50),
+        ("60000000-0000-0000-0000-000000000003", "61000000-0000-0000-0000-000000000003", "62000000-0000-0000-0000-000000000003", "invest_id", "30000000-0000-0000-0000-000000000001", 200),
+    ):
+        repo.create(
+            "cfo_positions",
+            {
+                "id": position_id,
+                "budget_year": 2025,
+                "cfo_unit_id": CFO_ID,
+                "dds_id": catalog_id if field == "dds_id" else None,
+                "invest_id": catalog_id if field == "invest_id" else None,
+                "status": "approved",
+            },
+        )
+        repo.create("requests", {"id": request_id, "unit_id": MODULE_ALPHA_ID, "status": "on_review"})
+        repo.create(
+            "req_items",
+            {
+                "id": item_id,
+                "request_id": request_id,
+                "cfo_position_id": position_id,
+                field: catalog_id,
+                "is_income": False,
+                "sum_plan": planned,
+                "sum_fact": planned,
+                "status": "on_review",
+                "fixed": True,
+            },
+        )
+
+    dashboard = client.get("/dashboard", headers=admin).json()
+    assert len(dashboard["by_unit"]) == 1
+    assert dashboard["by_unit"][0]["cfo_id"] == CFO_ID
+    assert dashboard["by_unit"][0]["planned"] == 350
+    assert dashboard["totals"]["approved"] == 350
+    assert dashboard["by_unit"][0]["items_count"] == 3
+    assert dashboard["totals"]["approved_requests_count"] == 3
+    assert dashboard["totals"]["review_requests_count"] == 0
+
+    article_rows = client.get(
+        "/dashboard/article-cfo",
+        params={"article_key": f"dds:{DDS_OPER_ID}"},
+        headers=admin,
+    ).json()
+    assert len(article_rows) == 1
+    assert article_rows[0]["cfo_id"] == CFO_ID
+    assert article_rows[0]["planned"] == 150
+    assert article_rows[0]["items_count"] == 2
+
+
 def test_dashboard_articles_cfo_returns_all_articles(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")

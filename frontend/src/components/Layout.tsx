@@ -361,7 +361,7 @@ export function Layout({
         <List>
           {user.role !== 'employee' && (
             <>
-              <Tooltip title="Сводка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+              <Tooltip title="Сводка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed} arrow={false}>
                 <ListItemButton
                   className="drawer-nav-item"
                   selected={location.pathname === '/'}
@@ -385,7 +385,7 @@ export function Layout({
                   {summaryItems.map((summaryItem) => {
                     const selected = location.pathname === '/' && (summaryItem.view === 'table' ? new URLSearchParams(location.search).get('view') === 'table' : new URLSearchParams(location.search).get('view') !== 'table');
                     return (
-                      <Tooltip key={summaryItem.view} title={summaryItem.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+                      <Tooltip key={summaryItem.view} title={summaryItem.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed} arrow={false}>
                         <ListItemButton
                           className="drawer-nav-item"
                           selected={selected}
@@ -435,7 +435,7 @@ export function Layout({
           {items.map((item) => {
             const selected = item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to);
             return (
-              <Tooltip key={item.to} title={item.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+              <Tooltip key={item.to} title={item.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed} arrow={false}>
                 <ListItemButton
                   className="drawer-nav-item"
                   selected={selected}
@@ -454,7 +454,7 @@ export function Layout({
         <Box className="drawer-footer">
         <Divider />
         <List sx={{ py: 0.5 }}>
-          <Tooltip title="Памятка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+          <Tooltip title="Памятка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed} arrow={false}>
             <ListItemButton
               dense
               onClick={() => {
