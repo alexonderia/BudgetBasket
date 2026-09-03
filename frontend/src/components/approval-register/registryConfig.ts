@@ -151,8 +151,8 @@ export function groupYourStepSummary(aggregates: RegisterAggregates) {
 }
 
 /** Article/CFO rows that can be decided in one click from the group row. */
-export function canQuickDecideGroup(group: ApprovalRegisterGroup) {
-  return isGroupActionable(group) && (group.type === 'article' || group.type === 'cfo');
+export function canQuickDecideGroup(group: ApprovalRegisterGroup, role?: User['role']) {
+  return isGroupActionable(group, role) && (group.type === 'article' || group.type === 'cfo');
 }
 
 export const STATUS_LABELS: Record<ItemStatus, string> = {
@@ -183,14 +183,21 @@ export function isRowActionable(item: ApprovalRegisterRow, role?: User['role']) 
   return item.status === 'on_review' && item.is_cfo_review_actionable;
 }
 
-export function isGroupActionable(group: ApprovalRegisterGroup) {
+export function isGroupActionable(group: ApprovalRegisterGroup, role?: User['role']) {
   if (Object.keys(group.scope || {}).some((key) => key.startsWith('analytics_'))) return false;
   const hasRevision = (group.aggregates.revision_rows || 0) > 0;
+  const workflowReady = (group.aggregates.actionable_positions || 0) > 0 && (
+    !hasRevision
+    || role === 'economist'
+    || role === 'approver'
+    || role === 'zgd'
+    || (role === 'employee' && (group.aggregates.submission_positions || 0) > 0)
+  );
   return (group.type === 'article' || group.type === 'cfo')
     && (
       group.aggregates.cfo_review_actionable_requests > 0
       || group.aggregates.cfo_review_completable_requests > 0
-      || (!hasRevision && group.aggregates.actionable_positions > 0)
+      || workflowReady
     );
 }
 
@@ -200,16 +207,16 @@ export function isGroupSelectable(group: ApprovalRegisterGroup, role?: User['rol
     // An employee can also select a position that is already prepared for
     // transfer, so a stalled «Передайте экономисту» state can be completed
     // from the common selection bar.
-    return groupHasCfoActions(group) || groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group);
+    return groupHasCfoActions(group) || groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group, role);
   }
-  if (role) return groupHasWorkflowActions(group);
+  if (role) return groupHasWorkflowActions(group, role);
   return group.aggregates.cfo_review_actionable_requests > 0 || (
     !(group.aggregates.revision_rows || 0) && group.aggregates.actionable_positions > 0
   );
 }
 
 export function canUseLineLevelWorkflowActions(role: User['role']) {
-  return role === 'economist' || role === 'employee' || role === 'zgd';
+  return role === 'economist' || role === 'employee' || role === 'approver' || role === 'zgd';
 }
 
 export function canEditRevisionLineDetails(role: User['role']) {
@@ -251,8 +258,17 @@ export function groupHasCfoCompleteActions(group: ApprovalRegisterGroup) {
   return group.aggregates.cfo_review_completable_requests > 0;
 }
 
-export function groupHasWorkflowActions(group: ApprovalRegisterGroup) {
-  return !(group.aggregates.revision_rows || 0) && group.aggregates.actionable_positions > 0;
+export function groupHasWorkflowActions(group: ApprovalRegisterGroup, role?: User['role']) {
+  if (!(group.aggregates.actionable_positions || 0)) return false;
+  if ((group.aggregates.revision_rows || 0) > 0) {
+    return role === 'economist' || role === 'approver' || role === 'zgd'
+      || (role === 'employee' && (group.aggregates.submission_positions || 0) > 0);
+  }
+  return true;
+}
+
+export function groupHasWorkflowApprove(group: ApprovalRegisterGroup, role?: User['role']) {
+  return groupHasWorkflowActions(group, role);
 }
 
 export function workflowApproveLabel(role: User['role']) {
@@ -330,6 +346,7 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
   }
   const wasReviewedAfterRevision = Boolean(
     item.is_revision
+    && item.is_current_step_owner
     && !item.is_position_submission_actionable
     && item.status_context
     && !item.status_context?.editability?.can_decide
@@ -487,8 +504,17 @@ export function groupRegistryStatus(aggregates: RegisterAggregates): RegistrySta
 
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const cfoRevisionRows = aggregates.cfo_revision_rows || 0;
   const decisions = aggregates.cfo_review_actionable_requests
     + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
+  if (cfoRevisionRows > 0) {
+    return {
+      label: 'На доработке',
+      tone: 'warning',
+      hint: `${cfoRevisionRows} строк возвращено экономистом ответственному ЦФО`,
+      shortHint: 'Ожидается повторная проверка ЦФО',
+    };
+  }
   if (decisions > 0) {
     return {
       label: 'Ожидает вашего решения',

@@ -196,7 +196,7 @@ async def return_position_at_step(
     payload: CfoPositionReturnIn, user: User,
 ):
     result = request.app.state.approval_service.return_position(
-        user, step_id, position_id, payload.target_step_id, payload.comment, payload.item_ids
+        user, step_id, position_id, payload.target_step_id or "", payload.comment, payload.item_ids
     )
     return await _broadcast_notifications(request, result, "cfo_position.returned")
 
@@ -240,6 +240,11 @@ def update_profile(request: Request, user_id: str, payload: ProfilePatch, user: 
 @router.get("/units")
 def list_units(request: Request, user: User):
     return request.app.state.unit_service.list_units()
+
+
+@router.get("/unit-responsibles")
+def list_unit_responsibles(request: Request, user: User):
+    return request.app.state.unit_service.list_responsibles(user)
 
 
 @router.post("/units")
@@ -1245,6 +1250,11 @@ def cfo_position_chat(request: Request, position_id: str, user: User):
 @router.get("/chats")
 def list_chats(request: Request, user: User):
     return request.app.state.chat_service.list_chats(user)
+
+
+@router.get("/chats/unread-count")
+def unread_chat_count(request: Request, user: User):
+    return request.app.state.chat_service.unread_count(user)
 
 
 async def _broadcast_chat_message(request: Request, chat_id: str, message: dict, sender_id: str) -> None:

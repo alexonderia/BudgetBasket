@@ -227,11 +227,20 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
 export function groupStatusPresentation(aggregates: RegisterAggregates, status: RegistryStatusDisplay): StatusVisualPresentation {
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const cfoRevisionRows = aggregates.cfo_revision_rows || 0;
   const decisions = aggregates.cfo_review_actionable_requests
     + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
   const hint = status.hint;
   const metaParts = groupMetaParts(aggregates, { excludeActionable: true });
   const meta = metaParts.length ? metaParts.join(' · ') : undefined;
+
+  if (cfoRevisionRows > 0) {
+    return {
+      primary: { icon: RestartAltOutlinedIcon, text: 'На доработке', variant: 'revision', hint },
+      meta: `${cfoRevisionRows} ${pluralRows(cfoRevisionRows)} возвращено экономистом ответственному ЦФО`,
+      hint,
+    };
+  }
 
   if (decisions > 0) {
     return {

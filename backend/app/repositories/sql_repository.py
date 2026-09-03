@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 from uuid import UUID
 
@@ -10,6 +11,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.database import TABLES, to_public_value
+
+
+_request_read_cache: ContextVar[dict[str, list[dict[str, Any]]] | None] = ContextVar(
+    "budgetbasket_request_read_cache",
+    default=None,
+)
 
 
 class SqlRepository:
@@ -103,9 +110,30 @@ class SqlRepository:
         )
 
     def load_all(self, collection_name: str) -> list[dict[str, Any]]:
+        cache = _request_read_cache.get()
+        if cache is not None and collection_name in cache:
+            return cache[collection_name]
         with self._session_scope() as session:
             rows = session.execute(self._select_for_collection(collection_name)).all()
-            return [self._row_to_dict(row) for row in rows]
+            result = [self._row_to_dict(row) for row in rows]
+            if cache is not None:
+                cache[collection_name] = result
+            return result
+
+    @contextmanager
+    def request_cache(self):
+        """Reuse immutable table snapshots only within the current request."""
+        token = _request_read_cache.set({})
+        try:
+            yield
+        finally:
+            _request_read_cache.reset(token)
+
+    @staticmethod
+    def _invalidate_cached_collection(collection_name: str) -> None:
+        cache = _request_read_cache.get()
+        if cache is not None:
+            cache.pop(collection_name, None)
 
     def save_all(self, collection_name: str, data: list[dict[str, Any]]) -> None:
         table = self._table(collection_name)
@@ -121,11 +149,19 @@ class SqlRepository:
                     session.execute(insert(table).values(**payload))
             except IntegrityError as exc:
                 self._raise_integrity_error(exc)
+        self._invalidate_cached_collection(collection_name)
 
     def get_by_id(self, collection_name: str, item_id: str | int) -> dict[str, Any] | None:
         table = self._table(collection_name)
         if "id" not in table.c:
             return None
+        cache = _request_read_cache.get()
+        if cache is not None and collection_name in cache:
+            normalized_id = str(item_id)
+            return next(
+                (row for row in cache[collection_name] if str(row.get("id")) == normalized_id),
+                None,
+            )
         with self._session_scope() as session:
             row = session.execute(
                 self._select_for_collection(collection_name).where(
@@ -163,6 +199,7 @@ class SqlRepository:
                 created["role"] = session.execute(
                     select(TABLES["roles"].c.name).where(TABLES["roles"].c.id == created["id_role"])
                 ).scalar_one()
+            self._invalidate_cached_collection(collection_name)
             return created
 
     def insert(self, collection_name: str, item: dict[str, Any]) -> dict[str, Any]:
@@ -201,6 +238,7 @@ class SqlRepository:
                 updated["role"] = session.execute(
                     select(TABLES["roles"].c.name).where(TABLES["roles"].c.id == updated["id_role"])
                 ).scalar_one()
+            self._invalidate_cached_collection(collection_name)
             return updated
 
     def delete(self, collection_name: str, item_id: str | int) -> None:
@@ -211,6 +249,7 @@ class SqlRepository:
             )
             if result.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Запись не найдена")
+        self._invalidate_cached_collection(collection_name)
 
     def update_where(self, collection_name: str, filters: dict[str, Any], patch: dict[str, Any]) -> int:
         table = self._table(collection_name)
@@ -228,12 +267,16 @@ class SqlRepository:
                 )
             except IntegrityError as exc:
                 self._raise_integrity_error(exc)
+        if result.rowcount:
+            self._invalidate_cached_collection(collection_name)
         return result.rowcount or 0
 
     def delete_where(self, collection_name: str, filters: dict[str, Any]) -> int:
         table = self._table(collection_name)
         with self._session_scope(write=True) as session:
             result = session.execute(delete(table).where(*self._where_clause(table, filters)))
+        if result.rowcount:
+            self._invalidate_cached_collection(collection_name)
         return result.rowcount or 0
 
     def check_connection(self) -> None:

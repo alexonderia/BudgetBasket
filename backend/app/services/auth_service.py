@@ -21,6 +21,21 @@ class AuthService:
             }
         )
 
+    def _session_user(self, user: dict) -> dict:
+        profile = next(
+            (
+                item
+                for item in self.repo.load_all("profiles")
+                if item.get("user_id") == user["id"]
+            ),
+            None,
+        )
+        return {
+            **public_user(user),
+            "unit_ids": self._direct_unit_ids(user["id"]),
+            "profile": profile,
+        }
+
     def login(self, login: str, password: str) -> dict:
         user = next((item for item in self.repo.load_all("users") if item["login"] == login), None)
         if not user or not verify_password(password, user.get("password", "")):
@@ -29,7 +44,7 @@ class AuthService:
             self.repo.update("users", user["id"], {"password": hash_password(password)})
         token = f"mock-{uuid4()}"
         self.tokens[token] = user["id"]
-        return {"access_token": token, "user": {**public_user(user), "unit_ids": self._direct_unit_ids(user["id"])}}
+        return {"access_token": token, "user": self._session_user(user)}
 
     def me(self, token: str | None) -> dict:
         if not token or token not in self.tokens:
@@ -37,4 +52,4 @@ class AuthService:
         user = self.repo.get_by_id("users", self.tokens[token])
         if not user:
             raise HTTPException(status_code=401, detail="Пользователь не найден")
-        return {**public_user(user), "unit_ids": self._direct_unit_ids(user["id"])}
+        return self._session_user(user)

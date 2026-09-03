@@ -27,13 +27,16 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import Drawer from '@mui/material/Drawer';
+import FormControl from '@mui/material/FormControl';
 import IconButton from '@mui/material/IconButton';
 import InputAdornment from '@mui/material/InputAdornment';
+import InputLabel from '@mui/material/InputLabel';
 import LinearProgress from '@mui/material/LinearProgress';
 import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Pagination from '@mui/material/Pagination';
 import Paper from '@mui/material/Paper';
+import Skeleton from '@mui/material/Skeleton';
 import Select from '@mui/material/Select';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
@@ -52,6 +55,7 @@ import { api } from '../api/client';
 import { getApiErrorMessage, getDownloadApiErrorMessage } from '../utils/apiErrors';
 import { downloadBlob } from '../utils/download';
 import { useAppToast, usePageChromeActions, usePageChromeLeading } from './Layout';
+import { TableRowsSkeleton } from './PageSkeleton';
 import { ConfirmDialog } from './ConfirmDialog';
 import { InlineEditMoneyCell, InlineEditTextCell } from './inlineEdit';
 import { ArticleRevisionDialog, type RevisionTarget } from './ArticleRevisionDialog';
@@ -69,6 +73,7 @@ import {
   groupHasCfoActions,
   groupHasCfoCompleteActions,
   groupHasWorkflowActions,
+  groupHasWorkflowApprove,
   groupRegistryStatus,
   isGroupActionable,
   isGroupSelectable,
@@ -177,6 +182,7 @@ type DecisionTarget = {
   decision: RowDecision;
   amount?: number;
   allowAmountEdit?: boolean;
+  allowDecisionChoice?: boolean;
   /** A row-level draft entered in the register before opening the decision dialog. */
   comment?: string;
 };
@@ -889,31 +895,52 @@ function RegistryFooter({ totalRows }: { totalRows: number }) {
   );
 }
 
-function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionTarget | null; onClose: () => void; onSave: (comment: string, amount?: number) => void; saving: boolean }) {
+function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionTarget | null; onClose: () => void; onSave: (decision: RowDecision, comment: string, amount?: number) => void; saving: boolean }) {
+  const [decision, setDecision] = useState<RowDecision>('approved');
   const [comment, setComment] = useState('');
   const [amount, setAmount] = useState('');
   useEffect(() => {
+    setDecision(target?.decision || 'approved');
     setComment(target?.comment || '');
     const initialAmount = target?.amount ?? target?.rows[0]?.approved_sum ?? target?.rows[0]?.requested_sum;
     setAmount(initialAmount === undefined ? '' : toMoneyInput(initialAmount));
   }, [target]);
   if (!target) return null;
-  const requiresComment = target.decision === 'rejected' || target.decision === 'approved_with_changes';
-  const showAmount = target.decision === 'approved_with_changes' || (target.allowAmountEdit && target.decision === 'approved' && target.rows.length === 1);
+  const showAmount = decision === 'approved_with_changes' || (target.allowAmountEdit && decision === 'approved' && target.rows.length === 1);
   const adjustedAmount = showAmount ? parseMoneyInput(amount) : undefined;
-  const title = target.decision === 'rejected'
+  const resolvedDecision = decision === 'approved' && adjustedAmount !== undefined && adjustedAmount !== null
+    && target.rows.length === 1 && adjustedAmount !== target.rows[0].requested_sum
+    ? 'approved_with_changes'
+    : decision;
+  const requiresComment = resolvedDecision === 'rejected' || resolvedDecision === 'approved_with_changes';
+  const title = resolvedDecision === 'rejected'
     ? (target.rows.length === 1 ? 'Отклонить строку' : 'Отклонить строки')
-    : target.decision === 'approved_with_changes'
+    : resolvedDecision === 'approved_with_changes'
       ? 'Согласовать строку'
       : target.allowAmountEdit
         ? 'Согласовать строку'
         : 'Согласовать строки';
   return <Dialog open onClose={saving ? undefined : onClose} fullWidth maxWidth="xs"><DialogTitle>{title}</DialogTitle><DialogContent><Stack spacing={1.5} sx={{ pt: 1 }}>
     <Typography variant="body2" color="text.secondary">Будет обработано строк: {target.rows.length} · запрошено: {money(target.rows.reduce((total, row) => total + row.requested_sum, 0))}</Typography>
-    {target.decision === 'rejected' && (
+    {target.allowDecisionChoice && (
+      <FormControl fullWidth size="small">
+        <InputLabel id="approval-register-decision-label">Решение</InputLabel>
+        <Select
+          labelId="approval-register-decision-label"
+          value={decision}
+          label="Решение"
+          onChange={(event) => setDecision(event.target.value as RowDecision)}
+        >
+          <MenuItem value="approved">Одобрить</MenuItem>
+          <MenuItem value="approved_with_changes">Одобрить с изменениями</MenuItem>
+          <MenuItem value="rejected">Отклонить</MenuItem>
+        </Select>
+      </FormControl>
+    )}
+    {resolvedDecision === 'rejected' && (
       <Alert severity="error" variant="outlined">Отклонение — финальное отрицательное решение по выбранным строкам. Для возврата с возможностью исправления используйте действие группы «На доработку».</Alert>
     )}
-    {target.decision === 'approved_with_changes' && (
+    {resolvedDecision === 'approved_with_changes' && (
       <Alert severity="info" variant="outlined">Факт отличается от плана, поэтому система оформит согласование с корректировкой автоматически. Укажите причину изменения.</Alert>
     )}
     {showAmount && (
@@ -928,7 +955,7 @@ function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionT
       />
     )}
     <TextField size="small" label={requiresComment ? 'Комментарий' : 'Комментарий (необязательно)'} required={requiresComment} multiline minRows={3} value={comment} onChange={(event) => setComment(event.target.value)} />
-  </Stack></DialogContent><DialogActions><Button onClick={onClose} disabled={saving}>Отмена</Button><Button variant="contained" disabled={saving || (requiresComment && !comment.trim()) || (showAmount && (adjustedAmount === null || adjustedAmount === undefined || adjustedAmount < 0))} onClick={() => onSave(comment.trim(), adjustedAmount ?? undefined)}>{saving ? 'Сохраняется…' : 'Подтвердить'}</Button></DialogActions></Dialog>;
+  </Stack></DialogContent><DialogActions><Button onClick={onClose} disabled={saving}>Отмена</Button><Button variant="contained" disabled={saving || (requiresComment && !comment.trim()) || (showAmount && (adjustedAmount === null || adjustedAmount === undefined || adjustedAmount < 0))} onClick={() => onSave(resolvedDecision, comment.trim(), adjustedAmount ?? undefined)}>{saving ? 'Сохраняется…' : 'Подтвердить'}</Button></DialogActions></Dialog>;
 }
 
 function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: ApprovalRegisterRow | null; onClose: () => void; onOpenHistory: (item: ApprovalRegisterRow, full?: boolean) => void }) {
@@ -1021,6 +1048,7 @@ function RegistryDetailsDrawer({ item, onClose, onOpenHistory }: { item: Approva
             field={key}
             value={item[key] || ''}
             editable={canEditItemAnalytics(item)}
+            confirmBeforeSave={canEditItemAnalytics(item)}
             multiline
           />
         </Box>
@@ -1043,12 +1071,14 @@ function RowActions({ item, user, onDecision, onOpen, onHistory }: { item: Appro
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const workflowColumns = usesWorkflowStepColumns(user.role);
   const actionable = isRowActionable(item, user.role);
-  const allowAmountEdit = user.role === 'economist' && item.is_approval_actionable;
+  const allowAmountEdit = (user.role === 'economist' && item.is_approval_actionable)
+    || (user.role === 'employee' && item.is_cfo_review_actionable);
   const approve = () => onDecision({
     rows: [item],
     decision: 'approved',
     amount: item.approved_sum || item.requested_sum,
     allowAmountEdit,
+    allowDecisionChoice: user.role === 'employee' && item.is_cfo_review_actionable,
   });
   const reject = () => onDecision({ rows: [item], decision: 'rejected' });
   // For economist/approver/zgd decisions live in «Ваше решение» — keep only history here.
@@ -1110,7 +1140,8 @@ function GroupActions({
   // step.  Treat CFO return actions as employee-only.
   const hasCfo = user.role === 'employee' && groupHasCfoActions(group);
   const hasComplete = groupHasCfoCompleteActions(group);
-  const hasWorkflow = groupHasWorkflowActions(group);
+  const hasWorkflow = groupHasWorkflowActions(group, user.role);
+  const hasWorkflowApprove = groupHasWorkflowApprove(group, user.role);
   if (!hasCfo && !hasComplete && !hasWorkflow) return null;
 
   const scopeLabel = group.type === 'article' ? 'статью' : group.type === 'cfo' ? 'ЦФО' : 'группу';
@@ -1157,11 +1188,13 @@ function GroupActions({
       )}
       {!hasCfo && hasWorkflow && (
         <>
-          <Tooltip title={approveTitle}>
-            <IconButton size="small" color="success" aria-label={approveTitle} onClick={primaryApprove}>
-              <CheckCircleOutlineIcon sx={{ fontSize: 17 }} />
-            </IconButton>
-          </Tooltip>
+          {hasWorkflowApprove && (
+            <Tooltip title={approveTitle}>
+              <IconButton size="small" color="success" aria-label={approveTitle} onClick={primaryApprove}>
+                <CheckCircleOutlineIcon sx={{ fontSize: 17 }} />
+              </IconButton>
+            </Tooltip>
+          )}
           {showReject && (
             <Tooltip title={rejectTitle}>
               <IconButton size="small" color="warning" aria-label={rejectTitle} onClick={primaryReject}>
@@ -1206,7 +1239,7 @@ function GroupYourDecisionCell({
   onWorkflowReturn: (group: ApprovalRegisterGroup) => void;
 }) {
   const summary = groupYourStepSummary(group.aggregates);
-  const quick = canQuickDecideGroup(group);
+  const quick = canQuickDecideGroup(group, user.role);
   return (
     <Stack
       direction="row"
@@ -1413,6 +1446,12 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
   const actionEnabled = approvalMode && isRowActionable(item, user.role);
   const amountEditable = approvalMode && canEditApprovedAmount(user.role, item);
   const statusEditable = actionEnabled;
+  // Every row action exposed to the responsible-CFO register must go through
+  // the same decision dialog.  Keep this based on the rendered action rather
+  // than only on the CFO flag: older register responses may expose the
+  // actionability through status_context instead.
+  const cfoDecisionRequiresConfirmation = user.role === 'employee' && actionEnabled;
+  const decisionDialogAllowsAmountEdit = (user.role === 'economist' && item.is_approval_actionable) || cfoDecisionRequiresConfirmation;
   const rowStatus = rowRegistryStatus(item);
   const [draftFact, setDraftFact] = useState(item.approved_sum);
   const [hasEnteredFact, setHasEnteredFact] = useState(item.approved_sum !== 0);
@@ -1446,15 +1485,25 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
     draftCommentRef.current = comment;
   };
   const commitDecision = (decision: RegistryRowDecision, amount: number) => {
+    const resolvedDecision = decision === 'approved' && amount !== item.requested_sum
+      ? 'approved_with_changes'
+      : decision;
+    if (cfoDecisionRequiresConfirmation) {
+      onDecision({
+        rows: [item],
+        decision: resolvedDecision,
+        amount,
+        allowAmountEdit: true,
+        allowDecisionChoice: true,
+        comment: draftCommentRef.current,
+      });
+      return;
+    }
     if (decision === 'approved' && amount !== item.requested_sum) {
       if (item.is_final_approval_actionable) {
         // ZGD fixes the result agreed at the preceding step; it does not
         // reinterpret an existing correction as a new amount decision.
         onSaveRowDecision(item, 'approved', amount, draftCommentRef.current);
-        return;
-      }
-      if (item.is_cfo_review_actionable) {
-        onSaveRowDecision(item, 'approved_with_changes', amount, draftCommentRef.current);
         return;
       }
       onDecision({ rows: [item], decision: 'approved_with_changes', amount, comment: draftCommentRef.current });
@@ -1468,7 +1517,7 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
       rows: [item],
       decision,
       amount,
-      allowAmountEdit: user.role === 'economist' && item.is_approval_actionable,
+      allowAmountEdit: decisionDialogAllowsAmountEdit,
       comment: draftCommentRef.current,
     });
   };
@@ -1477,7 +1526,7 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
       rows: [item],
       decision,
       amount,
-      allowAmountEdit: user.role === 'economist' && item.is_approval_actionable,
+      allowAmountEdit: decisionDialogAllowsAmountEdit,
       comment: draftCommentRef.current,
     });
   };
@@ -1609,6 +1658,7 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
           field={key}
           value={fieldValue}
           editable={editable}
+          confirmBeforeSave={editable}
         />
       );
       return result;
@@ -2069,7 +2119,7 @@ function TreeRows({
       status: (
         <Stack spacing={0.5} alignItems="flex-start">
           <RegistryGroupStatusCell status={groupRegistryStatus(group.aggregates)} aggregates={group.aggregates} />
-          {approvalMode && isGroupActionable(group) && (
+          {approvalMode && isGroupActionable(group, user.role) && (
             <GroupActions
               group={group}
               user={user}
@@ -2392,6 +2442,9 @@ export function ApprovalRegister({
   const refreshAfterRevision = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['approval-register'] });
     queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+    queryClient.invalidateQueries({ queryKey: ['approval-register-route'] });
+    queryClient.invalidateQueries({ queryKey: ['cfo-approval-route'] });
+    queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
     setSelected(new Map());
     setSelectedGroups(new Map());
   }, [queryClient]);
@@ -2741,7 +2794,7 @@ export function ApprovalRegister({
     const actionableRows = selectedRows.filter((row) => isRowActionable(row, user.role));
     if (selectionRoots.length > 0) {
       const cfoRoots = cfoGroupsForApproval(selectionRoots);
-      const workflowRoots = workflowGroupsForAction(selectionRoots);
+      const workflowRoots = workflowGroupsForApprove(selectionRoots);
       if (cfoRoots.length) setGroupsToApprove(cfoRoots);
       else if (workflowRoots.length) workflowGroupAction.mutate({ groups: workflowRoots, action: 'approve' });
       return;
@@ -2752,7 +2805,9 @@ export function ApprovalRegister({
         rows: [row],
         decision: 'approved',
         amount: row.approved_sum || row.requested_sum,
-        allowAmountEdit: user.role === 'economist' && row.is_approval_actionable,
+        allowAmountEdit: (user.role === 'economist' && row.is_approval_actionable)
+          || (user.role === 'employee' && row.is_cfo_review_actionable),
+        allowDecisionChoice: user.role === 'employee' && row.is_cfo_review_actionable,
       });
       return;
     }
@@ -2762,7 +2817,7 @@ export function ApprovalRegister({
   };
   const handleBulkReject = () => {
     const actionableRows = selectedRows.filter((row) => isRowActionable(row, user.role));
-    if (user.role === 'zgd' && actionableRows.some((row) => row.is_final_approval_actionable)) {
+    if (['approver', 'zgd'].includes(user.role) && actionableRows.some((row) => row.is_final_approval_actionable)) {
       setRevisionDialog({ mode: 'workflow', initialLines: actionableRows.filter((row) => row.is_final_approval_actionable) });
       return;
     }
@@ -2855,7 +2910,12 @@ export function ApprovalRegister({
   const cfoGroupsForReturn = (groups: ApprovalRegisterGroup[]) => (
     user.role === 'employee' ? groups.filter(groupHasCfoActions) : []
   );
-  const workflowGroupsForAction = (groups: ApprovalRegisterGroup[]) => groups.filter(groupHasWorkflowActions);
+  const workflowGroupsForAction = (groups: ApprovalRegisterGroup[]) => (
+    groups.filter((group) => groupHasWorkflowActions(group, user.role))
+  );
+  const workflowGroupsForApprove = (groups: ApprovalRegisterGroup[]) => (
+    groups.filter((group) => groupHasWorkflowApprove(group, user.role))
+  );
   const exportRegister = useCallback(async () => {
     setExporting(true);
     try {
@@ -3089,18 +3149,30 @@ export function ApprovalRegister({
       drillLabels={drillLabels}
       hideFlowSelect={Boolean(flow)}
     />
+    {isLoading && !data && !approvalMode && (
+      <Paper variant="outlined" sx={{ p: 1.5, borderColor: 'rgba(15, 23, 42, 0.08)', borderRadius: 1.5 }} aria-hidden="true">
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: 'repeat(2, 1fr)', md: 'repeat(5, 1fr)' }, gap: 1.5 }}>
+          {Array.from({ length: 5 }, (_, index) => (
+            <Box key={index}>
+              <Skeleton width="55%" height={18} />
+              <Skeleton width="82%" height={30} />
+            </Box>
+          ))}
+        </Box>
+      </Paper>
+    )}
     {summaryAggregates && !approvalMode && <RegistrySummary aggregates={summaryAggregates} />}
     {!approvalMode && <AnalyticsSummaryList summary={analyticsSummary} />}
     {approvalMode && hasSelection && (
       <SelectionBar
         selectionRoots={selectionRoots}
         selectedRows={selectedRows}
-        canApprove={selectedRows.some((row) => isRowActionable(row, user.role)) || selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoActions(group) : groupHasWorkflowActions(group))}
-        canReject={selectedRows.some((row) => isRowActionable(row, user.role)) || selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoActions(group) : groupHasWorkflowActions(group))}
-        canForward={selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group) : groupHasWorkflowActions(group))}
+        canApprove={selectedRows.some((row) => isRowActionable(row, user.role)) || selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoActions(group) : groupHasWorkflowApprove(group, user.role))}
+        canReject={selectedRows.some((row) => isRowActionable(row, user.role)) || selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoActions(group) : groupHasWorkflowActions(group, user.role))}
+        canForward={selectionRoots.some((group) => user.role === 'employee' ? groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group, user.role) : groupHasWorkflowApprove(group, user.role))}
         forwarding={forwardApprovalGroups.isPending}
         onApprove={handleBulkApprove}
-        onForward={() => setGroupsToForward(selectionRoots.filter((group) => user.role === 'employee' ? groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group) : groupHasWorkflowActions(group)))}
+        onForward={() => setGroupsToForward(selectionRoots.filter((group) => user.role === 'employee' ? groupHasCfoCompleteActions(group) || groupHasWorkflowActions(group, user.role) : groupHasWorkflowApprove(group, user.role)))}
         onReject={handleBulkReject}
         onClear={clearSelection}
       />
@@ -3189,7 +3261,7 @@ export function ApprovalRegister({
           </TableRow>
         </TableHead>
         <TableBody>
-          {isLoading && !data && <TableRow><TableCell colSpan={visibleColumns.length} align="center" sx={{ py: 4 }}><Typography variant="body2" color="text.secondary" sx={{ fontSize: 13 }}>Загрузка реестра…</Typography></TableCell></TableRow>}
+          {isLoading && !data && <TableRowsSkeleton rows={9} columns={visibleColumns.length} />}
           {isFetching && data && <TableRow><TableCell colSpan={visibleColumns.length} sx={{ py: 0.5, bgcolor: '#f8fbff' }}><Typography variant="caption" color="text.secondary">Обновление…</Typography></TableCell></TableRow>}
           {data && !displayRegisterGroups.length && (
             <TableRow>
@@ -3247,7 +3319,7 @@ export function ApprovalRegister({
     {approvalMode && <ApprovalRoutePanel requestId={requestId} user={user} />}
     </Stack>
     <RegistryFooter totalRows={summaryAggregates?.total_rows || 0} />
-    <DecisionDialog target={decisionTarget} saving={decide.isPending} onClose={() => setDecisionTarget(null)} onSave={(comment, amount) => decisionTarget && decide.mutate({ target: decisionTarget, comment, amount })} />
+    <DecisionDialog target={decisionTarget} saving={decide.isPending} onClose={() => setDecisionTarget(null)} onSave={(decision, comment, amount) => decisionTarget && decide.mutate({ target: { ...decisionTarget, decision }, comment, amount })} />
     <ConfirmDialog
       open={groupsToApprove.length > 0}
       title={groupsToApprove.length === 1 ? `Согласовать ${groupsToApprove[0]?.type === 'cfo' ? 'ЦФО' : 'статью'}` : 'Согласовать выбранные группы'}

@@ -25,13 +25,17 @@ import Tabs from '@mui/material/Tabs';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
 import { Link as RouterLink, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { ApprovalRegister } from '../components/ApprovalRegister';
+import { PageSkeleton } from '../components/PageSkeleton';
 import type { User } from '../types';
 import { buildRegisterHref, dashboardMetricFilters, parseArticleKey, type DashboardMetric } from '../utils/dashboardNavigation';
 import { money } from '../utils/labels';
+
+const ApprovalRegister = lazy(() => import('../components/ApprovalRegister').then((module) => ({
+  default: module.ApprovalRegister,
+})));
 
 type Breakdown = {
   id: string;
@@ -63,6 +67,7 @@ type DashboardData = {
   by_unit: Breakdown[];
   by_category: Breakdown[];
   by_article: Breakdown[];
+  articles_cfo: ArticleCfoBreakdown[];
 };
 
 type ArticleCfoBreakdown = Breakdown & {
@@ -390,14 +395,10 @@ export default function DashboardPage({ user }: { user: User }) {
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard', mode, unitId],
     queryFn: async () => (await api.get<DashboardData>(isIncomeDashboard ? '/dashboard/income' : '/dashboard', { params: { unit_id: unitId || undefined } })).data,
-  });
-  const { data: articlesCfo = [], isLoading: articlesCfoLoading } = useQuery({
-    queryKey: ['dashboard-articles-cfo', mode, unitId],
-    queryFn: async () => (await api.get<ArticleCfoBreakdown[]>('/dashboard/articles-cfo', {
-      params: { unit_id: unitId || undefined, is_income: isIncomeDashboard },
-    })).data,
     enabled: view === 'dashboard',
   });
+  const articlesCfo = data?.articles_cfo || [];
+  const articlesCfoLoading = isLoading;
 
   const approvalRate = data?.totals.planned ? Math.round((data.totals.approved / data.totals.planned) * 100) : 0;
   const correction = data ? data.totals.approved - data.totals.planned : 0;
@@ -461,34 +462,9 @@ export default function DashboardPage({ user }: { user: User }) {
   const frozenRequestsHref = metricHref('frozen');
   const registerHref = buildRegisterHref(user, { view: detailView, positionedOnly: true });
 
-  if (isLoading || !data) {
-    return <Skeleton variant="rounded" height={420} sx={{ borderRadius: 4 }} />;
-  }
-
-  return (
-    <Stack spacing={2.5} className="dashboard-page">
-      {view !== 'table' && (
-        <Card className="dashboard-hero" elevation={0}>
-          <Box>
-            <Typography variant="h5">Сводка объединений</Typography>
-            <Tabs
-              value={mode}
-              onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
-              aria-label="Тип сводки"
-              sx={{ mt: 1 }}
-            >
-              <Tab value="expense" label="Расходы" />
-              <Tab value="income" label="Доходы" />
-            </Tabs>
-          </Box>
-          <TextField select size="small" label="Объединение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
-            <MenuItem value="">Все доступные объединения</MenuItem>
-            {data.scope.available_units.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
-          </TextField>
-        </Card>
-      )}
-
-      {view === 'table' ? (
+  if (view === 'table') {
+    return (
+      <Suspense fallback={<PageSkeleton variant="table" label="Загрузка реестра" />}>
         <ApprovalRegister
           user={user}
           hideHeader
@@ -505,7 +481,34 @@ export default function DashboardPage({ user }: { user: User }) {
             </Tabs>
           )}
         />
-      ) : <>
+      </Suspense>
+    );
+  }
+
+  if (isLoading || !data) {
+    return <PageSkeleton variant="dashboard" label="Загрузка сводки бюджета" />;
+  }
+
+  return (
+    <Stack spacing={2.5} className="dashboard-page">
+      <Card className="dashboard-hero" elevation={0}>
+          <Box>
+            <Typography variant="h5">Сводка объединений</Typography>
+            <Tabs
+              value={mode}
+              onChange={(_, nextMode: 'expense' | 'income') => setMode(nextMode)}
+              aria-label="Тип сводки"
+              sx={{ mt: 1 }}
+            >
+              <Tab value="expense" label="Расходы" />
+              <Tab value="income" label="Доходы" />
+            </Tabs>
+          </Box>
+          <TextField select size="small" label="Объединение" value={unitId} onChange={(event) => setUnitId(event.target.value)} className="dashboard-unit-filter">
+            <MenuItem value="">Все доступные объединения</MenuItem>
+            {data.scope.available_units.map((unit) => <MenuItem key={unit.id} value={unit.id}>{unit.name}</MenuItem>)}
+          </TextField>
+      </Card>
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, sm: 6, lg: 2.4 }}><Metric title={isIncomeDashboard ? 'Доходы' : 'Расходы'} value={compactMoney(data.totals.planned)} exactValue={money(data.totals.planned)} hint="Запланированная объединениями" icon={<PaymentsOutlinedIcon fontSize="small" />} to={metricHref('planned')} /></Grid>
@@ -666,7 +669,6 @@ export default function DashboardPage({ user }: { user: User }) {
           </Card>
         </Grid>
       </Grid>
-      </>}
     </Stack>
   );
 }

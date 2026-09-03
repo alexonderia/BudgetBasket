@@ -64,19 +64,20 @@ class BudgetItemService:
             item["id"], self._even_month_plans(item.get("sum_plan") or 0)
         )
 
-    def _is_cfo_revision_item(self, item: dict) -> bool:
+    def _is_cfo_revision_item(self, item: dict, *, repo: Repository | None = None) -> bool:
         """Whether the item was returned by the economist to the CFO owner."""
-        if item["id"] in self.requests.returned_item_ids(item["request_id"]):
+        storage = repo or self.repo
+        if item["id"] in self.requests.returned_item_ids(item["request_id"], repo=storage):
             return False
         position_id = item.get("cfo_position_id")
-        position = self.repo.get_by_id("cfo_positions", position_id) if position_id else None
+        position = storage.get_by_id("cfo_positions", position_id) if position_id else None
         if not position or position.get("status") != "on_revision":
             return False
-        step = self.repo.get_by_id("steps", position.get("current_step_id"))
+        step = storage.get_by_id("steps", position.get("current_step_id"))
         if not step or step.get("unit_id") != position.get("cfo_unit_id"):
             return False
         returns = [
-            row for row in self.repo.load_all("cfo_position_logs")
+            row for row in storage.load_all("cfo_position_logs")
             if row.get("cfo_position_id") == position_id
             and (row.get("log") or {}).get("action") == "position_returned"
         ]
@@ -88,7 +89,7 @@ class BudgetItemService:
             (row.get("log") or {}).get("action") == "item_returned_to_module"
             and (row.get("log") or {}).get("req_item_id") == item["id"]
             and (str(row.get("created_at") or ""), int(row.get("id") or 0)) > latest_key
-            for row in self.repo.load_all("cfo_position_logs")
+            for row in storage.load_all("cfo_position_logs")
             if row.get("cfo_position_id") == position_id
         )
         return (
@@ -451,11 +452,12 @@ class BudgetItemService:
         self.permissions.require_cfo_request_access(user, request)
         if request.get("status") != RequestStatus.on_review:
             raise HTTPException(status_code=409, detail="Заявка не находится на проверке ЦФО")
-        if self.requests.cfo_review_completed(request["id"], repo=repo):
+        cfo_revision = self._is_cfo_revision_item(item, repo=repo)
+        if self.requests.cfo_review_completed(request["id"], repo=repo) and not cfo_revision:
             raise HTTPException(status_code=409, detail="Проверка заявки ЦФО уже завершена")
-        if self.requests.returned_item_ids(request["id"], repo=repo):
+        if self.requests.returned_item_ids(request["id"], repo=repo) and not cfo_revision:
             raise HTTPException(status_code=409, detail="Заявка находится на доработке у модуля")
-        if item["id"] in self.requests._latest_cfo_decisions(request["id"], repo=repo):
+        if item["id"] in self.requests._latest_cfo_decisions(request["id"], repo=repo) and not cfo_revision:
             raise HTTPException(status_code=409, detail="Решение по строке уже принято")
         if item.get("status") == ItemStatus.deleted:
             raise HTTPException(status_code=409, detail="Удалённая строка не рассматривается")
@@ -618,6 +620,12 @@ class BudgetItemService:
                     chat_messages.append(
                         self.chat_service.comment_for_request(user, request, block_comment, repo=repo)
                     )
+            approval_service = getattr(self.requests, "approval_service", None)
+            if approval_service:
+                # This transition changes the runtime status of the
+                # responsible-CFO step to `on_revision` in the same write
+                # transaction, so route readers do not see a stale `on_approval`.
+                approval_service._sync_step_statuses(repo)
         return {
             "items": results,
             "chat_messages": chat_messages,

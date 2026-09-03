@@ -218,6 +218,43 @@ class ChatService:
             result.append(self._public_chat(chat, repo=self.repo, user=user, include_messages=False))
         return sorted(result, key=lambda row: str((row["last_message"] or {}).get("created_at") or ""), reverse=True)
 
+    def unread_count(self, user: dict) -> dict[str, int]:
+        """Return the header badge without materialising every chat payload."""
+        if user.get("role") == "admin":
+            return {"unread_count": 0}
+
+        participants = [
+            row
+            for row in self.repo.load_all("chats_participants")
+            if row.get("user_id") == user.get("id")
+        ]
+        if not participants:
+            return {"unread_count": 0}
+
+        messages_by_chat: dict[str, list[dict]] = {}
+        chat_ids = {row["chat_id"] for row in participants}
+        for message in self.repo.load_all("chat_messages"):
+            if message.get("chat_id") in chat_ids:
+                messages_by_chat.setdefault(message["chat_id"], []).append(message)
+
+        unread = 0
+        for participant in participants:
+            messages = sorted(
+                messages_by_chat.get(participant["chat_id"], []),
+                key=lambda row: str(row.get("created_at") or ""),
+            )
+            last_read_id = participant.get("last_read_message_id")
+            last_read_index = next(
+                (index for index, row in enumerate(messages) if row["id"] == last_read_id),
+                -1,
+            )
+            unread += sum(
+                1
+                for row in messages[last_read_index + 1 :]
+                if row.get("sender_id") != user.get("id")
+            )
+        return {"unread_count": unread}
+
     def send(self, user: dict, chat_id: str, payload: dict, *, allow_empty: bool = False) -> dict:
         chat = get_required(self.repo, "chats", chat_id)
         self._sync_participants(chat, repo=self.repo)

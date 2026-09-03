@@ -60,6 +60,7 @@ import { chatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { RequestHistoryDrawer } from '../components/request-history/RequestHistoryDrawer';
 import { FilePreviewDialog } from '../components/FilePreviewDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { ChatMessageImages } from '../components/ChatMessageImages';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
@@ -2537,7 +2538,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const { data: chat } = useQuery({
     queryKey: [...detailsKey, 'chat'],
     queryFn: async () => (await api.get(`/requests/${id}/chat`)).data as RequestChat,
-    enabled: !!id,
+    enabled: !!id && (chatOpen || searchParams.get('chat') === '1'),
     retry: false,
   });
   const [chatText, setChatText] = useState('');
@@ -2934,12 +2935,12 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   };
 
   if (!id || requestPending || !request) {
-    return <Typography>Загрузка заявки...</Typography>;
+    return <PageSkeleton variant="details" label="Загрузка заявки" />;
   }
 
   // Keep summary visible while a background refetch runs, but avoid mixing ids.
   if (request.id !== id) {
-    return <Typography>Загрузка заявки...</Typography>;
+    return <PageSkeleton variant="details" label="Загрузка заявки" />;
   }
 
   const activeRouteStep = resolvedApprovalRoute.length

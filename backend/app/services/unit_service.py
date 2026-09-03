@@ -12,6 +12,10 @@ class UnitService:
 
     def unit_level(self, unit_id: str) -> int:
         units = {item["id"]: item for item in self.repo.load_all("units")}
+        return self._unit_level(units, unit_id)
+
+    @staticmethod
+    def _unit_level(units: dict[str, dict], unit_id: str) -> int:
         level = 1
         current = units.get(unit_id)
         visited: set[str] = set()
@@ -21,25 +25,49 @@ class UnitService:
             current = units.get(current["parent_id"])
         return level
 
-    def enrich_unit(self, unit: dict) -> dict:
-        level = self.unit_level(unit["id"])
-        request_ids = {
-            request["id"] for request in self.repo.load_all("requests")
-            if request.get("unit_id") == unit["id"]
-        }
-        has_active_request_items = any(
-            item.get("request_id") in request_ids and item.get("status") != "deleted"
+    def _enriched_units(self) -> list[dict]:
+        """Build the unit read model from one snapshot of each source table.
+
+        The previous implementation loaded ``units``, ``requests`` and
+        ``req_items`` again for every unit.  That made the small reference
+        endpoint one of the slowest requests during sign-in.
+        """
+        units = self.repo.load_all("units")
+        units_by_id = {item["id"]: item for item in units}
+        request_ids_by_unit: dict[str, set[str]] = {}
+        for request in self.repo.load_all("requests"):
+            request_ids_by_unit.setdefault(request["unit_id"], set()).add(request["id"])
+        active_request_ids = {
+            item["request_id"]
             for item in self.repo.load_all("req_items")
-        )
-        return {
-            **unit,
-            "type": "department" if level == 1 else "cfo" if level == 2 else "module",
-            "has_active_request_items": has_active_request_items,
-            "has_requests": bool(request_ids),
+            if item.get("status") != "deleted"
         }
+        return [
+            {
+                **unit,
+                "type": (
+                    "department"
+                    if self._unit_level(units_by_id, unit["id"]) == 1
+                    else "cfo"
+                    if self._unit_level(units_by_id, unit["id"]) == 2
+                    else "module"
+                ),
+                "has_active_request_items": bool(
+                    request_ids_by_unit.get(unit["id"], set()) & active_request_ids
+                ),
+                "has_requests": bool(request_ids_by_unit.get(unit["id"])),
+            }
+            for unit in units
+        ]
+
+    def enrich_unit(self, unit: dict) -> dict:
+        return next(
+            (item for item in self._enriched_units() if item["id"] == unit["id"]),
+            unit,
+        )
 
     def list_units(self) -> list[dict]:
-        return [self.enrich_unit(item) for item in self.repo.load_all("units")]
+        return self._enriched_units()
 
     def create_unit(self, user: dict, payload: dict) -> dict:
         require_role(user, "admin")
@@ -98,7 +126,7 @@ class UnitService:
         self.repo.delete("units", unit_id)
 
     def tree(self) -> list[dict]:
-        units = [dict(self.enrich_unit(item), children=[]) for item in self.repo.load_all("units")]
+        units = [dict(item, children=[]) for item in self._enriched_units()]
         by_id = {item["id"]: item for item in units}
         roots: list[dict] = []
         for item in units:
@@ -201,6 +229,16 @@ class UnitService:
         if len(matches) > 1:
             raise HTTPException(status_code=409, detail="Назначено несколько ответственных")
         return matches[0] if matches else None
+
+    def list_responsibles(self, user: dict) -> list[dict]:
+        require_role(user, "admin")
+        users = {item["id"]: item for item in self.repo.load_all("users")}
+        return [
+            item
+            for item in self.repo.load_all("units_responsibles")
+            if item.get("is_active")
+            and users.get(item.get("user_id"), {}).get("role") == "employee"
+        ]
 
     def clear_responsible(self, user: dict, unit_id: str) -> dict:
         require_role(user, "admin")

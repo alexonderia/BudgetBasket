@@ -23,12 +23,12 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Fragment, useMemo, useState, useEffect, type ReactNode } from 'react';
+import { Fragment, lazy, Suspense, useMemo, useState, useEffect, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
-import { ApprovalRegister } from '../components/ApprovalRegister';
 import { ExportSettingsDialog } from '../components/ExportSettingsDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { RequestHistoryDrawer, type RequestHistoryTarget } from '../components/request-history/RequestHistoryDrawer';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
@@ -40,6 +40,10 @@ import { money, requestStatusLabels } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
 import { useTableColumnControls, useTableColumnWidths, type TableColumnDefinition } from '../utils/tableColumns';
 import { getApiErrorDetail, getApiErrorMessage, getDownloadApiErrorMessage } from '../utils/apiErrors';
+
+const ApprovalRegister = lazy(() => import('../components/ApprovalRegister').then((module) => ({
+  default: module.ApprovalRegister,
+})));
 
 function existingRequestId(error: unknown): string | null {
   const detail = getApiErrorDetail(error);
@@ -154,7 +158,7 @@ function RequestsListPage({ user }: { user: User }) {
   const [historyTarget, setHistoryTarget] = useState<RequestHistoryTarget | null>(null);
   const deleteTargetId = deleteTarget?.id || '';
 
-  const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
+  const { data: units = [], isLoading: unitsLoading } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
   const { data: deleteTargetRequest } = useQuery({
     queryKey: ['request-delete-preview', deleteTargetId],
     queryFn: async () => (await api.get<BudgetRequest>(`/requests/${deleteTargetId}`)).data,
@@ -190,7 +194,7 @@ function RequestsListPage({ user }: { user: User }) {
       ).data,
     enabled: !!deleteTargetRequest?.unit_id,
   });
-  const { data = [] } = useQuery({
+  const { data = [], isLoading: requestsLoading } = useQuery({
     queryKey: ['requests', filters.status],
     queryFn: async () =>
       (
@@ -199,7 +203,7 @@ function RequestsListPage({ user }: { user: User }) {
         })
       ).data,
   });
-  const { data: zgdDetailRows = [] } = useQuery({
+  const { data: zgdDetailRows = [], isLoading: zgdDetailsLoading } = useQuery({
     queryKey: ['zgd-request-groups'],
     queryFn: async () => {
       const [expenses, income] = await Promise.all([
@@ -730,6 +734,10 @@ function RequestsListPage({ user }: { user: User }) {
     />
   );
 
+  if (unitsLoading || requestsLoading || (user.role === 'zgd' && zgdDetailsLoading)) {
+    return <PageSkeleton variant="table" label="Загрузка заявок" />;
+  }
+
   return (
     <Stack spacing={3}>
       {exportError && <Alert severity="warning">{exportError}</Alert>}
@@ -1159,11 +1167,15 @@ export default function RequestsPage({ user }: { user: User }) {
   const isReviewer = isCfoResponsible || ['admin', 'economist', 'approver', 'zgd'].includes(user.role);
 
   if (user.role === 'employee' && unitsPending) {
-    return <Typography color="text.secondary">Загрузка заявок…</Typography>;
+    return <PageSkeleton variant="table" label="Загрузка заявок" />;
   }
 
   if (isReviewer) {
-    return <ApprovalRegister user={user} inRequestsPage />;
+    return (
+      <Suspense fallback={<PageSkeleton variant="table" label="Загрузка реестра заявок" />}>
+        <ApprovalRegister user={user} inRequestsPage />
+      </Suspense>
+    );
   }
 
   return <RequestsListPage user={user} />;

@@ -1,6 +1,7 @@
 import io
 import zipfile
 import hashlib
+from collections import Counter
 from types import SimpleNamespace
 
 import pytest
@@ -39,8 +40,8 @@ class AllowingFileGuard:
         )
 
 
-def make_client(tmp_path) -> TestClient:
-    app = create_app(repository=InMemoryRepository(), settings=Settings(database_url=None, s3_endpoint=None))
+def make_client(tmp_path, repository: InMemoryRepository | None = None) -> TestClient:
+    app = create_app(repository=repository or InMemoryRepository(), settings=Settings(database_url=None, s3_endpoint=None))
     app.state.file_service.object_storage.root = tmp_path / "storage" / "uploads"
     guard = AllowingFileGuard()
     app.state.file_guard_client = guard
@@ -69,9 +70,55 @@ def user_payload(login: str, role: str = "employee") -> dict[str, str]:
 
 def test_login_all_roles(tmp_path):
     client = make_client(tmp_path)
-    assert client.post("/auth/login", json={"login": "admin", "password": "admin"}).json()["user"]["role"] == "admin"
+    admin_login = client.post("/auth/login", json={"login": "admin", "password": "admin"}).json()
+    assert admin_login["user"]["role"] == "admin"
+    assert admin_login["user"]["profile"]["email"] == "admin@example.local"
+    assert client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {admin_login['access_token']}"},
+    ).json()["profile"] == admin_login["user"]["profile"]
     assert client.post("/auth/login", json={"login": "economist", "password": "economist"}).json()["user"]["role"] == "economist"
     assert client.post("/auth/login", json={"login": "employee", "password": "employee"}).json()["user"]["role"] == "employee"
+
+
+class CountingRepository(InMemoryRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.load_counts: Counter[str] = Counter()
+
+    def load_all(self, collection_name: str) -> list[dict]:
+        self.load_counts[collection_name.removesuffix(".json")] += 1
+        return super().load_all(collection_name)
+
+
+def test_initial_read_models_do_not_reload_source_tables_in_loops(tmp_path):
+    repo = CountingRepository()
+    client = make_client(tmp_path, repo)
+    admin = auth(client, "admin", "admin")
+
+    repo.load_counts.clear()
+    assert client.get("/units", headers=admin).status_code == 200
+    assert repo.load_counts["units"] == 1
+    assert repo.load_counts["requests"] == 1
+    assert repo.load_counts["req_items"] == 1
+
+    repo.load_counts.clear()
+    dashboard = client.get("/dashboard", headers=admin)
+    assert dashboard.status_code == 200
+    assert repo.load_counts["req_items"] <= 2
+    assert repo.load_counts["cfo_positions"] <= 2
+    assert "articles_cfo" in dashboard.json()
+
+
+def test_lightweight_chat_badge_endpoint(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    employee = auth(client, "employee", "employee")
+
+    assert client.get("/chats/unread-count", headers=admin).json() == {"unread_count": 0}
+    unread = client.get("/chats/unread-count", headers=employee)
+    assert unread.status_code == 200
+    assert unread.json()["unread_count"] >= 0
 
 
 def test_user_creation_requires_profile_contacts_and_valid_formats(tmp_path):
@@ -1282,6 +1329,8 @@ def test_dashboard_articles_cfo_returns_all_articles(tmp_path):
     client.post(f"/requests/{request['id']}/complete-cfo-review", headers=employee)
 
     articles = client.get("/dashboard/articles-cfo", headers=admin).json()
+    dashboard_articles = client.get("/dashboard", headers=admin).json()["articles_cfo"]
+    assert dashboard_articles == articles
     article = next(item for item in articles if item["id"] == f"dds:{DDS_OPER_ID}")
     assert article["article_id"] == DDS_OPER_ID
     assert article["name"] == "Операционные расходы"

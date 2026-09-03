@@ -29,6 +29,7 @@ import { api } from '../api/client';
 import { InlineEditTextCell } from '../components/inlineEdit';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { useAppToast } from '../components/Layout';
+import { PageSkeleton } from '../components/PageSkeleton';
 import type { CatalogItem, Unit, User } from '../types';
 import { filterFieldSx } from '../utils/responsive';
 import { downloadBlob } from '../utils/download';
@@ -197,12 +198,13 @@ export default function CatalogsPage({ user }: { user: User }) {
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [actionTarget, setActionTarget] = useState<CatalogActionTarget | null>(null);
   const meta = META[kind];
-  const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
+  const { data: units = [], isLoading: unitsLoading } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
   const departments = useMemo(() => units.filter((unit) => unit.type === 'department' || !unit.parent_id), [units]);
   useEffect(() => { if (!departmentId && departments.length) setDepartmentId(departments[0].id); }, [departmentId, departments]);
-  const { data: catalog = [] } = useQuery({
+  const { data: catalog = [], isLoading: catalogLoading } = useQuery({
     queryKey: [meta.path, departmentId],
     queryFn: async () => (await api.get<CatalogItem[]>(meta.path, { params: { unit_id: departmentId || undefined } })).data,
+    enabled: Boolean(departmentId),
   });
   const articles = useMemo(() => catalog.filter((item) => !item.parent_id).sort((a, b) => a.name.localeCompare(b.name, 'ru')), [catalog]);
   const rows = useMemo<CategoryRow[]>(() => catalog
@@ -241,6 +243,10 @@ export default function CatalogsPage({ user }: { user: User }) {
       toast(getApiErrorMessage(error, 'Не удалось скачать шаблон'), 'error');
     }
   };
+
+  if (unitsLoading || (departments.length > 0 && (!departmentId || catalogLoading))) {
+    return <PageSkeleton variant="table" label="Загрузка справочников" />;
+  }
 
   return <Stack spacing={2.5}>
     <Paper className="surface-pad"><Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }} justifyContent="space-between">

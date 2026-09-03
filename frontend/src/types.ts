@@ -8,7 +8,7 @@ export interface User {
   id: string;
   login: string;
   role: Role;
-  profile?: Profile;
+  profile?: Profile | null;
   unit_ids?: string[];
 }
 
@@ -119,6 +119,8 @@ export interface RegisterAggregates {
   approved_rows: number;
   rejected_rows: number;
   revision_rows?: number;
+  /** Lines returned from the economist to the responsible CFO. */
+  cfo_revision_rows?: number;
   pending_rows: number;
   requests_count: number;
   modules_count: number;
@@ -258,11 +260,14 @@ export interface ApprovalRegisterRow {
   is_cfo_review_completable?: boolean;
   is_revision?: boolean;
   is_module_revision?: boolean;
+  /** Line returned from the economist to the responsible CFO. */
+  is_cfo_revision?: boolean;
   is_revision_actionable?: boolean;
   is_cfo_module_revision_actionable?: boolean;
   position_id: string | null;
   current_step_id?: string | null;
   is_in_approval: boolean;
+  is_current_step_owner?: boolean;
   is_approval_actionable: boolean;
   is_final_approval_actionable?: boolean;
   is_position_actionable?: boolean;

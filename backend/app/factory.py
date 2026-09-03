@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from swagger_ui_bundle import swagger_ui_path
 
@@ -91,6 +92,14 @@ def create_app(*, repository: Repository | None = None, settings: Settings | Non
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1_000)
+
+    if hasattr(repository, "request_cache"):
+        @app.middleware("http")
+        async def request_read_cache(_request, call_next):
+            with repository.request_cache():
+                return await call_next(_request)
+
     app.include_router(router)
     app.mount("/docs-assets", StaticFiles(directory=swagger_ui_path), name="swagger-ui")
 

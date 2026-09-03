@@ -9,7 +9,6 @@ import {
   Button,
   Checkbox,
   Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -36,6 +35,7 @@ import { type ReactNode, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { CfoRequestReviewDialog } from '../components/CfoRequestReviewDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { ArticleRevisionDialog } from '../components/ArticleRevisionDialog';
 import type {
   ApprovalStep,
@@ -190,9 +190,7 @@ function PositionDetails({
       if (kind === 'approve') {
         return api.post(`/steps/${position.current_step_id}/positions/${position.id}/approve`, { comment });
       }
-      const target = currentStep?.child_step_ids?.[0];
       return api.post(`/steps/${position.current_step_id}/positions/${position.id}/return`, {
-        target_step_id: target,
         comment,
       });
     },
@@ -420,6 +418,7 @@ function PositionDetails({
             is_in_approval: true,
             is_approval_actionable: true,
             approval_stage: null,
+            current_step_id: position.current_step_id,
             frozen: item.frozen,
             fixed: item.fixed,
           }))}
@@ -470,7 +469,9 @@ export default function CfoPositionsPage({ user, renderRouteGraph }: { user: Use
     [user, visiblePositions],
   );
   const myTasksCount = [...positionPresentations.values()].filter((item) => item.isCurrentUserAction).length;
-  if (requestsLoading || positionsLoading) return <CircularProgress />;
+  if (requestsLoading || positionsLoading) {
+    return <PageSkeleton variant="table" label="Загрузка позиций ЦФО" />;
+  }
   return (
     <Stack spacing={3}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">

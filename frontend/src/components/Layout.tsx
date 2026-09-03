@@ -219,14 +219,16 @@ export function Layout({
         throw error;
       }
     },
+    initialData: user.profile,
+    staleTime: 5 * 60 * 1000,
     retry: false,
   });
-  const { data: chats = [] } = useQuery<{ unread_count: number }[]>({
-    queryKey: ['chats'],
-    queryFn: async () => (await api.get('/chats')).data,
+  const { data: unreadChats = { unread_count: 0 } } = useQuery<{ unread_count: number }>({
+    queryKey: ['chats', 'unread-count'],
+    queryFn: async () => (await api.get('/chats/unread-count')).data,
     enabled: canUseChat,
   });
-  const unreadChatsCount = useMemo(() => chats.reduce((total, chat) => total + chat.unread_count, 0), [chats]);
+  const unreadChatsCount = unreadChats.unread_count;
 
   useEffect(() => {
     if (!profile) return;

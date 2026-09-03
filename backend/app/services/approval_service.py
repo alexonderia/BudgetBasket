@@ -53,22 +53,81 @@ class ApprovalService:
     def _children(step_id: str, edges: list[dict]) -> list[str]:
         return [row["child_step_id"] for row in edges if row["parent_step_id"] == step_id]
 
+    @staticmethod
+    def _descendant_step_ids(step_id: str, edges: list[dict]) -> set[str]:
+        found: set[str] = set()
+        pending = list(ApprovalService._children(step_id, edges))
+        while pending:
+            current = pending.pop()
+            if current in found:
+                continue
+            found.add(current)
+            pending.extend(ApprovalService._children(current, edges))
+        return found
+
+    def _handover_source_step_id(
+        self, repo: Repository, step_id: str, position: dict, candidates: list[str]
+    ) -> str | None:
+        """Return the lower step that last forwarded this position to `step_id`."""
+        candidate_set = set(candidates)
+        if not candidate_set:
+            return None
+        incoming = [
+            row for row in repo.load_all("cfo_position_logs")
+            if row.get("cfo_position_id") == position["id"]
+            and (row.get("log") or {}).get("action") in {
+                "position_sent_to_economist",
+                "position_frozen_and_forwarded",
+                "position_approved_at_step",
+            }
+            and (row.get("log") or {}).get("current_step_id") == step_id
+            and (row.get("log") or {}).get("step_id") in candidate_set
+        ]
+        if not incoming:
+            return None
+        latest = max(
+            incoming,
+            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        )
+        return (latest.get("log") or {}).get("step_id")
+
     def _default_return_step_id(self, repo: Repository, step_id: str, position: dict) -> str:
-        """Pick the position's immediate downstream step without user input."""
+        """Pick the previous route stage for this position without user input."""
         edges = self._edges(repo)
         children = self._children(step_id, edges)
         if not children:
             raise HTTPException(status_code=422, detail="Для текущего шага нет нижнего шага возврата")
+        # Return one hop toward the origin: the unique child that still leads to
+        # this position's CFO leaf. Sibling branches of a later reviewer must
+        # not steal the return.
+        route_children = list(children)
         cfo_unit_id = position.get("cfo_unit_id")
         if cfo_unit_id:
-            for child_id in children:
+            try:
+                leaf_id = self._leaf_for_cfo(repo, cfo_unit_id)["id"]
+            except HTTPException:
+                leaf_id = None
+            if leaf_id:
+                matching = [
+                    child_id
+                    for child_id in children
+                    if child_id == leaf_id or leaf_id in self._descendant_step_ids(child_id, edges)
+                ]
+                if matching:
+                    route_children = matching
+        if len(route_children) == 1:
+            return route_children[0]
+        # A diamond in the graph can leave several children on the same CFO path.
+        # Prefer the step that actually handed the position over.
+        source = self._handover_source_step_id(repo, step_id, position, route_children)
+        if source:
+            return source
+        if cfo_unit_id:
+            for child_id in route_children:
                 child = get_required(repo, "steps", child_id)
                 if child.get("unit_id") == cfo_unit_id:
                     return child_id
-            # A higher step can branch directly to several economists.  Pick
-            # only the economist assigned to this position's CFO, rather than
-            # exposing an arbitrary child step in the return form.
-            for child_id in children:
+            for child_id in route_children:
                 child = get_required(repo, "steps", child_id)
                 if cfo_unit_id in self._economist_cfo_ids(repo, child):
                     return child_id
@@ -78,6 +137,35 @@ class ApprovalService:
             status_code=422,
             detail="Не удалось автоматически определить шаг возврата — укажите шаг явно",
         )
+
+    @staticmethod
+    def _approver_approved_item_ids(
+        repo: Repository, position_id: str, step_id: str
+    ) -> set[str]:
+        """Return line decisions made during the position's current visit to a reviewer step."""
+        logs = [
+            row for row in repo.load_all("cfo_position_logs")
+            if row.get("cfo_position_id") == position_id
+        ]
+        reset_key = max(
+            (
+                (str(row.get("created_at") or ""), int(row.get("id") or 0))
+                for row in logs
+                if (row.get("log") or {}).get("action") in {
+                    "position_frozen_and_forwarded", "position_returned"
+                }
+                and (row.get("log") or {}).get("current_step_id") == step_id
+            ),
+            default=("", 0),
+        )
+        return {
+            str(item_id)
+            for row in logs
+            if (row.get("log") or {}).get("action") == "position_items_approved_at_step"
+            and (row.get("log") or {}).get("step_id") == step_id
+            and (str(row.get("created_at") or ""), int(row.get("id") or 0)) > reset_key
+            for item_id in (row.get("log") or {}).get("item_ids") or []
+        }
 
     def _root_ids(self, repo: Repository) -> list[str]:
         steps = self._steps(repo)
@@ -460,6 +548,28 @@ class ApprovalService:
     ) -> str:
         step_id = step["id"]
         active = [row for row in positions if self._current_step_id(repo, row) == step_id]
+
+        # The responsible-CFO step is opened only after all already-created
+        # applications of this CFO have been submitted.  A draft application
+        # is therefore a real prerequisite even when another module has
+        # already delivered its position.  Do not infer this from positions:
+        # a draft has no position yet and would otherwise be invisible here.
+        if step.get("unit_id"):
+            cfo_modules = self.permissions.modules_for_cfos({step["unit_id"]})
+            cfo_requests = [
+                request
+                for request in repo.load_all("requests")
+                if request.get("unit_id") in cfo_modules
+                and request.get("status") != RequestStatus.cancelled
+            ]
+            if any(row.get("status") == CfoPositionStatus.on_revision for row in active):
+                return StepStatus.on_revision
+            if not cfo_requests or any(
+                request.get("status") == RequestStatus.draft
+                for request in cfo_requests
+            ):
+                return StepStatus.waiting
+
         if active:
             if any(row.get("status") == CfoPositionStatus.on_revision for row in active):
                 return StepStatus.on_revision
@@ -737,23 +847,29 @@ class ApprovalService:
             return []
         by_id = {step["id"]: step for step in all_steps}
         # Edges point from the next approval stage (parent) to the previous one
-        # (child).  A ZGD is a root, so its graph must be expanded down through
-        # children.  Other viewers enter at a leaf/current step and follow
-        # parents towards the next stage without pulling sibling branches.
-        pending = list(relevant)
-        while pending:
-            step = by_id.get(pending.pop())
-            if not step:
-                continue
-            linked_ids = (
-                step.get("child_step_ids", [])
-                if user.get("role") == "zgd"
-                else step.get("parent_step_ids", [])
-            )
-            for linked_id in linked_ids:
-                if linked_id not in relevant:
-                    relevant.add(linked_id)
-                    pending.append(linked_id)
+        # (child).  Show every viewer the full branch through their own step:
+        # all preceding stages below it and all subsequent stages above it.
+        # The two directed walks start from the viewer's initial steps so a
+        # shared next stage does not pull in unrelated sibling branches.
+        viewer_step_ids = set(relevant)
+
+        def expand_from_viewer(edge_key: str) -> set[str]:
+            expanded = set(viewer_step_ids)
+            pending = list(viewer_step_ids)
+            while pending:
+                step = by_id.get(pending.pop())
+                if not step:
+                    continue
+                for linked_id in step.get(edge_key, []):
+                    if linked_id not in expanded:
+                        expanded.add(linked_id)
+                        pending.append(linked_id)
+            return expanded
+
+        relevant = (
+            expand_from_viewer("child_step_ids")
+            | expand_from_viewer("parent_step_ids")
+        )
 
         # Return a stable child-to-parent order for the vertical route.  This
         # preserves every branch while keeping the visual flow from the first
@@ -1240,6 +1356,7 @@ class ApprovalService:
                     },
                 )
             economist_step = self._economist_step_for_cfo(repo, position["cfo_unit_id"])
+            source_step = self._leaf_for_cfo(repo, position["cfo_unit_id"])
             before = dict(position)
             after = repo.update(
                 "cfo_positions", position_id,
@@ -1251,7 +1368,7 @@ class ApprovalService:
             event_id = event_id or self._event_id()
             self._position_log(
                 repo, user, after, "position_sent_to_economist", before=before,
-                after=after, comment=comment, event_id=event_id, step_id=economist_step["id"],
+                after=after, comment=comment, event_id=event_id, step_id=source_step["id"],
                 current_step_id=economist_step["id"],
             )
             self._step_log(
@@ -1356,6 +1473,21 @@ class ApprovalService:
                 for item_id in payload["item_ids"]
             ]
 
+    @staticmethod
+    def _latest_returned_item_ids(repo: Repository, position_id: str) -> set[str]:
+        logs = [
+            row for row in repo.load_all("cfo_position_logs")
+            if row.get("cfo_position_id") == position_id
+            and (row.get("log") or {}).get("action") == "position_returned"
+        ]
+        if not logs:
+            return set()
+        latest = max(
+            logs,
+            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        )
+        return {str(item_id) for item_id in (latest.get("log") or {}).get("item_ids") or []}
+
     def _economist_decided_item_ids(self, repo: Repository, position_id: str) -> set[str]:
         logs = [
             row for row in repo.load_all("cfo_position_logs")
@@ -1363,22 +1495,25 @@ class ApprovalService:
         ]
         latest_return = max(
             (
-                (str(row.get("created_at") or ""), set((row.get("log") or {}).get("item_ids") or []))
+                (
+                    (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+                    {str(item_id) for item_id in (row.get("log") or {}).get("item_ids") or []},
+                )
                 for row in logs
                 if (row.get("log") or {}).get("action") == "position_returned"
             ),
             default=None,
         )
         invalidated_item_ids = latest_return[1] if latest_return else set()
-        returned_at = latest_return[0] if latest_return else ""
+        returned_at = latest_return[0] if latest_return else ("", 0)
         return {
-            (row.get("log") or {}).get("req_item_id")
+            str((row.get("log") or {}).get("req_item_id"))
             for row in logs
             if (row.get("log") or {}).get("action") == "economist_item_decided"
             and (row.get("log") or {}).get("req_item_id")
             and (
-                (row.get("log") or {}).get("req_item_id") not in invalidated_item_ids
-                or str(row.get("created_at") or "") > returned_at
+                str((row.get("log") or {}).get("req_item_id")) not in invalidated_item_ids
+                or (str(row.get("created_at") or ""), int(row.get("id") or 0)) > returned_at
             )
         }
 
@@ -1471,7 +1606,8 @@ class ApprovalService:
             self._position_log(
                 repo, user, after, "position_frozen_and_forwarded" if forwarded else "position_items_frozen",
                 before=before, after=after, comment=comment, event_id=event_id,
-                step_id=next_step["id"] if forwarded else leaf["id"], current_step_id=next_step["id"] if forwarded else leaf["id"],
+                step_id=leaf["id"],
+                current_step_id=next_step["id"] if forwarded else leaf["id"],
                 item_ids=sorted(selected_ids),
             )
             if forwarded:
@@ -1556,11 +1692,61 @@ class ApprovalService:
             if not position or self._current_step_id(repo, position) != step_id:
                 raise HTTPException(status_code=409, detail="Позиция не находится на этом шаге")
             items = self._position_items(repo, position_id)
-            if not self._all_items_frozen(items):
-                raise HTTPException(status_code=409, detail="Передать дальше можно только статью с замороженными строками")
             parents = self._parents(step_id, self._edges(repo))
             actor = get_required(repo, "users", step["user_id"])
             before = dict(position)
+            if actor.get("role") == "approver" and item_ids:
+                requested_ids = list(item_ids)
+                if not requested_ids:
+                    raise HTTPException(status_code=422, detail="Выберите хотя бы одну строку")
+                if len(set(requested_ids)) != len(requested_ids):
+                    raise HTTPException(status_code=422, detail="Идентификаторы строк не должны повторяться")
+                items_by_id = {row["id"]: row for row in items}
+                for item_id in requested_ids:
+                    item = items_by_id.get(item_id)
+                    if not item:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Строка {item_id} не относится к выбранной позиции",
+                        )
+                    if item.get("status") == ItemStatus.deleted or item.get("fixed"):
+                        raise HTTPException(status_code=409, detail=f"Строка {item_id} недоступна для согласования")
+                    if not item.get("frozen"):
+                        if (
+                            position.get("status") != CfoPositionStatus.on_revision
+                            or item_id not in self._latest_returned_item_ids(repo, position_id)
+                        ):
+                            raise HTTPException(status_code=409, detail=f"Строка {item_id} недоступна для согласования")
+                        item = repo.update("req_items", item_id, {"frozen": True})
+                        items_by_id[item_id] = item
+                approved_ids = self._approver_approved_item_ids(repo, position_id, step_id)
+                if approved_ids.intersection(requested_ids):
+                    raise HTTPException(status_code=409, detail="Часть выбранных строк уже согласована")
+                event_id = event_id or self._event_id()
+                self._position_log(
+                    repo, user, position, "position_items_approved_at_step",
+                    before=before, after=position, comment=comment, event_id=event_id,
+                    step_id=step_id, current_step_id=step_id, item_ids=sorted(requested_ids),
+                )
+                self._step_log(
+                    repo, user, step, "position_items_approved_at_step",
+                    event_id=event_id, comment=comment, cfo_position_id=position_id,
+                    item_ids=sorted(requested_ids),
+                )
+                latest_returned_ids = self._latest_returned_item_ids(repo, position_id)
+                required_ids = (
+                    latest_returned_ids
+                    if latest_returned_ids
+                    else {row["id"] for row in items}
+                )
+                if not required_ids.issubset(approved_ids | set(requested_ids)):
+                    self._sync_step_statuses(repo)
+                    result = self.public_position(position, repo=result_repo)
+                    result["notification_user_ids"] = []
+                    return result
+                items = self._position_items(repo, position_id)
+            if not self._all_items_frozen(items):
+                raise HTTPException(status_code=409, detail="Передать дальше можно только статью с замороженными строками")
             if actor.get("role") == "zgd":
                 if parents:
                     raise HTTPException(status_code=409, detail="Шаг ЗГД должен завершать маршрут")
@@ -1719,9 +1905,31 @@ class ApprovalService:
                     )
                 )
             else:
+                # A group action must follow the same line scope as the
+                # register.  At an intermediate approver step, a partial
+                # return is line-scoped.  The final ZGD step closes the whole
+                # position after that returned line has been rechecked, so it
+                # deliberately keeps the regular all-lines behaviour.
+                review_item_ids = None
+                latest_returned_ids = self._latest_returned_item_ids(repo, position["id"])
+                actor = get_required(repo, "users", step["user_id"])
+                if latest_returned_ids and actor.get("role") == "approver":
+                    items_by_id = {row["id"]: row for row in self._position_items(repo, position["id"])}
+                    review_item_ids = [
+                        item_id for item_id in latest_returned_ids
+                        if item_id in items_by_id and not items_by_id[item_id].get("fixed")
+                    ]
+                    approved_ids = self._approver_approved_item_ids(repo, position["id"], step_id)
+                    review_item_ids = [item_id for item_id in review_item_ids if item_id not in approved_ids]
                 results.append(
                     self.approve_position_at_step(
-                        user, step_id, position["id"], comment, event_id=group_event_id, repo=repo
+                        user,
+                        step_id,
+                        position["id"],
+                        comment,
+                        item_ids=review_item_ids or None,
+                        event_id=group_event_id,
+                        repo=repo,
                     )
                 )
         return {
@@ -1823,7 +2031,6 @@ class ApprovalService:
         results = []
         for position in positions:
             step_id = self._current_step_id(repo, position) or ""
-            resolved_target = target_step_id or self._default_return_step_id(repo, step_id, position)
             position_items = self._position_items(repo, position["id"])
             if selected_item_ids is not None:
                 position_selected_ids = [row["id"] for row in position_items if row["id"] in selected_item_ids]
@@ -1835,7 +2042,7 @@ class ApprovalService:
                         user,
                         step_id,
                         position["id"],
-                        resolved_target,
+                        target_step_id,
                         comment.strip(),
                         item_ids=position_selected_ids,
                         revision_items=position_revision,
@@ -1849,7 +2056,7 @@ class ApprovalService:
                         user,
                         step_id,
                         position["id"],
-                        resolved_target,
+                        target_step_id,
                         comment.strip(),
                         event_id=group_event_id,
                         repo=repo,
@@ -1890,6 +2097,7 @@ class ApprovalService:
             if not position or self._current_step_id(repo, position) != step_id:
                 raise HTTPException(status_code=409, detail="Позиция не находится на этом шаге")
             children = self._children(step_id, self._edges(repo))
+            target_step_id = target_step_id or self._default_return_step_id(repo, step_id, position)
             if target_step_id not in children:
                 raise HTTPException(status_code=422, detail="Возврат возможен на непосредственный дочерний шаг")
             target = get_required(repo, "steps", target_step_id)
@@ -1987,11 +2195,8 @@ class ApprovalService:
     def return_for_revision(self, user: dict, position_id: str, payload: dict) -> dict:
         position = get_required(self.repo, "cfo_positions", position_id)
         step_id = self._current_step_id(self.repo, position) or ""
-        target_step_id = payload.get("target_step_id") or ""
-        if not target_step_id:
-            target_step_id = self._default_return_step_id(self.repo, step_id, position)
         return self.return_position(
-            user, step_id, position_id, target_step_id, payload["comment"],
+            user, step_id, position_id, payload.get("target_step_id") or "", payload["comment"],
             [row["item_id"] for row in payload["items"]], payload["items"],
         )
 

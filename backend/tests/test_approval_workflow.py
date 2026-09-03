@@ -38,6 +38,11 @@ def test_cfo_responsible_can_view_its_read_only_route(tmp_path):
         assert branch.status_code == 200
         assert expected_step_id in {step["id"] for step in branch.json()}
 
+    approver_route = client.get("/approval-route", headers=auth(client, "approver", "approver")).json()
+    approver_ids = [step["id"] for step in approver_route]
+    assert set(approver_ids) >= {LEAF_STEP_ID, ECONOMIST_STEP_ID, APPROVER_STEP_ID, ROOT_STEP_ID}
+    assert approver_ids.index(LEAF_STEP_ID) < approver_ids.index(ECONOMIST_STEP_ID) < approver_ids.index(APPROVER_STEP_ID) < approver_ids.index(ROOT_STEP_ID)
+
     zgd_route = client.get("/approval-route", headers=auth(client, "zgd", "zgd")).json()
     zgd_ids = [step["id"] for step in zgd_route]
     assert set(zgd_ids) >= {LEAF_STEP_ID, ECONOMIST_STEP_ID, APPROVER_STEP_ID, ROOT_STEP_ID}
@@ -282,7 +287,7 @@ def test_request_cancel_is_blocked_after_economist_forwards_to_general_route(tmp
     )["affected_cfo_position_ids"][0]
 
     assert "cancel" in client.get(f"/requests/{request['id']}", headers=employee).json()["available_actions"]
-    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+    send_and_review_by_economist(client, employee, economist, position_id, [item["id"] for item in items])
     assert "cancel" in client.get(f"/requests/{request['id']}", headers=employee).json()["available_actions"]
     assert client.post(
         f"/cfo-positions/{position_id}/freeze",
@@ -379,6 +384,7 @@ def test_cfo_return_is_revision_and_module_can_resubmit(tmp_path):
     )
     assert returned.status_code == 200, returned.text
     assert returned.json()["affected_item_ids"] == [items[0]["id"]]
+    assert client.app.state.repo.get_by_id("steps", LEAF_STEP_ID)["status"] == "on_revision"
 
     row = next(
         item
@@ -498,6 +504,53 @@ def test_position_waits_until_all_existing_modules_finish_cfo_review(tmp_path):
         headers=employee,
     )
     assert allowed.status_code == 200, allowed.text
+
+
+def test_cfo_step_waits_for_draft_application_before_opening_review(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    repo = client.app.state.repo
+    employee_id = client.app.state.auth_service.login("employee", "employee")["user"]["id"]
+    second_module = repo.create(
+        "units",
+        {
+            "parent_id": CFO_ID,
+            "name": "Модуль, который ещё готовит заявку",
+            "is_active": True,
+            "uses_invest_projects": False,
+            "annual_budget": 0,
+        },
+    )
+    repo.insert(
+        "units_responsibles",
+        {"unit_id": second_module["id"], "user_id": employee_id, "is_active": True},
+    )
+    second_request = client.post(
+        "/requests", json={"unit_id": second_module["id"]}, headers=employee
+    )
+    assert second_request.status_code == 200, second_request.text
+    second_item = client.post(
+        f"/requests/{second_request.json()['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Вторая заявка", "sum_plan": 50},
+        headers=employee,
+    )
+    assert second_item.status_code == 200, second_item.text
+
+    create_submitted_request(client, employee)
+    route = client.get("/approval-route", headers=employee)
+    assert route.status_code == 200, route.text
+    cfo_step = next(step for step in route.json() if step.get("unit_id") == CFO_ID)
+    assert cfo_step["status"] == "waiting"
+    assert cfo_step["request_status"] == "waiting"
+
+    submitted = client.post(
+        f"/requests/{second_request.json()['id']}/submit", headers=employee
+    )
+    assert submitted.status_code == 200, submitted.text
+    route = client.get("/approval-route", headers=employee)
+    cfo_step = next(step for step in route.json() if step.get("unit_id") == CFO_ID)
+    assert cfo_step["status"] == "on_approval"
+    assert cfo_step["request_status"] == "on_approval"
 
 
 def test_approval_route_step_runtime_status_after_submit_to_economist(tmp_path):
@@ -627,19 +680,19 @@ def test_economist_can_approve_all_open_lines_in_cfo_group(tmp_path):
     assert all(item["frozen"] for item in position["contributions"])
 
 
-def test_approver_sees_block_actions_but_not_line_actions(tmp_path):
+def test_approver_can_review_position_lines_one_by_one(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
     approver = auth(client, "approver", "approver")
-    request, items = create_submitted_request(client, employee, item_count=1)
+    request, items = create_submitted_request(client, employee, item_count=2)
     position_id = complete_cfo(
         client,
         employee,
         request["id"],
-        [(items[0]["id"], "approved")],
+        [(item["id"], "approved") for item in items],
     )["affected_cfo_position_ids"][0]
-    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+    send_and_review_by_economist(client, employee, economist, position_id, [item["id"] for item in items])
     client.post(
         f"/cfo-positions/{position_id}/freeze",
         json={"comment": "В маршрут"},
@@ -652,14 +705,81 @@ def test_approver_sees_block_actions_but_not_line_actions(tmp_path):
         headers=approver,
     )
     assert rows.status_code == 200, rows.text
-    item = next(row for row in rows.json()["items"] if row["id"] == items[0]["id"])
-    assert item["is_approval_actionable"] is False
-    assert item["status_context"]["editability"]["can_decide"] is False
-    assert item["status_context"]["editability"]["can_edit_amount"] is False
+    by_id = {row["id"]: row for row in rows.json()["items"]}
+    assert all(row["is_approval_actionable"] for row in by_id.values())
+    assert all(row["is_final_approval_actionable"] for row in by_id.values())
+    assert all(row["status_context"]["editability"]["can_decide"] for row in by_id.values())
+
+    first = client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Согласована первая строка", "item_ids": [items[0]["id"]]},
+        headers=approver,
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["current_step_id"] == APPROVER_STEP_ID
+    assert client.app.state.repo.get_by_id("req_items", items[0]["id"])["fixed"] is False
+
+    refreshed = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=approver,
+    )
+    refreshed_by_id = {row["id"]: row for row in refreshed.json()["items"]}
+    assert refreshed_by_id[items[0]["id"]]["is_approval_actionable"] is False
+    assert refreshed_by_id[items[1]["id"]]["is_approval_actionable"] is True
+
+    returned = client.post(
+        f"/cfo-positions/{position_id}/return-for-revision",
+        json={
+            "comment": "Доработать вторую строку",
+            "items": [{"item_id": items[1]["id"], "comment": "Нужна детализация"}],
+        },
+        headers=approver,
+    )
+    assert returned.status_code == 200, returned.text
+    assert returned.json()["current_step_id"] == ECONOMIST_STEP_ID
+    assert client.app.state.repo.get_by_id("req_items", items[1]["id"])["frozen"] is False
+
+    economist_rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=economist,
+    ).json()["items"]
+    economist_by_id = {row["id"]: row for row in economist_rows}
+    returned_line = economist_by_id[items[1]["id"]]
+    assert returned_line["is_revision"] is True
+    assert returned_line["is_approval_actionable"] is True
+    assert returned_line["status_context"]["editability"]["can_decide"] is True
+    assert economist_by_id[items[0]["id"]]["is_approval_actionable"] is False
+
+    assert client.post(
+        f"/cfo-positions/{position_id}/items/{items[1]['id']}/decision",
+        json={"decision": "approved", "comment": "Исправлено"},
+        headers=economist,
+    ).status_code == 200
+    assert client.post(
+        f"/cfo-positions/{position_id}/complete-review",
+        json={"comment": "Повторная проверка"},
+        headers=economist,
+    ).status_code == 200
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": "Снова в маршрут"},
+        headers=economist,
+    ).status_code == 200
+
+    approver_after_resubmit = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=approver,
+    ).json()["items"]
+    resubmitted = next(row for row in approver_after_resubmit if row["id"] == items[1]["id"])
+    assert resubmitted["is_approval_actionable"] is True
+    assert resubmitted["is_final_approval_actionable"] is True
+    assert resubmitted["status_context"]["editability"]["can_decide"] is True
 
     register = client.get("/approval-register", params={"view": "cfo"}, headers=approver)
     assert register.status_code == 200, register.text
-    assert register.json()["aggregates"]["actionable_positions"] >= 1
 
 
 def test_route_bootstrap_creates_cfo_and_zgd_anchors_without_duplicates(tmp_path):
@@ -940,6 +1060,12 @@ def test_economist_return_to_cfo_makes_selected_items_editable(tmp_path):
     )
     assert returned.status_code == 200, returned.text
 
+    cfo_group = client.get(
+        "/approval-register", params={"view": "cfo"}, headers=employee
+    ).json()["groups"][0]
+    article_group = next(group for group in cfo_group["children"] if group["type"] == "article")
+    assert article_group["aggregates"]["cfo_revision_rows"] == 1
+
     rows = client.get(
         "/approval-register/rows",
         params={"request_id": request["id"], "page_size": 25},
@@ -954,6 +1080,108 @@ def test_economist_return_to_cfo_makes_selected_items_editable(tmp_path):
         headers=employee,
     )
     assert updated.status_code == 200, updated.text
+
+
+def test_auto_return_follows_position_source_step(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    zgd = auth(client, "zgd", "zgd")
+    sibling = client.post(
+        "/users", json=user_payload("other-approver", "approver"), headers=admin,
+    ).json()
+    sibling_step = client.post("/steps", json={"user_id": sibling["id"]}, headers=admin)
+    assert sibling_step.status_code == 200, sibling_step.text
+    assert client.post(
+        "/step-edges",
+        json={"parent_step_id": ROOT_STEP_ID, "child_step_id": sibling_step.json()["id"]},
+        headers=admin,
+    ).status_code == 200
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze", json={"comment": ""}, headers=economist
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Approved"},
+        headers=approver,
+    ).status_code == 200
+
+    returned = client.post(
+        f"/cfo-positions/{position_id}/return-for-revision",
+        json={"comment": "Return", "items": [{"item_id": items[0]["id"]}]},
+        headers=zgd,
+    )
+
+    assert returned.status_code == 200, returned.text
+    assert returned.json()["current_step_id"] == APPROVER_STEP_ID
+
+
+def test_revision_returns_one_step_back_along_the_route(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    zgd = auth(client, "zgd", "zgd")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze", json={"comment": ""}, headers=economist
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Approved"},
+        headers=approver,
+    ).status_code == 200
+
+    from_zgd = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={
+            "action": "return_for_revision",
+            "comment": "Вернуть с финального этапа",
+            "items": [{"item_id": items[0]["id"]}],
+        },
+        headers=zgd,
+    )
+    assert from_zgd.status_code == 200, from_zgd.text
+    assert from_zgd.json()["positions"][0]["current_step_id"] == APPROVER_STEP_ID
+
+    from_approver = client.post(
+        f"/cfo-positions/{position_id}/return-for-revision",
+        json={"comment": "Вернуть экономисту", "items": [{"item_id": items[0]["id"]}]},
+        headers=approver,
+    )
+    assert from_approver.status_code == 200, from_approver.text
+    assert from_approver.json()["current_step_id"] == ECONOMIST_STEP_ID
+
+    from_economist = client.post(
+        f"/cfo-positions/{position_id}/return-for-revision",
+        json={"comment": "Вернуть в ЦФО", "items": [{"item_id": items[0]["id"]}]},
+        headers=economist,
+    )
+    assert from_economist.status_code == 200, from_economist.text
+    assert from_economist.json()["current_step_id"] == LEAF_STEP_ID
+
+    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze", json={"comment": ""}, headers=economist
+    ).status_code == 200
+    assert client.get(f"/cfo-positions/{position_id}", headers=approver).json()["current_step_id"] == APPROVER_STEP_ID
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Повторно"},
+        headers=approver,
+    ).status_code == 200
+    assert client.get(f"/cfo-positions/{position_id}", headers=zgd).json()["current_step_id"] == ROOT_STEP_ID
 
 
 def test_zgd_return_to_approver_keeps_budget_frozen_and_repeats_route(tmp_path):
@@ -988,6 +1216,19 @@ def test_zgd_return_to_approver_keeps_budget_frozen_and_repeats_route(tmp_path):
     assert returned.json()["status"] == "on_revision"
     assert returned.json()["all_items_frozen"] is False
     assert returned.json()["all_items_fixed"] is False
+
+    approver_rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=approver,
+    ).json()["items"]
+    approver_line = next(row for row in approver_rows if row["id"] == items[0]["id"])
+    assert approver_line["is_revision"] is True
+    assert approver_line["is_current_step_owner"] is True
+    assert approver_line["is_approval_actionable"] is True
+    assert approver_line["is_final_approval_actionable"] is True
+    assert approver_line["status_context"]["editability"]["can_decide"] is True
+    assert client.app.state.repo.get_by_id("req_items", items[0]["id"])["frozen"] is False
 
     returned_by_approver = client.post(
         f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/return",
@@ -1028,6 +1269,50 @@ def test_zgd_return_to_approver_keeps_budget_frozen_and_repeats_route(tmp_path):
     assert fixed.status_code == 200, fixed.text
     assert fixed.json()["all_items_fixed"] is True
     assert client.get(f"/requests/{request['id']}", headers=employee).json()["status"] == "approved"
+
+
+def test_approver_can_reapprove_unfrozen_lines_after_return(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    zgd = auth(client, "zgd", "zgd")
+    request, items = create_submitted_request(client, employee)
+    position_id = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(client, employee, economist, position_id, [items[0]["id"]])
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze", json={"comment": ""}, headers=economist
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Первое согласование"},
+        headers=approver,
+    ).status_code == 200
+
+    returned = client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/return",
+        json={"target_step_id": APPROVER_STEP_ID, "comment": "Повторно проверить"},
+        headers=zgd,
+    )
+    assert returned.status_code == 200, returned.text
+    assert returned.json()["all_items_frozen"] is False
+
+    reapproved = client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Повторно согласовано", "item_ids": [items[0]["id"]]},
+        headers=approver,
+    )
+    assert reapproved.status_code == 200, reapproved.text
+    assert reapproved.json()["current_step_id"] == ROOT_STEP_ID
+    assert client.app.state.repo.get_by_id("req_items", items[0]["id"])["frozen"] is True
+
+    assert client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Финально"},
+        headers=zgd,
+    ).status_code == 200
 
 
 def test_register_group_actions_work_for_article_and_cfo(tmp_path):
@@ -1329,6 +1614,138 @@ def test_economist_return_reopens_cfo_step_without_returning_request_to_module(t
     assert client.patch(
         f"/items/{items[0]['id']}", json={"justification": "Исправленное обоснование"}, headers=employee,
     ).status_code == 200
+
+
+def test_cfo_revision_has_the_same_decision_and_handoff_actions_as_first_review(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    request, items = create_submitted_request(client, employee, item_count=2)
+    position_id = complete_cfo(
+        client,
+        employee,
+        request["id"],
+        [(item["id"], "approved") for item in items],
+    )["affected_cfo_position_ids"][0]
+    assert client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": "В маршрут"},
+        headers=employee,
+    ).status_code == 200
+    returned = client.post(
+        f"/cfo-positions/{position_id}/return-for-revision",
+        json={
+            "comment": "Уточнить первую строку",
+            "items": [{"item_id": items[0]["id"], "comment": "Проверьте сумму"}],
+        },
+        headers=economist,
+    )
+    assert returned.status_code == 200, returned.text
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=employee,
+    ).json()["items"]
+    by_id = {row["id"]: row for row in rows}
+    assert by_id[items[0]["id"]]["is_cfo_review_actionable"] is True
+    assert by_id[items[1]["id"]]["is_cfo_review_actionable"] is False
+    assert by_id[items[0]["id"]]["status_context"]["editability"]["can_decide"] is True
+
+    group_decision = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/cfo-decision",
+        json={"decision": "approved", "comment": "Повторно проверено"},
+        headers=employee,
+    )
+    assert group_decision.status_code == 200, group_decision.text
+    rows_after_decision = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=employee,
+    ).json()["items"]
+    after_by_id = {row["id"]: row for row in rows_after_decision}
+    assert after_by_id[items[0]["id"]]["is_cfo_review_actionable"] is False
+    assert after_by_id[items[0]["id"]]["is_position_submission_actionable"] is True
+
+    submitted = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={"action": "submit"},
+        headers=employee,
+    )
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["positions"][0]["current_step_id"] == ECONOMIST_STEP_ID
+
+
+def test_workflow_group_approval_after_partial_return_uses_only_returned_lines(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    zgd = auth(client, "zgd", "zgd")
+    request, items = create_submitted_request(client, employee, item_count=2)
+    position_id = complete_cfo(
+        client,
+        employee,
+        request["id"],
+        [(item["id"], "approved") for item in items],
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(
+        client,
+        employee,
+        economist,
+        position_id,
+        [item["id"] for item in items],
+    )
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": "В маршрут"},
+        headers=economist,
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Первое согласование"},
+        headers=approver,
+    ).status_code == 200
+    returned = client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/return",
+        json={
+            "target_step_id": APPROVER_STEP_ID,
+            "comment": "Доработать первую строку",
+            "item_ids": [items[0]["id"]],
+        },
+        headers=zgd,
+    )
+    assert returned.status_code == 200, returned.text
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+        headers=approver,
+    ).json()["items"]
+    by_id = {row["id"]: row for row in rows}
+    assert by_id[items[0]["id"]]["is_approval_actionable"] is True
+    assert by_id[items[1]["id"]]["is_approval_actionable"] is False
+
+    approved = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={"action": "approve", "comment": "Повторно согласовано"},
+        headers=approver,
+    )
+    assert approved.status_code == 200, approved.text
+    position = client.get(f"/cfo-positions/{position_id}", headers=approver).json()
+    assert position["current_step_id"] == ROOT_STEP_ID
+    contributions = {item["id"]: item for item in position["contributions"]}
+    assert contributions[items[0]["id"]]["frozen"] is True
+    assert contributions[items[1]["id"]]["frozen"] is True
+
+    finalized = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={"action": "approve", "comment": "Финально согласовано"},
+        headers=zgd,
+    )
+    assert finalized.status_code == 200, finalized.text
+    position = client.get(f"/cfo-positions/{position_id}", headers=zgd).json()
+    assert position["all_items_fixed"] is True
 
 
 def test_cfo_can_change_module_revision_selection_until_sending_to_economist(tmp_path):

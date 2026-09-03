@@ -1,10 +1,12 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { api } from '../api/client';
 import type { ApprovalRegisterGroup } from '../types';
 import { ANALYTICS_FIELD_LABELS, buildRegisterFilterParams, type AnalyticsFieldKey } from '../utils/analyticsFields';
 import type { RegistryFilters } from './approval-register/registryConfig';
 import { useAppToast } from './Layout';
 import { InlineEditTextCell } from './inlineEdit';
+import { ConfirmDialog } from './ConfirmDialog';
 import { getApiErrorMessage } from '../utils/apiErrors';
 
 function groupEntityId(group: ApprovalRegisterGroup) {
@@ -30,6 +32,7 @@ export function GroupAnalyticsCell({
   const editable = Boolean(group.analytics?.can_edit);
   const mixed = summary?.mixed ?? false;
   const committed = mixed ? '' : (summary?.value || '');
+  const [pendingValue, setPendingValue] = useState<string | null>(null);
 
   const save = useMutation({
     mutationFn: async (draft: string) => api.patch(
@@ -38,33 +41,49 @@ export function GroupAnalyticsCell({
       { params: buildRegisterFilterParams(filters, { request_id: requestId }) },
     ),
     onSuccess: (response) => {
+      setPendingValue(null);
       const count = (response.data as { updated_count?: number }).updated_count ?? 0;
       toast(`Аналитика применена к ${count} строкам`, 'success');
       queryClient.invalidateQueries({ queryKey: ['approval-register'] });
       queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
       queryClient.invalidateQueries({ queryKey: ['approval-register-analytics-filters'] });
     },
-    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось применить аналитику к строкам'), 'error'),
+    onError: (error) => {
+      setPendingValue(null);
+      toast(getApiErrorMessage(error, 'Не удалось применить аналитику к строкам'), 'error');
+    },
   });
 
   const display = mixed ? 'Разные значения' : undefined;
 
   return (
-    <InlineEditTextCell
-      value={committed}
-      editable={editable}
-      displayValue={display}
-      fontStyle={mixed ? 'italic' : undefined}
-      emphasizedWhenEmpty={mixed || !committed}
-      pending={save.isPending}
-      ariaLabel={`${ANALYTICS_FIELD_LABELS[field]} для группы`}
-      tooltip={mixed
-        ? 'Нажмите, чтобы задать одно значение для всех строк группы'
-        : `Нажмите, чтобы изменить ${ANALYTICS_FIELD_LABELS[field].toLowerCase()} для всех строк`}
-      onCommit={(next) => {
-        if (next === committed && !mixed) return;
-        save.mutate(next);
-      }}
-    />
+    <>
+      <InlineEditTextCell
+        value={committed}
+        editable={editable}
+        displayValue={display}
+        fontStyle={mixed ? 'italic' : undefined}
+        emphasizedWhenEmpty={mixed || !committed}
+        pending={save.isPending}
+        ariaLabel={`${ANALYTICS_FIELD_LABELS[field]} для группы`}
+        tooltip={mixed
+          ? 'Нажмите, чтобы задать одно значение для всех строк группы'
+          : `Нажмите, чтобы изменить ${ANALYTICS_FIELD_LABELS[field].toLowerCase()} для всех строк`}
+        onCommit={(next) => {
+          if (next === committed && !mixed) return;
+          setPendingValue(next);
+        }}
+      />
+      <ConfirmDialog
+        open={pendingValue !== null}
+        title="Подтвердить изменение"
+        description={`Изменить «${ANALYTICS_FIELD_LABELS[field]}» для ${group.aggregates.total_rows} строк? Новое значение: «${pendingValue || '—'}».`}
+        confirmLabel="Подтвердить"
+        confirmColor="primary"
+        pending={save.isPending}
+        onClose={() => setPendingValue(null)}
+        onConfirm={() => pendingValue !== null && save.mutate(pendingValue)}
+      />
+    </>
   );
 }

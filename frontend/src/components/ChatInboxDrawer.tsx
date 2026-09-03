@@ -71,11 +71,15 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
   }, []);
   const currentUserId = currentUser.id || '';
   const lastChatStorageKey = currentUserId ? `budgetbasket_last_chat_${currentUserId}` : '';
-  const { data: chats = [] } = useQuery({ queryKey: ['chats'], queryFn: async () => (await api.get<ChatSummary[]>('/chats')).data });
+  const { data: chats = [] } = useQuery({
+    queryKey: ['chats'],
+    queryFn: async () => (await api.get<ChatSummary[]>('/chats')).data,
+    enabled: open,
+  });
   const { data: chat } = useQuery({
     queryKey: ['chats', selectedChat?.id],
     queryFn: async () => (await api.get<ChatDetails>(`/chats/${selectedChat!.id}`)).data,
-    enabled: !!selectedChat,
+    enabled: open && !!selectedChat,
   });
   const markRead = useMutation({
     mutationFn: ({ chatId, messageId }: { chatId: string; messageId: string }) => api.patch(`/chats/${chatId}/read`, { last_read_message_id: messageId }),
@@ -117,17 +121,17 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
     }
   }, [chats, requestedChatId]);
   useEffect(() => {
-    if (!selectedChat || !lastChatStorageKey) return;
+    if (!open || !selectedChat || !lastChatStorageKey) return;
     localStorage.setItem(lastChatStorageKey, selectedChat.id);
-  }, [lastChatStorageKey, selectedChat]);
+  }, [lastChatStorageKey, open, selectedChat]);
   useEffect(() => {
-    if (selectedChat || !lastChatStorageKey) return;
+    if (!open || selectedChat || !lastChatStorageKey) return;
     const saved = localStorage.getItem(lastChatStorageKey);
     const target = chats.find((item) => item.id === saved);
     if (target) setSelectedChat(target);
-  }, [chats, lastChatStorageKey, selectedChat]);
+  }, [chats, lastChatStorageKey, open, selectedChat]);
   useEffect(() => {
-    if (!selectedChat) return;
+    if (!open || !selectedChat) return;
     const token = localStorage.getItem(AUTH_TOKEN_KEY);
     if (!token) return;
     let socket: WebSocket | null = new WebSocket(chatWebSocketUrl(selectedChat.id, token));
@@ -136,16 +140,16 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
       queryClient.invalidateQueries({ queryKey: ['chats', selectedChat.id] });
     };
     return () => { socket?.close(); socket = null; };
-  }, [queryClient, selectedChat]);
+  }, [open, queryClient, selectedChat]);
   useEffect(() => {
     const latest = chat?.messages.at(-1);
-    if (!selectedChat || !chat || !latest) return;
+    if (!open || !selectedChat || !chat || !latest) return;
     const participant = chat.participants.find((item) => item.user_id === currentUserId);
     const marker = `${selectedChat.id}:${latest.id}`;
     if (participant?.last_read_message_id === latest.id || lastMarkedReadRef.current === marker) return;
     lastMarkedReadRef.current = marker;
     markRead.mutate({ chatId: selectedChat.id, messageId: latest.id }, { onError: () => { lastMarkedReadRef.current = ''; } });
-  }, [chat, currentUserId, markRead, selectedChat]);
+  }, [chat, currentUserId, markRead, open, selectedChat]);
   useEffect(() => { messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' }); }, [chat?.messages.length]);
 
   const grouped = [

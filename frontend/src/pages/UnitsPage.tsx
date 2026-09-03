@@ -33,10 +33,11 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { usePageChromeActions, usePageChromeLeading } from '../components/Layout';
 import { useAppToast } from '../components/Layout';
 import type { Unit, User } from '../types';
@@ -72,6 +73,18 @@ function unitLevel(unitId: string, units: Unit[]): number {
     current = byId.get(current.parent_id);
   }
   return level;
+}
+
+function buildUnitTree(units: Unit[]): Unit[] {
+  const nodes = units.map((unit) => ({ ...unit, children: [] as Unit[] }));
+  const byId = new Map(nodes.map((unit) => [unit.id, unit]));
+  const roots: Unit[] = [];
+  nodes.forEach((unit) => {
+    const parent = unit.parent_id ? byId.get(unit.parent_id) : null;
+    if (parent) parent.children?.push(unit);
+    else roots.push(unit);
+  });
+  return roots;
 }
 
 function fullName(user?: User): string {
@@ -458,15 +471,16 @@ function OrgUnitCard({
 export default function UnitsPage() {
   const queryClient = useQueryClient();
   const toast = useAppToast();
-  const { data: tree = [] } = useQuery({
-    queryKey: ['units-tree'],
-    queryFn: async () => (await api.get<Unit[]>('/units/tree')).data,
-  });
-  const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
-  const { data: users = [] } = useQuery({ queryKey: ['users'], queryFn: async () => (await api.get<User[]>('/users')).data });
-  const { data: assignments = [] } = useQuery({
+  const { data: units = [], isLoading: unitsLoading } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
+  const tree = useMemo(() => buildUnitTree(units), [units]);
+  const { data: users = [], isLoading: usersLoading } = useQuery({ queryKey: ['users'], queryFn: async () => (await api.get<User[]>('/users')).data });
+  const { data: assignments = [], isLoading: assignmentsLoading } = useQuery({
     queryKey: ['assignments'],
     queryFn: async () => (await api.get<Assignment[]>('/economist-assignments')).data,
+  });
+  const { data: responsibles = [], isLoading: responsiblesLoading } = useQuery({
+    queryKey: ['responsible'],
+    queryFn: async () => (await api.get<Responsible[]>('/unit-responsibles')).data,
   });
 
   const [dialog, setDialog] = useState<UnitDialogMode | null>(null);
@@ -485,18 +499,13 @@ export default function UnitsPage() {
   const employees = users.filter((user) => user.role === 'employee');
   const economists = users.filter((user) => user.role === 'economist');
 
-  const responsibleQueries = useQueries({
-    queries: assignableUnits.map((unit) => ({
-      queryKey: ['responsible', unit.id],
-      queryFn: async () => (await api.get<Responsible | null>(`/units/${unit.id}/responsible`)).data,
-    })),
-  });
-
   const responsiblesByUnit = useMemo(() => {
     const result = new Map<string, Responsible | null>();
-    assignableUnits.forEach((unit, index) => result.set(unit.id, responsibleQueries[index]?.data ?? null));
+    assignableUnits.forEach((unit) => {
+      result.set(unit.id, responsibles.find((item) => item.unit_id === unit.id) || null);
+    });
     return result;
-  }, [assignableUnits, responsibleQueries]);
+  }, [assignableUnits, responsibles]);
 
   const economistsByUnit = useMemo(() => {
     const result = new Map<string, User[]>();
@@ -560,7 +569,6 @@ export default function UnitsPage() {
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['units'] });
-    queryClient.invalidateQueries({ queryKey: ['units-tree'] });
     queryClient.invalidateQueries({ queryKey: ['assignments'] });
     queryClient.invalidateQueries({ queryKey: ['responsible'] });
   };
@@ -782,6 +790,10 @@ export default function UnitsPage() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     setIsPanning(false);
   };
+
+  if (unitsLoading || usersLoading || assignmentsLoading || responsiblesLoading) {
+    return <PageSkeleton variant="table" label="Загрузка оргструктуры" />;
+  }
 
   return (
     <Stack spacing={3}>

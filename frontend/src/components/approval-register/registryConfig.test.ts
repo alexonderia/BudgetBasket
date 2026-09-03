@@ -9,6 +9,7 @@ import {
   groupRegistryStatus,
   groupYourStepSummary,
   groupHasWorkflowActions,
+  groupHasWorkflowApprove,
   isGroupActionable,
   isGroupSelectable,
   isRowActionable,
@@ -52,6 +53,20 @@ describe('registry display helpers', () => {
     }).label).toBe('На доработке');
   });
 
+  it('keeps an economist-returned CFO group in revision while its decision is available', () => {
+    const aggregates = {
+      ...sampleAggregates,
+      cfo_revision_rows: 1,
+      cfo_review_actionable_requests: 1,
+    };
+    expect(groupRegistryStatus(aggregates).label).toBe('На доработке');
+    expect(isGroupActionable({
+      id: 'group', type: 'article' as const, name: 'Article', label: 'Article', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request'], can_load_rows: false,
+      aggregates,
+    }, 'employee')).toBe(true);
+  });
+
   it('does not expose workflow actions for a group with returned lines', () => {
     const group = {
       id: 'group', type: 'article' as const, name: 'Article', label: 'Article', children: [],
@@ -67,6 +82,31 @@ describe('registry display helpers', () => {
     expect(groupHasWorkflowActions(group)).toBe(false);
     expect(isGroupActionable(group)).toBe(false);
     expect(isGroupSelectable(group)).toBe(false);
+  });
+
+  it('lets economist, approver and ZGD act on a group returned to their step', () => {
+    const group = {
+      id: 'group', type: 'article' as const, name: 'Article', label: 'Article', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request'], can_load_rows: false,
+      aggregates: {
+        ...sampleAggregates,
+        actionable_positions: 1,
+        revision_rows: 1,
+      },
+    };
+    expect(groupHasWorkflowActions(group, 'economist')).toBe(true);
+    expect(groupHasWorkflowApprove(group, 'economist')).toBe(true);
+    expect(isGroupActionable(group, 'economist')).toBe(true);
+    expect(isGroupSelectable(group, 'economist')).toBe(true);
+
+    expect(groupHasWorkflowActions(group, 'approver')).toBe(true);
+    expect(groupHasWorkflowApprove(group, 'approver')).toBe(true);
+    expect(isGroupActionable(group, 'approver')).toBe(true);
+    expect(isGroupSelectable(group, 'approver')).toBe(true);
+    expect(groupHasWorkflowApprove(group, 'approver')).toBe(true);
+
+    expect(groupHasWorkflowActions(group, 'zgd')).toBe(true);
+    expect(groupHasWorkflowApprove(group, 'zgd')).toBe(true);
   });
 
   it('limits group selection to actions available to the current role', () => {
@@ -119,6 +159,21 @@ describe('registry display helpers', () => {
     expect(rowRegistryStatus({
       ...sampleRow,
       is_revision: true,
+      status_context: {
+        editability: {
+          can_decide: false,
+          can_edit_amount: false,
+          can_edit_analytics: false,
+          mode: 'readonly',
+          summary: 'Решение принято',
+          detail: 'Повторное решение сохранено',
+        },
+      },
+    }).label).toBe('На доработке');
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      is_revision: true,
+      is_current_step_owner: true,
       status_context: {
         editability: {
           can_decide: false,
@@ -210,7 +265,7 @@ describe('registry display helpers', () => {
     };
     expect(isRowActionable(economistLine)).toBe(true);
 
-    expect(isRowActionable({ ...economistLine, is_cfo_review_actionable: false }, 'approver')).toBe(false);
+    expect(isRowActionable({ ...economistLine, is_cfo_review_actionable: false }, 'approver')).toBe(true);
     expect(isRowActionable({ ...economistLine, is_cfo_review_actionable: false }, 'zgd')).toBe(true);
   });
 

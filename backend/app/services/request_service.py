@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 
-from app.models import APPROVED_ITEM_STATUSES, CfoPositionStatus, ItemStatus, RequestStatus
+from app.models import APPROVED_ITEM_STATUSES, CfoPositionStatus, ItemStatus, RequestStatus, StepStatus
 from app.repositories.base import Repository
 from app.services.common import (
     cfo_position_current_step_id,
@@ -555,7 +555,14 @@ class RequestService:
                 item_ids=sorted(returned_ids) if revision_submit else [row["id"] for row in items],
                 repo=repo,
             )
-            repo.update("steps", cfo_step["id"], {"status": "on_approval"})
+            if approval_service:
+                # The CFO step can still be waiting for another draft
+                # application.  Recalculate the runtime state from the same
+                # transaction instead of unconditionally opening it after
+                # every individual submission.
+                approval_service._sync_step_statuses(repo)
+            else:
+                repo.update("steps", cfo_step["id"], {"status": StepStatus.on_approval})
             if getattr(self, "chat_service", None):
                 self.chat_service.system_message_for_request(
                     updated,
@@ -797,14 +804,8 @@ class RequestService:
             and (is_income is None or is_income in position_income.get(item["id"], set()))
         ]
 
-    def _position_sum(self, position_id: str, *, is_income: bool | None = None) -> tuple[float, float, int]:
-        items = [
-            item
-            for item in self.repo.load_all("req_items")
-            if item.get("cfo_position_id") == position_id
-            and item.get("status") != ItemStatus.deleted
-            and (is_income is None or bool(item.get("is_income", False)) == is_income)
-        ]
+    @staticmethod
+    def _position_totals(items: list[dict]) -> tuple[float, float, int]:
         return (
             sum(
                 float(item.get("sum_plan") or 0)
@@ -820,16 +821,114 @@ class RequestService:
             len(items),
         )
 
-    def dashboard(self, user: dict, unit_id: str | None = None, *, is_income: bool = False) -> dict:
+    def _dashboard_snapshot(
+        self,
+        user: dict,
+        unit_id: str | None,
+        *,
+        is_income: bool,
+    ) -> tuple[list[dict], list[dict], dict[str, dict], dict[str, dict[str, dict]], dict[str, tuple[float, float, int]]]:
+        """Load dashboard sources once and aggregate every position in memory."""
         positions = [
             item
             for item in self._visible_positions(user, is_income=is_income)
             if not unit_id or item.get("cfo_unit_id") == unit_id
         ]
+        all_items = self.repo.load_all("req_items")
         units = {item["id"]: item for item in self.repo.load_all("units")}
+        catalogs = {
+            "dds": {item["id"]: item for item in self.repo.load_all("dds_catalog")},
+            "invest": {item["id"]: item for item in self.repo.load_all("invests_catalog")},
+        }
+        position_ids = {position["id"] for position in positions}
+        items_by_position: dict[str, list[dict]] = {position_id: [] for position_id in position_ids}
+        for item in all_items:
+            position_id = item.get("cfo_position_id")
+            if (
+                position_id in position_ids
+                and item.get("status") != ItemStatus.deleted
+                and bool(item.get("is_income", False)) == is_income
+            ):
+                items_by_position[position_id].append(item)
+        totals = {
+            position_id: self._position_totals(items)
+            for position_id, items in items_by_position.items()
+        }
+        return positions, all_items, units, catalogs, totals
+
+    def _dashboard_articles_from_snapshot(
+        self,
+        positions: list[dict],
+        units: dict[str, dict],
+        catalogs: dict[str, dict[str, dict]],
+        totals: dict[str, tuple[float, float, int]],
+        *,
+        article_filter: tuple[str, str] | None = None,
+    ) -> list[dict]:
+        articles: dict[tuple[str, str], dict] = {}
+        requested_article_id = (
+            self._catalog_article_id(catalogs[article_filter[0]], article_filter[1])
+            if article_filter
+            else None
+        )
+        for position in positions:
+            kind = "dds" if position.get("dds_id") else "invest"
+            leaf_id = position.get("dds_id") or position.get("invest_id")
+            article_id = self._catalog_article_id(catalogs[kind], leaf_id)
+            if not article_id:
+                continue
+            if article_filter and (
+                kind != article_filter[0]
+                or (leaf_id != article_filter[1] and article_id != requested_article_id)
+            ):
+                continue
+
+            key = (kind, article_id)
+            article = articles.setdefault(
+                key,
+                {
+                    "id": f"{kind}:{article_id}",
+                    "article_id": article_id,
+                    "name": catalogs[kind].get(article_id, {}).get("name", article_id),
+                    "kind": kind,
+                    "planned": 0.0,
+                    "approved": 0.0,
+                    "items_count": 0,
+                    "cfo": {},
+                },
+            )
+            planned, approved, count = totals.get(position["id"], (0.0, 0.0, 0))
+            cfo_id = position["cfo_unit_id"]
+            cfo = article["cfo"].setdefault(
+                cfo_id,
+                {
+                    "id": cfo_id,
+                    "cfo_id": cfo_id,
+                    "name": units.get(cfo_id, {}).get("name", "ЦФО"),
+                    "planned": 0.0,
+                    "approved": 0.0,
+                    "items_count": 0,
+                },
+            )
+            for row in (article, cfo):
+                row["planned"] += planned
+                row["approved"] += approved
+                row["items_count"] += count
+
+        return [
+            {**article, "cfo": list(article["cfo"].values())}
+            for article in articles.values()
+        ]
+
+    def dashboard(self, user: dict, unit_id: str | None = None, *, is_income: bool = False) -> dict:
+        positions, all_items, units, catalogs, totals = self._dashboard_snapshot(
+            user,
+            unit_id,
+            is_income=is_income,
+        )
         rows_by_cfo: dict[str, dict] = {}
         for position in positions:
-            planned, approved, count = self._position_sum(position["id"], is_income=is_income)
+            planned, approved, count = totals.get(position["id"], (0.0, 0.0, 0))
             cfo_id = position["cfo_unit_id"]
             row = rows_by_cfo.setdefault(
                 cfo_id,
@@ -851,11 +950,11 @@ class RequestService:
         requests = {item["id"]: item for item in self.repo.load_all("requests")}
         scoped_request_ids = {
             item["request_id"]
-            for item in self.repo.load_all("req_items")
+            for item in all_items
             if item.get("cfo_position_id") in position_ids
         }
         active_items_by_request: dict[str, list[dict]] = {}
-        for item in self.repo.load_all("req_items"):
+        for item in all_items:
             if item.get("request_id") not in scoped_request_ids or item.get("status") == ItemStatus.deleted:
                 continue
             active_items_by_request.setdefault(item["request_id"], []).append(item)
@@ -869,7 +968,12 @@ class RequestService:
                 for item in items
             )
         }
-        articles = self.dashboard_articles_cfo(user, unit_id, is_income=is_income)
+        articles = self._dashboard_articles_from_snapshot(
+            positions,
+            units,
+            catalogs,
+            totals,
+        )
         by_article = [
             {
                 "id": article["id"],
@@ -897,7 +1001,7 @@ class RequestService:
                 "approved": sum(item["approved"] for item in rows),
                 "frozen": sum(
                     float(item.get("sum_fact") or 0)
-                    for item in self.repo.load_all("req_items")
+                    for item in all_items
                     if item.get("cfo_position_id") in {position["id"] for position in positions}
                     and item.get("frozen")
                     and (
@@ -922,13 +1026,14 @@ class RequestService:
                     and request_id not in closed_request_ids
                 ),
                 "frozen_requests_count": len({
-                    item.get("request_id") for item in self.repo.load_all("req_items")
+                    item.get("request_id") for item in all_items
                     if item.get("cfo_position_id") in position_ids and item.get("frozen")
                 }),
             },
             "by_unit": rows,
             "by_category": [],
             "by_article": by_article,
+            "articles_cfo": articles,
         }
 
     def dashboard_article_cfo(
@@ -942,38 +1047,19 @@ class RequestService:
         kind, separator, article_id = article_key.partition(":")
         if not separator or kind not in {"dds", "invest"}:
             return []
-        rows_by_cfo: dict[str, dict] = {}
-        units = {item["id"]: item for item in self.repo.load_all("units")}
-        catalog = {
-            item["id"]: item
-            for item in self.repo.load_all("dds_catalog" if kind == "dds" else "invests_catalog")
-        }
-        requested_article_id = self._catalog_article_id(catalog, article_id)
-        for position in self._visible_positions(user, is_income=is_income):
-            if unit_id and position.get("cfo_unit_id") != unit_id:
-                continue
-            leaf_id = position.get(f"{kind}_id")
-            resolved = self._catalog_article_id(catalog, leaf_id)
-            # Accept both article (parent) and category (leaf) keys for drill-down.
-            if leaf_id != article_id and resolved != requested_article_id:
-                continue
-            planned, approved, count = self._position_sum(position["id"], is_income=is_income)
-            cfo_id = position["cfo_unit_id"]
-            row = rows_by_cfo.setdefault(
-                cfo_id,
-                {
-                    "id": cfo_id,
-                    "cfo_id": cfo_id,
-                    "name": units.get(cfo_id, {}).get("name", "ЦФО"),
-                    "planned": 0,
-                    "approved": 0,
-                    "items_count": 0,
-                },
-            )
-            row["planned"] += planned
-            row["approved"] += approved
-            row["items_count"] += count
-        return list(rows_by_cfo.values())
+        positions, _items, units, catalogs, totals = self._dashboard_snapshot(
+            user,
+            unit_id,
+            is_income=is_income,
+        )
+        articles = self._dashboard_articles_from_snapshot(
+            positions,
+            units,
+            catalogs,
+            totals,
+            article_filter=(kind, article_id),
+        )
+        return articles[0]["cfo"] if articles else []
 
     def dashboard_articles_cfo(
         self,
@@ -982,43 +1068,17 @@ class RequestService:
         *,
         is_income: bool = False,
     ) -> list[dict]:
-        result: list[dict] = []
-        seen: set[tuple[str, str]] = set()
-        catalogs = {
-            "dds": {item["id"]: item for item in self.repo.load_all("dds_catalog")},
-            "invest": {item["id"]: item for item in self.repo.load_all("invests_catalog")},
-        }
-        for position in self._visible_positions(user, is_income=is_income):
-            if unit_id and position.get("cfo_unit_id") != unit_id:
-                continue
-            kind = "dds" if position.get("dds_id") else "invest"
-            leaf_id = position.get("dds_id") or position.get("invest_id")
-            article_id = self._catalog_article_id(catalogs[kind], leaf_id)
-            if not article_id:
-                continue
-            key = (kind, article_id)
-            if key in seen:
-                continue
-            seen.add(key)
-            cfo_rows = self.dashboard_article_cfo(
-                user,
-                f"{kind}:{article_id}",
-                unit_id,
-                is_income=is_income,
-            )
-            result.append(
-                {
-                    "id": f"{kind}:{article_id}",
-                    "article_id": article_id,
-                    "name": catalogs[kind].get(article_id, {}).get("name", article_id),
-                    "kind": kind,
-                    "planned": sum(row["planned"] for row in cfo_rows),
-                    "approved": sum(row["approved"] for row in cfo_rows),
-                    "items_count": sum(row["items_count"] for row in cfo_rows),
-                    "cfo": cfo_rows,
-                }
-            )
-        return result
+        positions, _items, units, catalogs, totals = self._dashboard_snapshot(
+            user,
+            unit_id,
+            is_income=is_income,
+        )
+        return self._dashboard_articles_from_snapshot(
+            positions,
+            units,
+            catalogs,
+            totals,
+        )
 
     def dashboard_table(
         self,
@@ -1525,7 +1585,9 @@ class RequestService:
                     "warning",
                     "Сначала экономист должен проверить и передать строку в маршрут",
                 )
-            elif entry.get("frozen") and is_my_step and not entry.get("fixed"):
+            elif is_my_step and not entry.get("fixed") and (
+                entry.get("is_approval_actionable") or entry.get("frozen")
+            ):
                 your = self._register_step_display(
                     "Можно согласовать",
                     "action",
@@ -1987,25 +2049,70 @@ class RequestService:
         for link in self.repo.load_all("req_item_files"):
             file_counts[link.get("req_item_id")] = file_counts.get(link.get("req_item_id"), 0) + 1
         economist_decided_by_position: dict[str, set[str]] = {}
+        economist_decision_logs: list[tuple[str, str, tuple[str, int]]] = []
+        approver_decided_by_position: dict[str, dict[str, set[str]]] = {}
         latest_position_return: dict[str, tuple[tuple[str, int], set[str]]] = {}
+        approver_decision_logs: list[tuple[str, str, tuple[str, int], set[str]]] = []
+        approver_step_resets: dict[tuple[str, str], tuple[str, int]] = {}
+        cfo_revision_decided_by_position: dict[str, set[str]] = {}
         for row in position_log_rows:
             log = row.get("log") or {}
             position_id = row.get("cfo_position_id")
             if not position_id:
                 continue
+            key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+            current_step_id = log.get("current_step_id")
+            if (
+                log.get("action") in {"position_frozen_and_forwarded", "position_returned"}
+                and current_step_id
+            ):
+                reset_key = (position_id, str(current_step_id))
+                if key > approver_step_resets.get(reset_key, ("", 0)):
+                    approver_step_resets[reset_key] = key
+            if log.get("action") == "position_items_approved_at_step" and log.get("step_id"):
+                approver_decision_logs.append((
+                    position_id,
+                    str(log["step_id"]),
+                    key,
+                    {str(item_id) for item_id in log.get("item_ids") or []},
+                ))
             if log.get("action") == "economist_item_decided":
                 item_id = log.get("req_item_id")
                 if item_id:
-                    economist_decided_by_position.setdefault(position_id, set()).add(item_id)
-                continue
+                    economist_decision_logs.append((position_id, str(item_id), key))
             if log.get("action") == "position_returned":
-                key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
                 previous = latest_position_return.get(position_id)
                 if previous is None or key > previous[0]:
                     latest_position_return[position_id] = (
                         key,
                         {str(item_id) for item_id in log.get("item_ids") or []},
                     )
+        for position_id, item_id, key in economist_decision_logs:
+            returned = latest_position_return.get(position_id)
+            if returned and item_id in returned[1] and key <= returned[0]:
+                continue
+            economist_decided_by_position.setdefault(position_id, set()).add(item_id)
+        for position_id, step_id, key, item_ids in approver_decision_logs:
+            if key > approver_step_resets.get((position_id, step_id), ("", 0)):
+                approver_decided_by_position.setdefault(position_id, {}).setdefault(step_id, set()).update(item_ids)
+        item_position_by_id = {
+            row["id"]: row.get("cfo_position_id")
+            for row in item_rows
+            if row.get("id")
+        }
+        for row in req_log_rows:
+            log = row.get("log") or {}
+            if log.get("action") != "cfo_item_decided":
+                continue
+            item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
+            position_id = item_position_by_id.get(item_id)
+            returned = latest_position_return.get(position_id) if position_id else None
+            if (
+                returned
+                and item_id in returned[1]
+                and (str(row.get("created_at") or ""), int(row.get("id") or 0)) > returned[0]
+            ):
+                cfo_revision_decided_by_position.setdefault(position_id, set()).add(str(item_id))
         revision_items_by_position = {
             position_id: item_ids
             for position_id, (_, item_ids) in latest_position_return.items()
@@ -2041,18 +2148,29 @@ class RequestService:
                     return False
                 if position.get("cfo_unit_id") not in economist_cfo_ids or step.get("user_id") != user.get("id"):
                     return False
-                returned_items = revision_items_by_position.get(position["id"], set())
-                return (
-                    item["id"] in returned_items
-                    and position.get("status") == CfoPositionStatus.on_revision
-                ) or item["id"] not in economist_decided_by_position.get(position["id"], set())
-            # At the final step a ZGD can fix any frozen line separately.
-            # The position itself remains at that step until all lines are fixed.
+                return item["id"] not in economist_decided_by_position.get(position["id"], set())
+            # Higher reviewers approve frozen lines, or the unfrozen lines just
+            # returned to their step, one at a time. An approver advances the
+            # position only after every line is checked; ZGD fixes each line
+            # at the final step.
+            if actor.get("role") not in {"approver", "zgd"}:
+                return False
+            if user.get("role") != actor.get("role") or step.get("user_id") != user.get("id"):
+                return False
+            if item.get("fixed"):
+                return False
+            returned_items = latest_position_return.get(position["id"], (None, set()))[1]
+            returned_here = item["id"] in returned_items
+            # A route revisit is line-scoped.  Frozen siblings that were not
+            # part of the latest return retain their previous decision and
+            # must not become actionable merely because the position reopened.
+            if returned_items and not returned_here:
+                return False
+            if not item.get("frozen") and not returned_here:
+                return False
             return (
-                actor.get("role") == "zgd"
-                and user.get("role") == "zgd"
-                and step.get("user_id") == user.get("id")
-                and bool(item.get("frozen"))
+                actor.get("role") != "approver"
+                or item["id"] not in approver_decided_by_position.get(position["id"], {}).get(step["id"], set())
             )
 
         def can_act_on_position_block(position: dict | None, item: dict | None = None) -> bool:
@@ -2094,12 +2212,26 @@ class RequestService:
             if item and item.get("fixed"):
                 return False
             step = steps.get(cfo_position_current_step_id(self.repo, position)) if position else None
+            if not position or not step:
+                return False
+            # A position returned from the economist to the responsible CFO
+            # may be sent further only after every returned line has received
+            # a new CFO decision.  The generic on_revision check must not
+            # expose the handoff before that review is complete.
+            if (
+                position.get("status") == CfoPositionStatus.on_revision
+                and step.get("unit_id") == position.get("cfo_unit_id")
+            ):
+                returned_ids = latest_position_return.get(position["id"], (None, set()))[1]
+                if returned_ids and not returned_ids.issubset(
+                    cfo_revision_decided_by_position.get(position["id"], set())
+                ):
+                    return False
             return bool(
                 position
                 and not all(row.get("fixed") for row in position_items(position["id"]))
                 and user.get("role") == "employee"
                 and position.get("cfo_unit_id") in employee_cfo_ids
-                and step
                 and step.get("unit_id") == position.get("cfo_unit_id")
                 and position.get("status") in {"waiting", "on_review", "on_revision"}
             )
@@ -2137,7 +2269,7 @@ class RequestService:
 
         needle = (search or "").strip().casefold()
         entries: list[dict] = []
-        for item in self.repo.load_all("req_items"):
+        for item in item_rows:
             if item.get("status") == ItemStatus.deleted:
                 continue
             # Dashboard drill-downs are based on CFO-position lines only and
@@ -2184,6 +2316,19 @@ class RequestService:
                 and request["id"] not in cfo_completed_requests
                 and not returned_item_ids
             )
+            is_cfo_revision_actionable = (
+                item["id"] in position_revision_item_ids
+                and bool(position)
+                and position.get("status") == CfoPositionStatus.on_revision
+                and bool(position_step_id)
+                and steps.get(position_step_id, {}).get("unit_id") == current_cfo_id
+                and item["id"] not in returned_item_ids
+                and user.get("role") == "employee"
+                and current_cfo_id in employee_cfo_ids
+                and item["id"] not in cfo_revision_decided_by_position.get(position.get("id"), set())
+                and not item.get("frozen")
+                and not item.get("fixed")
+            )
             entry = {
                 "id": item["id"],
                 "request_id": request["id"],
@@ -2215,12 +2360,18 @@ class RequestService:
                 "is_collecting": request.get("status") == RequestStatus.draft,
                 "is_cfo_review": is_cfo_review,
                 "is_cfo_review_actionable": (
-                    is_cfo_review
-                    and item["id"] not in cfo_decisions_by_request.get(request["id"], {})
-                    and user.get("role") == "employee"
-                    and current_cfo_id in employee_cfo_ids
+                    (
+                        is_cfo_review
+                        and item["id"] not in cfo_decisions_by_request.get(request["id"], {})
+                    )
+                    or is_cfo_revision_actionable
                 ),
                 "is_revision": is_revision,
+                # Keep the workflow state of a CFO position distinguishable
+                # from a currently actionable repeated CFO decision.  The
+                # register uses this flag to keep the group in `on_revision`
+                # until the returned position is handed back to the economist.
+                "is_cfo_revision": item["id"] in position_revision_item_ids,
                 "is_module_revision": is_module_revision,
                 "is_revision_actionable": (
                     item["id"] in returned_item_ids
@@ -2230,30 +2381,28 @@ class RequestService:
                     and not item.get("fixed")
                 ),
                 "is_cfo_module_revision_actionable": (
-                    item["id"] in position_revision_item_ids
-                    and bool(position)
-                    and position.get("status") == CfoPositionStatus.on_revision
-                    and bool(position_step_id)
-                    and steps.get(position_step_id, {}).get("unit_id") == current_cfo_id
-                    and user.get("role") == "employee"
-                    and current_cfo_id in employee_cfo_ids
-                    and not item.get("frozen")
-                    and not item.get("fixed")
+                    is_cfo_revision_actionable
                 ),
                 "is_cfo_review_completable": request["id"] in completable_cfo_review_requests,
                 "position_id": position.get("id") if position else None,
                 "current_step_id": position_step_id,
                 "is_in_approval": bool(position and position_step_id and not item.get("fixed")),
+                "is_current_step_owner": bool(
+                    position
+                    and position_step_id
+                    and not item.get("fixed")
+                    and steps.get(position_step_id, {}).get("user_id") == user.get("id")
+                ),
                 "is_approval_actionable": can_act_on_position(position, item),
                 "is_final_approval_actionable": (
-                    user.get("role") == "zgd" and can_act_on_position(position, item)
+                    user.get("role") in {"approver", "zgd"} and can_act_on_position(position, item)
                 ),
                 "is_position_submission_actionable": can_submit_position(position, item),
                 "is_economist_completion_actionable": can_complete_economist_position(position),
                 "is_position_actionable": (
                     can_act_on_position(position, item)
                     or can_submit_position(position, item)
-                    or can_act_on_position_block(position, item)
+                    or can_complete_economist_position(position)
                 ),
                 "approval_stage": approval_stage(position, item),
                 "frozen": bool(item.get("frozen")),
@@ -2339,6 +2488,7 @@ class RequestService:
         approved = sum(entry["status"] in {ItemStatus.approved, ItemStatus.approved_with_changes} for entry in entries)
         rejected = sum(entry["status"] == ItemStatus.rejected for entry in entries)
         revision = sum(bool(entry.get("is_revision")) for entry in entries)
+        cfo_revision = sum(bool(entry.get("is_cfo_revision")) for entry in entries)
         pending = len(entries) - approved - rejected
         if not entries:
             aggregate_status = "no_data"
@@ -2413,6 +2563,7 @@ class RequestService:
             "approved_rows": approved,
             "rejected_rows": rejected,
             "revision_rows": revision,
+            "cfo_revision_rows": cfo_revision,
             "pending_rows": pending,
             "requests_count": len({entry["request_id"] for entry in entries}),
             "modules_count": len({entry["module_id"] for entry in entries}),
@@ -2787,11 +2938,9 @@ class RequestService:
         ]
         workflow_lines = [
             entry for entry in entries
-            # Approvers and ZGD act on a position as a block, so their
-            # individual rows deliberately do not carry
-            # ``is_approval_actionable``.  They still must be able to select
-            # the frozen, non-final rows which are to be returned for
-            # revision from that actionable position.
+            # Approvers and ZGD can reopen returned lines for a new
+            # decision, so revision dialogs include both frozen rows and
+            # the unfrozen lines from the latest return.
             if entry.get("is_position_actionable")
             and not entry.get("fixed")
             and entry.get("status") != ItemStatus.deleted

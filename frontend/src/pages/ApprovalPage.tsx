@@ -46,6 +46,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEven
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { useAppToast, usePageChromeActions, usePageChromeLeading } from '../components/Layout';
 import { RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
 import type {
@@ -1565,6 +1566,9 @@ function AdminApprovalPage() {
   const linkedChildName = stepDialog?.kind === 'create' && stepDialog.childStepId
     ? stepNames.get(stepDialog.childStepId)
     : null;
+  if (stepsPending && !steps) {
+    return <PageSkeleton variant="details" label="Загрузка графа согласования" />;
+  }
   return (
     <Stack className="approval-page" spacing={3}>
       <Box sx={{ display: 'none' }}>
@@ -1583,10 +1587,7 @@ function AdminApprovalPage() {
       )}</Box>
 
       <Paper className="org-chart-panel" elevation={0}>
-        {stepsPending && !steps ? (
-          <Typography color="text.secondary">Загрузка графа маршрута…</Typography>
-        ) : (
-          <ApprovalGraph
+        <ApprovalGraph
             steps={resolvedSteps}
             selectedStepId={selectedStepId}
             onSelect={setSelectedStepId}
@@ -1601,7 +1602,6 @@ function AdminApprovalPage() {
             onCfoResponsibleChange={(cfoId, employeeId) => setCfoResponsible.mutate({ cfoId, employeeId })}
             onCfoEconomistChange={(cfoIds, economistId) => setCfoEconomist.mutate({ cfoIds, economistId })}
           />
-        )}
       </Paper>
 
       <Box sx={{ display: 'none' }}>
@@ -1979,7 +1979,7 @@ function UserApprovalPage({ user }: { user: User }) {
   );
   const canForwardAnyPackage = !isLeaf && !isFinal && readyPackages.length > 0;
 
-  if (isLoading) return <CircularProgress />;
+  if (isLoading) return <PageSkeleton variant="table" label="Загрузка согласования" />;
   if (!steps.length) {
     return <Alert severity="info">Вам пока не назначены шаги согласования.</Alert>;
   }
@@ -2278,7 +2278,7 @@ function RouteGraphPage() {
     if (!selectedStepId && steps.length) setSelectedStepId(steps[0].id);
   }, [selectedStepId, steps]);
 
-  if (isLoading) return <CircularProgress />;
+  if (isLoading) return <PageSkeleton variant="details" label="Загрузка маршрута согласования" />;
 
   return (
     <Paper className="org-chart-card" sx={{ p: 2, minHeight: 'calc(100vh - 132px)' }}>
@@ -2335,7 +2335,7 @@ function SimpleUserApprovalPage({ user }: { user: User }) {
     queryFn: async () => (await api.get<ApprovalStep[]>('/steps/my')).data,
   });
 
-  if (isLoading) return <CircularProgress />;
+  if (isLoading) return <PageSkeleton variant="table" label="Загрузка согласования" />;
   return (
     <Stack spacing={3}>
       <Box>

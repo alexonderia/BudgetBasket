@@ -27,6 +27,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { useAppToast } from '../components/Layout';
 import { RequiredFieldLabel } from '../components/RequiredFieldLabel';
 import type { Role, Unit, User } from '../types';
@@ -310,8 +311,8 @@ function EditUserDialog({
 export default function UsersPage() {
   const queryClient = useQueryClient();
   const toast = useAppToast();
-  const { data = [] } = useQuery({ queryKey: ['users'], queryFn: async () => (await api.get<User[]>('/users')).data });
-  const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
+  const { data = [], isLoading: usersLoading } = useQuery({ queryKey: ['users'], queryFn: async () => (await api.get<User[]>('/users')).data });
+  const { data: units = [], isLoading: unitsLoading } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
@@ -418,6 +419,10 @@ export default function UsersPage() {
       toast(getApiErrorMessage(error, 'Не удалось удалить пользователя'), 'error');
     },
   });
+
+  if (usersLoading || unitsLoading) {
+    return <PageSkeleton variant="table" label="Загрузка пользователей" />;
+  }
 
   return (
     <Stack spacing={3}>

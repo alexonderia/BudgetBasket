@@ -364,7 +364,7 @@ class CfoPositionCommentIn(StrictModel):
 
 
 class CfoPositionReturnIn(StrictModel):
-    target_step_id: str
+    target_step_id: str | None = None
     comment: str = Field(min_length=1)
     item_ids: list[str] = Field(default_factory=list)
 
