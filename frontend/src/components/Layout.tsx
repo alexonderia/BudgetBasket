@@ -52,6 +52,7 @@ import { canAccessApproval } from '../utils/roles';
 import { AUTH_TOKEN_KEY } from '../utils/session';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 import { AppBreadcrumbs, breadcrumblessPaths } from './AppBreadcrumbs';
+import { AppFooter } from './AppFooter';
 import { ChatInboxDrawer } from './ChatInboxDrawer';
 import { RequiredFieldLabel } from './RequiredFieldLabel';
 import { UserGuideDialog } from './UserGuideDialog';
@@ -622,7 +623,8 @@ export function Layout({
       </Dialog>
 
       <ToastContext.Provider value={toastCtx}>
-        <Box component="main" className="app-main">
+        <Box className="app-content">
+          <Box component="main" className="app-main">
           {showPageChrome ? (
             <Stack
               className="page-chrome"
@@ -653,6 +655,8 @@ export function Layout({
           <PageActionsContext.Provider value={chrome}>
             <Outlet />
           </PageActionsContext.Provider>
+          </Box>
+          <AppFooter />
         </Box>
         <Snackbar
           key={toast?.key}

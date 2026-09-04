@@ -43,6 +43,14 @@
     min-height: 100vh;
   }
 
+  .app-content {
+    display: flex;
+    min-width: 0;
+    min-height: 100vh;
+    flex: 1;
+    flex-direction: column;
+  }
+
   .app-main {
     min-width: 0;
     flex: 1;
@@ -1075,14 +1083,22 @@
   }
 
   .login-page {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     min-height: 100vh;
-    place-items: center;
-    padding: 24px;
+    padding: 0;
     background:
       radial-gradient(circle at 12% 18%, rgba(47, 111, 237, 0.14), transparent 34%),
       radial-gradient(circle at 88% 78%, rgba(47, 111, 237, 0.1), transparent 32%),
       linear-gradient(160deg, #f8faff 0%, #eef2f8 100%);
+  }
+
+  .login-content {
+    display: grid;
+    min-width: 0;
+    flex: 1;
+    place-items: center;
+    padding: 24px;
   }
 
   .login-card {
@@ -2368,6 +2384,10 @@
 @media (max-width: 900px) {
   .app-main {
     padding: 16px 14px 28px;
+  }
+
+  .login-content {
+    padding: 16px;
   }
 
   .page-actions {
