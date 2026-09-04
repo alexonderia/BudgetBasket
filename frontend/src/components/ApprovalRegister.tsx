@@ -122,6 +122,7 @@ import { REGISTER_EXPORT_STATUSES, defaultExportSettings, exportSettingsFromRegi
 import { buildRegisterHref, registerDrillFromSearchParams } from '../utils/dashboardNavigation';
 import { filterFieldSx } from '../utils/responsive';
 import { canUseRegisterApprovalMode } from '../utils/roles';
+import { resolveApprovalRoutePanel, type ApprovalRouteModule } from './approval-register/approvalRoutePanel';
 
 const LEGACY_PREFERENCES_KEY = 'budgetbasket:approval-register:preferences';
 const LEGACY_COLUMNS_KEY = 'budgetbasket:approval-register:columns';
@@ -1348,40 +1349,13 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
     return 'Согласующий';
   };
   const displayStatus = (step: ApprovalStep) => step.request_status || step.status;
-  const viewerSteps = steps.filter((step) => (
-    step.unit_id ? step.responsible?.id === user.id : step.user_id === user.id
-  ));
-  // In the compact register panel the focal point is always the step of the
-  // user viewing the page, with only its immediate context around it.
-  const currentStep = viewerSteps.find((step) => (
-    displayStatus(step) === 'on_approval' || displayStatus(step) === 'on_revision'
-  )) || viewerSteps[0];
-  // Show the direct results required by the page user's step first, then the
-  // user's current step. Completed results stay visible and are marked as such.
-  const stepsById = new Map(steps.map((step) => [step.id, step]));
-  const expectedStepIds = currentStep
-    ? [...new Set(currentStep.child_step_ids || [])].filter((stepId) => stepsById.has(stepId))
-    : [];
-  const nextStepIds = currentStep
-    ? [...new Set(currentStep.parent_step_ids || [])].filter((stepId) => stepsById.has(stepId))
-    : [];
-  const visibleRouteIds = currentStep
-    ? new Set([...expectedStepIds, currentStep.id, ...nextStepIds])
-    : new Set(steps.map((step) => step.id));
-  const routeStateRank = (step: ApprovalStep) => {
-    const expectedIndex = expectedStepIds.indexOf(step.id);
-    if (expectedIndex !== -1) return expectedIndex;
-    if (step.id === currentStep?.id) return expectedStepIds.length;
-    const nextIndex = nextStepIds.indexOf(step.id);
-    if (nextIndex !== -1) return expectedStepIds.length + 1 + nextIndex;
-    return Number.MAX_SAFE_INTEGER;
-  };
-  const displaySteps = steps
-    .filter((step) => visibleRouteIds.has(step.id))
-    .sort((left, right) => (
-      routeStateRank(left) - routeStateRank(right)
-      || left.id.localeCompare(right.id)
-    ));
+  const {
+    currentStep,
+    expectedStepIds,
+    nextStepIds,
+    displaySteps,
+    expectedModules,
+  } = resolveApprovalRoutePanel(steps, user);
   const ownerLabel = (step: ApprovalStep) => {
     if (step.user?.profile) return [step.user.profile.last_name, step.user.profile.name].filter(Boolean).join(' ');
     if (step.user?.login) return step.user.login;
@@ -1404,6 +1378,48 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
     if (isNext) return { main: '#64748B', line: '#CBD5E1' };
     return { main: '#64748B', line: '#E2E8F0' };
   };
+  const moduleStatusLabel = (module: ApprovalRouteModule) => (
+    module.request_statuses.length
+      ? module.request_statuses
+        .map(({ status, count }) => `${requestStatusLabels[status]}: ${count}`)
+        .join(' · ')
+      : 'Заявок нет'
+  );
+  const moduleOwnerName = (module: ApprovalRouteModule) => {
+    if (module.responsible?.profile) {
+      return [module.responsible.profile.last_name, module.responsible.profile.name].filter(Boolean).join(' ');
+    }
+    return module.responsible?.login || 'Не назначен';
+  };
+  const moduleTone = (module: ApprovalRouteModule) => {
+    const statuses = module.request_statuses.map(({ status }) => status);
+    if (statuses.includes('on_review')) return { main: '#2563EB', line: '#93C5FD' };
+    if (statuses.length > 0 && statuses.every((status) => status === 'approved')) return { main: '#16A34A', line: '#86EFAC' };
+    return { main: '#64748B', line: '#CBD5E1' };
+  };
+  const routeItems = [
+    ...expectedModules.map((module) => ({ kind: 'module' as const, key: `module:${module.id}`, module })),
+    ...displaySteps.map((step) => ({ kind: 'step' as const, key: step.id, step })),
+  ];
+  type RouteItem = (typeof routeItems)[number];
+  const routeGroups: Array<{ key: string; items: RouteItem[]; startIndex: number }> = [];
+  routeItems.forEach((item, index) => {
+    const key = item.kind === 'module'
+      ? 'modules'
+      : item.step.id === currentStep?.id
+        ? 'current'
+        : expectedStepIds.includes(item.step.id)
+          ? 'expected'
+          : nextStepIds.includes(item.step.id)
+            ? 'next'
+            : `step:${item.step.id}`;
+    const lastGroup = routeGroups[routeGroups.length - 1];
+    if (lastGroup?.key === key) {
+      lastGroup.items.push(item);
+    } else {
+      routeGroups.push({ key, items: [item], startIndex: index });
+    }
+  });
   return (
     <Paper variant="outlined" sx={{ width: { xl: 276 }, flex: { xl: '0 0 276px' }, p: 1.25, borderColor: 'rgba(15, 23, 42, 0.08)', borderRadius: 1.5, bgcolor: '#fff', position: { xl: 'sticky' }, top: { xl: 8 }, alignSelf: 'flex-start' }}>
       <Stack direction="row" spacing={0.65} alignItems="center" sx={{ mb: 1.1 }}>
@@ -1412,25 +1428,63 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
       {isFetching && <Typography variant="caption" color="text.secondary">Загрузка маршрута…</Typography>}
       {!isFetching && !steps.length && <Typography variant="caption" color="text.secondary">Маршрут для текущего набора пока не определён.</Typography>}
       <Stack spacing={0.15}>
-        {displaySteps.map((step, index) => {
-          const completed = ['approved', 'closed'].includes(displayStatus(step));
-          const active = step.id === currentStep?.id;
-          const isNext = nextStepIds.includes(step.id);
-          const tone = stateTone(step, active, isNext);
-          return (
-            <Stack key={step.id} direction="row" spacing={0.85} alignItems="stretch" sx={{ position: 'relative' }}>
-              <Stack alignItems="center" sx={{ width: 20, flex: '0 0 20px', alignSelf: 'stretch', position: 'relative' }}>
-                <Box aria-current={active ? 'step' : undefined} sx={{ width: 10, height: 10, mt: 0.45, zIndex: 1, borderRadius: '50%', bgcolor: completed || active || displayStatus(step) === 'on_revision' ? tone.main : '#fff', border: '1px solid', borderColor: tone.main }} />
-                {index < displaySteps.length - 1 && <Box sx={{ position: 'absolute', zIndex: 0, top: 14, bottom: -9, left: '50%', width: '1px', transform: 'translateX(-50%)', bgcolor: tone.line }} />}
-              </Stack>
-              <Box sx={{ pb: index < displaySteps.length - 1 ? 1.15 : 0, minWidth: 0 }}>
-                <Typography variant="caption" fontWeight={active || completed ? 700 : 600} sx={{ color: tone.main, lineHeight: 1.25, display: 'block', fontSize: 11.5 }}>{roleTitle(step)}</Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>{ownerLabel(step)}</Typography>
-                <Typography variant="caption" sx={{ mt: 0.15, color: tone.main, fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>{stateLabel(step, active, isNext)}</Typography>
-              </Box>
-            </Stack>
-          );
-        })}
+        {routeGroups.map((group) => (
+          <Box
+            key={group.key}
+            sx={{
+              pl: 0.55,
+              ...(group.items.length > 1 || group.key === 'modules' ? {
+                position: 'relative',
+                '&::before': {
+                  content: '""',
+                  position: 'absolute',
+                  left: 0,
+                  top: 4,
+                  bottom: 4,
+                  width: 3,
+                  borderRadius: 999,
+                  bgcolor: group.key === 'expected' || group.key === 'modules' ? '#93C5FD' : '#CBD5E1',
+                },
+              } : {}),
+            }}
+          >
+            {group.items.map((item, itemIndex) => {
+              const index = group.startIndex + itemIndex;
+              const isModule = item.kind === 'module';
+              const completed = isModule
+                ? item.module.request_statuses.length > 0
+                  && item.module.request_statuses.every(({ status }) => status === 'approved')
+                : ['approved', 'closed'].includes(displayStatus(item.step));
+              const active = !isModule && item.step.id === currentStep?.id;
+              const isNext = !isModule && nextStepIds.includes(item.step.id);
+              const tone = isModule ? moduleTone(item.module) : stateTone(item.step, active, isNext);
+              return (
+                <Stack key={item.key} direction="row" spacing={0.85} alignItems="stretch" sx={{ position: 'relative' }}>
+                  <Stack alignItems="center" sx={{ width: 20, flex: '0 0 20px', alignSelf: 'stretch', position: 'relative' }}>
+                    <Box aria-current={active ? 'step' : undefined} sx={{ width: 10, height: 10, mt: 0.45, zIndex: 1, borderRadius: '50%', bgcolor: completed || active || (!isModule && displayStatus(item.step) === 'on_revision') ? tone.main : '#fff', border: '1px solid', borderColor: tone.main }} />
+                    {index < routeItems.length - 1 && <Box sx={{ position: 'absolute', zIndex: 0, top: 14, bottom: -9, left: '50%', width: '1px', transform: 'translateX(-50%)', bgcolor: tone.line }} />}
+                  </Stack>
+                  <Box sx={{ pb: index < routeItems.length - 1 ? 1.15 : 0, minWidth: 0 }}>
+                    <Typography variant="caption" fontWeight={active || completed ? 700 : 600} sx={{ color: tone.main, lineHeight: 1.25, display: 'block', fontSize: 11.5 }}>
+                      {isModule ? item.module.name : roleTitle(item.step)}
+                    </Typography>
+                    {isModule ? (
+                      <>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>{moduleOwnerName(item.module)}</Typography>
+                        <Typography variant="caption" sx={{ color: tone.main, fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>{moduleStatusLabel(item.module)}</Typography>
+                      </>
+                    ) : (
+                      <>
+                        <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>{ownerLabel(item.step)}</Typography>
+                        <Typography variant="caption" sx={{ mt: 0.15, color: tone.main, fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>{stateLabel(item.step, active, isNext)}</Typography>
+                      </>
+                    )}
+                  </Box>
+                </Stack>
+              );
+            })}
+          </Box>
+        ))}
       </Stack>
       <Divider sx={{ my: 1.15 }} />
       <Alert icon={<InfoOutlinedIcon sx={{ fontSize: 16 }} />} severity="info" variant="standard" sx={{ py: 0.65, px: 0.75, bgcolor: '#EFF6FF', color: '#2563EB', '& .MuiAlert-icon': { mr: 0.65, py: 0.1 }, '& .MuiAlert-message': { fontSize: 10.5, lineHeight: 1.4 } }}>
