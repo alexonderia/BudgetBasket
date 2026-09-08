@@ -1021,10 +1021,40 @@ def test_approval_register_can_approve_all_available_article_lines(tmp_path):
     ).json()["items"]
     decided = next(item for item in rows if item["name"] == "Article line 0")
     assert decided["status"] == "on_review"
-    assert decided["status_context"]["editability"]["mode"] == "readonly"
+    assert decided["status_context"]["editability"]["mode"] == "editable"
+    assert decided["status_context"]["editability"]["can_decide"] is True
     assert decided["status_context"]["last_decision"]["action"] == "cfo_item_decided"
+    assert decided["status_context"]["last_decision"]["item_status"] == "approved"
     assert decided["status_context"]["last_decision"]["by_name"]
     assert decided["is_cfo_review_actionable"] is False
+    assert decided["is_decision_editable"] is True
+    assert decided["decision_editable_stage"] == "cfo_review"
+    revised = client.post(
+        f"/items/{decided['id']}/cfo-decision",
+        json={"decision": "approved_with_changes", "sum_fact": 90, "comment": "Уточнено"},
+        headers=employee,
+    )
+    assert revised.status_code == 200, revised.text
+    assert float(revised.json()["sum_fact"]) == 90
+    marked_for_revision = client.post(
+        f"/approval-register/groups/article/{article_id}/cfo-revision",
+        json={
+            "comment": "Нужна уточнённая информация",
+            "items": [{"item_id": decided["id"], "comment": "Уточните данные"}],
+        },
+        headers=employee,
+    )
+    assert marked_for_revision.status_code == 200, marked_for_revision.text
+    after_revision = next(
+        item for item in client.get(
+            "/approval-register/rows",
+            params={"module_id": MODULE_ALPHA_ID, "page_size": 25},
+            headers=employee,
+        ).json()["items"]
+        if item["id"] == decided["id"]
+    )
+    assert after_revision["status"] == "on_review"
+    assert after_revision["status_context"]["last_decision"]["item_status"] == "approved_with_changes"
     assert len(result.json()) >= 2
     assert all(item["status"] == "on_review" for item in result.json())
     assert article["aggregates"]["cfo_review_actionable_requests"] >= 1

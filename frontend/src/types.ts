@@ -126,15 +126,20 @@ export interface RegisterAggregates {
   modules_count: number;
   aggregate_status: RegisterAggregateStatus;
   collecting_requests: number;
+  /** Draft requests belonging to the same CFO, including modules without visible register rows. */
+  cfo_unsubmitted_requests?: number;
   cfo_review_requests: number;
   cfo_review_actionable_requests: number;
   cfo_review_completable_requests: number;
+  cfo_decision_editable_rows?: number;
   in_approval_positions: number;
   actionable_positions: number;
   /** Positions where the only current action is to submit them to the economist. */
   submission_positions?: number;
   /** Positions where the economist has reviewed every line and can pass the position on. */
   economist_completion_positions?: number;
+  /** Positions whose current reviewer has decided every required line and can send the package. */
+  workflow_ready_positions?: number;
 }
 
 export interface RegisterGroupAnalyticsField {
@@ -198,6 +203,7 @@ export interface RegisterLineStatusDecision {
   action: string;
   action_label: string;
   stage?: string | null;
+  item_status?: ItemStatus | null;
 }
 
 export interface RegisterLineStatusOwner {
@@ -256,10 +262,14 @@ export interface ApprovalRegisterRow {
   updated_at: string;
   is_collecting: boolean;
   is_cfo_review: boolean;
+  is_cfo_review_item_allowed?: boolean;
   is_cfo_review_actionable: boolean;
+  is_decision_editable?: boolean;
+  decision_editable_stage?: 'cfo_review' | 'economist' | 'approver' | null;
   is_cfo_review_completable?: boolean;
   is_revision?: boolean;
   is_module_revision?: boolean;
+  is_cfo_revision_pending?: boolean;
   /** Line returned from the economist to the responsible CFO. */
   is_cfo_revision?: boolean;
   is_revision_actionable?: boolean;
@@ -272,6 +282,7 @@ export interface ApprovalRegisterRow {
   is_final_approval_actionable?: boolean;
   is_position_actionable?: boolean;
   is_position_submission_actionable?: boolean;
+  is_workflow_submission_actionable?: boolean;
   is_economist_completion_actionable?: boolean;
   approval_stage: string | null;
   frozen?: boolean;

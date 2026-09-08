@@ -85,9 +85,11 @@ function groupMetaParts(aggregates: RegisterAggregates, options?: { excludeActio
   const parts: string[] = [];
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const workflowReadyPositions = aggregates.workflow_ready_positions || 0;
   const decisions = aggregates.cfo_review_actionable_requests
-    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
-  const actionable = decisions + submissionPositions + economistCompletionPositions;
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions, 0);
+  const packagePositions = Math.max(workflowReadyPositions - economistCompletionPositions, 0);
+  const actionable = decisions + submissionPositions + economistCompletionPositions + packagePositions;
 
   if (!options?.excludeActionable && decisions > 0) {
     parts.push(`${decisions} требуют решения`);
@@ -97,6 +99,9 @@ function groupMetaParts(aggregates: RegisterAggregates, options?: { excludeActio
   }
   if (!options?.excludeActionable && economistCompletionPositions > 0) {
     parts.push(`${economistCompletionPositions} готовы к передаче дальше`);
+  }
+  if (!options?.excludeActionable && packagePositions > 0) {
+    parts.push(`${packagePositions} готовы к пакетной отправке`);
   }
   if (aggregates.rejected_rows > 0) {
     parts.push(`${aggregates.rejected_rows} отклонено`);
@@ -115,7 +120,6 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
   const hint = status.hint;
   const footnote = lineStatusFootnote(item);
   const tooltipLines = lineStatusTooltipLines(item);
-  const needsDecision = rowNeedsUserDecision(item);
   const withContext = (presentation: StatusVisualPresentation): StatusVisualPresentation => {
     const resolvedFootnote = footnote || presentation.footnote;
     const withDecisionMarkers: StatusVisualPresentation = {
@@ -123,8 +127,8 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
       footnote: resolvedFootnote,
       tooltipLines: tooltipLines.length ? tooltipLines : presentation.tooltipLines,
       meta: resolvedFootnote || presentation.meta,
-      primaryIconOnly: presentation.primaryIconOnly ?? (needsDecision && status.label === 'Ожидает вашего решения'),
-      showActionIndicator: presentation.showActionIndicator ?? (needsDecision && status.label !== 'Ожидает вашего решения'),
+      primaryIconOnly: presentation.primaryIconOnly ?? false,
+      showActionIndicator: false,
     };
     return withDecisionMarkers;
   };
@@ -227,9 +231,11 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
 export function groupStatusPresentation(aggregates: RegisterAggregates, status: RegistryStatusDisplay): StatusVisualPresentation {
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const workflowReadyPositions = aggregates.workflow_ready_positions || 0;
   const cfoRevisionRows = aggregates.cfo_revision_rows || 0;
   const decisions = aggregates.cfo_review_actionable_requests
-    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions, 0);
+  const packagePositions = Math.max(workflowReadyPositions - economistCompletionPositions, 0);
   const hint = status.hint;
   const metaParts = groupMetaParts(aggregates, { excludeActionable: true });
   const meta = metaParts.length ? metaParts.join(' · ') : undefined;
@@ -255,6 +261,32 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
     };
   }
 
+  if (economistCompletionPositions > 0) {
+    return {
+      primary: {
+        icon: AccountTreeOutlinedIcon,
+        text: economistCompletionPositions === 1 ? 'Согласуйте и передайте' : `Согласуйте и передайте · ${economistCompletionPositions}`,
+        variant: 'action',
+        hint,
+      },
+      meta: meta || 'Все строки рассмотрены экономистом',
+      hint,
+    };
+  }
+
+  if (packagePositions > 0) {
+    return {
+      primary: {
+        icon: AccountTreeOutlinedIcon,
+        text: packagePositions === 1 ? 'Согласуйте и передайте' : `Согласуйте и передайте · ${packagePositions}`,
+        variant: 'action',
+        hint,
+      },
+      meta: meta || 'Все решения по строкам вынесены; позиция готова к пакетной отправке',
+      hint,
+    };
+  }
+
   // Revision takes precedence over a handoff from another line in the group.
   if ((aggregates.revision_rows || 0) > 0 && !(aggregates.cfo_review_completable_requests || 0)) {
     return {
@@ -273,19 +305,6 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
         hint,
       },
       meta: meta || 'Строки уже рассмотрены; редактирование не требуется',
-      hint,
-    };
-  }
-
-  if (economistCompletionPositions > 0) {
-    return {
-      primary: {
-        icon: AccountTreeOutlinedIcon,
-        text: economistCompletionPositions === 1 ? 'Согласуйте и передайте' : `Согласуйте и передайте · ${economistCompletionPositions}`,
-        variant: 'action',
-        hint,
-      },
-      meta: meta || 'Все строки рассмотрены экономистом',
       hint,
     };
   }

@@ -13,7 +13,9 @@ export function lineStatusFootnote(item?: ApprovalRegisterRow) {
 
   const { editability, last_decision: lastDecision, current_owner: currentOwner } = context;
   if (item?.is_revision_actionable) return 'Ваше действие: исправить и повторно отправить';
+  if (item?.is_module_revision) return 'Строка возвращена модулю на доработку';
   if (item?.is_position_submission_actionable) return 'Ваше действие: передать экономисту';
+  if (item?.is_decision_editable) return 'Ваше действие: изменить решение до передачи строки на следующий этап';
   if (editability.mode === 'editable' && editability.can_decide) {
     if (item?.is_cfo_review_actionable || item?.is_cfo_review) return 'Ваше действие: проверить строку';
     if (item?.is_approval_actionable) return 'Ваше действие: согласовать или отклонить';
@@ -55,8 +57,12 @@ export function lineStatusTooltipLines(item?: ApprovalRegisterRow) {
 
   if (item?.is_revision_actionable) {
     lines.push('Доступно: исправить строку и повторно отправить её на проверку');
+  } else if (item?.is_module_revision) {
+    lines.push('Строка возвращена модулю на доработку');
   } else if (item?.is_position_submission_actionable) {
     lines.push('Доступно: передать проверенную позицию экономисту');
+  } else if (item?.is_decision_editable) {
+    lines.push('Доступно: изменить своё решение до передачи строки на следующий этап');
   } else if (editability.mode === 'editable' && editability.can_decide) {
     lines.push('Доступно: согласовать, согласовать с корректировкой или отклонить строку');
   } else if (editability.mode === 'editable') {

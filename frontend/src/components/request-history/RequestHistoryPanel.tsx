@@ -53,6 +53,9 @@ function HistoryChangeList({ changes, heading = false }: { changes: HistoryChang
 
 function historyVisualMeta(entry: RequestLog) {
   const status = entry.log.decision || entry.log.changes?.status?.to;
+  if (status === 'on_revision') {
+    return { color: 'warning' as const, icon: <EditOutlinedIcon fontSize="small" />, label: 'Выбрано на доработку' };
+  }
   if (status === 'approved' || status === 'approved_with_changes' || entry.log.action.includes('approved') || entry.log.action.includes('frozen')) {
     return { color: 'success' as const, icon: <CheckCircleOutlineIcon fontSize="small" />, label: status === 'approved_with_changes' ? 'С изменениями' : 'Согласовано' };
   }

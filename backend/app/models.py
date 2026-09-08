@@ -342,8 +342,14 @@ class RegisterGroupWorkflowActionIn(StrictModel):
 class RegisterGroupCfoRevisionIn(StrictModel):
     """Partial CFO review return for a register article/CFO group."""
 
-    comment: str = Field(min_length=1)
+    comment: str = ""
     items: list["RevisionItemIn"] = Field(min_length=1)
+
+
+class CfoRevisionSelectionIn(StrictModel):
+    """Save a CFO revision choice without handing the package to the module."""
+
+    comment: str = ""
 
 
 class AnalyticsFieldsPatch(StrictModel):
@@ -377,7 +383,7 @@ class RevisionItemIn(StrictModel):
 
 class CfoPositionRevisionIn(StrictModel):
     target_step_id: str | None = None
-    comment: str = Field(min_length=1)
+    comment: str = ""
     items: list[RevisionItemIn] = Field(min_length=1)
 
 

@@ -127,16 +127,20 @@ export function groupPreviousStepSummary(aggregates: RegisterAggregates) {
 export function groupYourStepSummary(aggregates: RegisterAggregates) {
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const workflowReadyPositions = aggregates.workflow_ready_positions || 0;
   const decisions = aggregates.cfo_review_actionable_requests
-    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions, 0);
   if (decisions > 0) {
     return `К решению: ${decisions}`;
   }
-  if ((aggregates.revision_rows || 0) > 0) {
-    return 'На доработке';
-  }
   if (economistCompletionPositions > 0) {
     return `Согласовать и передать: ${economistCompletionPositions}`;
+  }
+  if (workflowReadyPositions > 0) {
+    return `Согласовать и передать: ${workflowReadyPositions}`;
+  }
+  if ((aggregates.revision_rows || 0) > 0) {
+    return 'На доработке';
   }
   if (submissionPositions > 0) {
     return `Передать экономисту: ${submissionPositions}`;
@@ -177,16 +181,17 @@ export function isRowActionable(item: ApprovalRegisterRow, role?: User['role']) 
     return false;
   }
   if (item.status_context?.editability) {
-    return item.status_context.editability.can_decide;
+    return item.status_context.editability.can_decide || Boolean(item.is_decision_editable);
   }
   if (item.is_approval_actionable && item.position_id) return true;
+  if (item.is_decision_editable && item.position_id) return true;
   return item.status === 'on_review' && item.is_cfo_review_actionable;
 }
 
 export function isGroupActionable(group: ApprovalRegisterGroup, role?: User['role']) {
   if (Object.keys(group.scope || {}).some((key) => key.startsWith('analytics_'))) return false;
   const hasRevision = (group.aggregates.revision_rows || 0) > 0;
-  const workflowReady = (group.aggregates.actionable_positions || 0) > 0 && (
+  const workflowActionable = groupHasWorkflowActions(group, role) && (
     !hasRevision
     || role === 'economist'
     || role === 'approver'
@@ -197,7 +202,7 @@ export function isGroupActionable(group: ApprovalRegisterGroup, role?: User['rol
     && (
       group.aggregates.cfo_review_actionable_requests > 0
       || group.aggregates.cfo_review_completable_requests > 0
-      || workflowReady
+      || workflowActionable
     );
 }
 
@@ -229,10 +234,10 @@ export function canEditApprovedAmount(role: User['role'], item: ApprovalRegister
     return item.status_context.editability.can_edit_amount;
   }
   if (role === 'employee') {
-    return item.is_cfo_review_actionable && item.status === 'on_review';
+    return (item.is_cfo_review_actionable || item.decision_editable_stage === 'cfo_review') && item.status === 'on_review';
   }
   if (role === 'economist') {
-    return item.is_approval_actionable;
+    return item.is_approval_actionable || item.decision_editable_stage === 'economist';
   }
   return false;
 }
@@ -254,8 +259,22 @@ export function groupHasCfoActions(group: ApprovalRegisterGroup) {
   return group.aggregates.cfo_review_actionable_requests > 0;
 }
 
+export function groupHasCfoDecisionActions(group: ApprovalRegisterGroup, role?: User['role']) {
+  return role === 'employee' && (
+    groupHasCfoActions(group)
+    || (group.aggregates.cfo_review_completable_requests || 0) > 0
+    || (group.aggregates.cfo_decision_editable_rows || 0) > 0
+  );
+}
+
 export function groupHasCfoCompleteActions(group: ApprovalRegisterGroup) {
-  return group.aggregates.cfo_review_completable_requests > 0;
+  // A package can move forward only after every request in the current CFO
+  // review has a saved decision.  A group may contain both completed and
+  // still-pending requests, so a positive completable count alone is not
+  // enough to expose the handoff action.
+  return group.aggregates.cfo_review_completable_requests > 0
+    && (group.aggregates.cfo_review_actionable_requests || 0) === 0
+    && (group.aggregates.cfo_unsubmitted_requests || group.aggregates.collecting_requests || 0) === 0;
 }
 
 export function groupHasWorkflowActions(group: ApprovalRegisterGroup, role?: User['role']) {
@@ -268,6 +287,14 @@ export function groupHasWorkflowActions(group: ApprovalRegisterGroup, role?: Use
 }
 
 export function groupHasWorkflowApprove(group: ApprovalRegisterGroup, role?: User['role']) {
+  if (role === 'economist' || role === 'approver' || role === 'zgd') {
+    return (group.aggregates.workflow_ready_positions || 0) > 0;
+  }
+  if (role === 'employee') {
+    return (group.aggregates.submission_positions || 0) > 0
+      && (group.aggregates.cfo_review_actionable_requests || 0) === 0
+      && (group.aggregates.cfo_unsubmitted_requests || group.aggregates.collecting_requests || 0) === 0;
+  }
   return groupHasWorkflowActions(group, role);
 }
 
@@ -327,6 +354,35 @@ export type RegistryStatusDisplay = {
   shortHint?: string;
 };
 
+function isFinalDecisionStatus(status?: string | null): status is 'approved' | 'approved_with_changes' | 'rejected' {
+  return status === 'approved' || status === 'approved_with_changes' || status === 'rejected';
+}
+
+function finalDecisionStatusDisplay(status: 'approved' | 'approved_with_changes' | 'rejected'): RegistryStatusDisplay {
+  if (status === 'approved') {
+    return {
+      label: 'Утверждено',
+      tone: 'success',
+      hint: 'Решение принято, строка больше не требует действий',
+      shortHint: 'Решение принято',
+    };
+  }
+  if (status === 'approved_with_changes') {
+    return {
+      label: 'Утверждено с изменениями',
+      tone: 'success',
+      hint: 'Согласовано с корректировкой суммы',
+      shortHint: 'Сумма скорректирована',
+    };
+  }
+  return {
+    label: 'Отклонено',
+    tone: 'error',
+    hint: 'Строка не принята для выделения бюджета',
+    shortHint: 'Отрицательное решение',
+  };
+}
+
 export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisplay {
   if (item.fixed) {
     return {
@@ -342,6 +398,14 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       tone: 'default',
       hint: 'Строка удалена из заявки и сохранена в истории изменений',
       shortHint: 'Удалена',
+    };
+  }
+  if (item.is_cfo_revision_pending) {
+    return {
+      label: 'Выбрано на доработку',
+      tone: 'warning',
+      hint: 'Решение сохранено. Завершите проверку остальных строк и нажмите «Отправить дальше».',
+      shortHint: 'Ожидает отправки выборки',
     };
   }
   const wasReviewedAfterRevision = Boolean(
@@ -363,6 +427,12 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       shortHint: approved ? 'Решение повторно принято' : 'Решение повторно отклонено',
     };
   }
+  const editableDecisionStatus = item.is_decision_editable
+    ? item.status_context?.last_decision?.item_status
+    : null;
+  if (isFinalDecisionStatus(editableDecisionStatus)) {
+    return finalDecisionStatusDisplay(editableDecisionStatus);
+  }
   if (item.status_context?.editability?.can_decide) {
     return {
       label: 'Ожидает вашего решения',
@@ -371,7 +441,33 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       shortHint: 'Можно принять решение',
     };
   }
+  if (item.is_module_revision) {
+    return {
+      label: 'На доработке',
+      tone: 'warning',
+      hint: item.is_revision_actionable
+        ? 'Исправьте строку и повторно отправьте заявку'
+        : 'Строка возвращена модулю на доработку',
+      shortHint: 'Требуются исправления',
+    };
+  }
   if (item.is_position_submission_actionable && !item.is_revision_actionable) {
+    // A position can be ready for the next package handoff while the line
+    // already has a final decision. Keep the decision visible on the row;
+    // the handoff is a separate group-level action.
+    const savedDecisionStatus = item.status_context?.last_decision?.item_status;
+    const decisionStatus = isFinalDecisionStatus(savedDecisionStatus)
+      ? savedDecisionStatus
+      : isFinalDecisionStatus(item.status)
+        ? item.status
+        : null;
+    if (decisionStatus) {
+      return {
+        ...finalDecisionStatusDisplay(decisionStatus),
+        hint: 'Решение сохранено. Передайте позицию экономисту вместе с остальными проверенными строками.',
+        shortHint: 'Решение принято · готово к передаче',
+      };
+    }
     return {
       label: 'Передайте экономисту',
       tone: 'warning',
@@ -389,29 +485,8 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       shortHint: 'Требуются исправления',
     };
   }
-  if (item.status === 'approved') {
-    return {
-      label: 'Утверждено',
-      tone: 'success',
-      hint: 'Решение принято, строка больше не требует действий',
-      shortHint: 'Решение принято',
-    };
-  }
-  if (item.status === 'approved_with_changes') {
-    return {
-      label: 'Утверждено с изменениями',
-      tone: 'success',
-      hint: 'Согласовано с корректировкой суммы',
-      shortHint: 'Сумма скорректирована',
-    };
-  }
-  if (item.status === 'rejected') {
-    return {
-      label: 'Отклонено',
-      tone: 'error',
-      hint: 'Строка не принята для выделения бюджета',
-      shortHint: 'Отрицательное решение',
-    };
+  if (isFinalDecisionStatus(item.status)) {
+    return finalDecisionStatusDisplay(item.status);
   }
 
   if (item.is_collecting || item.request_status === 'draft') {

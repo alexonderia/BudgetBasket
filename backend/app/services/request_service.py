@@ -320,6 +320,173 @@ class RequestService:
     def returned_item_ids(self, request_id: str, *, repo: Repository | None = None) -> set[str]:
         return request_returned_item_ids(repo or self.repo, request_id)
 
+    def cfo_review_cycle_item_ids(
+        self,
+        request_id: str,
+        *,
+        repo: Repository | None = None,
+    ) -> set[str] | None:
+        """Return the lines allowed in the current CFO review cycle.
+
+        A request submitted for the first time has no cycle restriction. On a
+        resubmission after module revision, only the lines that were sent back
+        by the module belong to the new CFO cycle. Older decisions remain
+        visible and editable by their original CFO owner, but they are not
+        included in the new revision package.
+        """
+        storage = repo or self.repo
+        relevant = []
+        for row in storage.load_all("req_logs"):
+            if row.get("req_id") != request_id:
+                continue
+            action = (row.get("log") or {}).get("action")
+            if action in {
+                "request_revision_resubmitted_to_cfo",
+                "cfo_items_returned_for_revision",
+                "request_restored",
+            }:
+                relevant.append(row)
+        latest = max(
+            relevant,
+            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+            default=None,
+        )
+        if not latest or (latest.get("log") or {}).get("action") != "request_revision_resubmitted_to_cfo":
+            return None
+        return {str(item_id) for item_id in (latest.get("log") or {}).get("item_ids") or []}
+
+    def cfo_pending_revision_item_ids(
+        self,
+        request_id: str,
+        *,
+        repo: Repository | None = None,
+    ) -> set[str]:
+        """Return revision choices made after the last package transition.
+
+        Historical decisions stay visible after the module returns a package,
+        but they must not make a later send to the economist behave as a new
+        return to the module.
+        """
+        storage = repo or self.repo
+        rows = sorted(
+            (row for row in storage.load_all("req_logs") if row.get("req_id") == request_id),
+            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        )
+        transition_key: tuple[str, int] | None = None
+        for row in rows:
+            action = (row.get("log") or {}).get("action")
+            if action in {
+                "cfo_items_returned_for_revision",
+                "request_revision_resubmitted_to_cfo",
+                "request_restored",
+            }:
+                transition_key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+
+        decisions: dict[str, str] = {}
+        for row in rows:
+            key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+            if transition_key is not None and key <= transition_key:
+                continue
+            log = row.get("log") or {}
+            if log.get("action") != "cfo_item_decided" or log.get("entity") != "req_item":
+                continue
+            item_id = str(log.get("entity_id") or "")
+            decision = str(log.get("decision") or "")
+            if item_id and decision:
+                decisions[item_id] = decision
+        return {item_id for item_id, decision in decisions.items() if decision == "on_revision"}
+
+    def revision_message(
+        self,
+        repo: Repository,
+        items: list[dict],
+        *,
+        action: str,
+        common_comment: str | None = None,
+        group_type: str | None = None,
+        group_name: str | None = None,
+        line_comments: dict[str, str] | None = None,
+    ) -> str:
+        """Build a compact system message for a revision action."""
+        catalogs = {
+            "dds": {row["id"]: row for row in repo.load_all("dds_catalog")},
+            "invest": {row["id"]: row for row in repo.load_all("invests_catalog")},
+        }
+        units = {row["id"]: row for row in repo.load_all("units")}
+        group_labels = {
+            "cfo": "\u0426\u0424\u041e",
+            "article": "\u0441\u0442\u0430\u0442\u044c\u044f",
+            "category": "\u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f",
+            "module": "\u043c\u043e\u0434\u0443\u043b\u044c",
+            "request": "\u0437\u0430\u044f\u0432\u043a\u0430",
+        }
+
+        details: list[dict] = []
+        for item in items:
+            kind = "dds" if item.get("dds_id") else "invest"
+            leaf = catalogs[kind].get(item.get(f"{kind}_id"), {})
+            article = catalogs[kind].get(leaf.get("parent_id"), leaf)
+            request = repo.get_by_id("requests", item.get("request_id")) or {}
+            module = units.get(request.get("unit_id"), {})
+            cfo = units.get(module.get("parent_id"), {})
+            details.append(
+                {
+                    "item": item,
+                    "article": article.get("name") or leaf.get("name") or "\u0421\u0442\u0430\u0442\u044c\u044f \u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d\u0430",
+                    "category": leaf.get("name") or "\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f \u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d\u0430",
+                    "module": module.get("name") or "\u041c\u043e\u0434\u0443\u043b\u044c \u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d",
+                    "cfo": cfo.get("name") or "\u0426\u0424\u041e \u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d\u043e",
+                }
+            )
+
+        if group_name:
+            grouping = f'{group_labels.get(group_type or "", group_type or "\u0433\u0440\u0443\u043f\u043f\u0430")} \u00ab{group_name}\u00bb'
+        else:
+            group_fields = {
+                "article": ("article", "\u0441\u0442\u0430\u0442\u044c\u044f"),
+                "category": ("category", "\u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f"),
+                "module": ("module", "\u043c\u043e\u0434\u0443\u043b\u044c"),
+                "cfo": ("cfo", "\u0426\u0424\u041e"),
+            }
+            selected_fields = (
+                [group_fields[group_type]]
+                if group_type in group_fields
+                else [("article", "\u0441\u0442\u0430\u0442\u044c\u044f"), ("category", "\u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f"), ("module", "\u043c\u043e\u0434\u0443\u043b\u044c")]
+            )
+            group_values: list[str] = []
+            for field, label in selected_fields:
+                values = sorted({str(detail[field]) for detail in details if detail[field]})
+                if values:
+                    group_values.append(f'{label} \u00ab{", ".join(values)}\u00bb')
+            grouping = "; ".join(group_values) or "\u043d\u0435 \u0443\u043a\u0430\u0437\u0430\u043d\u0430\u044f \u0433\u0440\u0443\u043f\u043f\u0430"
+
+        names = [str(detail["item"].get("name") or "\u0421\u0442\u0440\u043e\u043a\u0430") for detail in details]
+        preview_limit = 4
+        preview_names = names[:preview_limit]
+        lines = [
+            action,
+            "",
+            f"\u0413\u0440\u0443\u043f\u043f\u0438\u0440\u043e\u0432\u043a\u0430: {grouping}",
+            f"\u0421\u0442\u0440\u043e\u043a\u0438 ({len(details)}):",
+            *(f"\u2022 {name}" for name in preview_names),
+        ]
+        if len(names) > preview_limit:
+            lines.append(f"\u2022 \u0415\u0449\u0451 {len(names) - preview_limit} \u0441\u0442\u0440\u043e\u043a")
+        comments = line_comments or {}
+        line_comment_rows: list[tuple[str, str]] = []
+        for detail in details:
+            item = detail["item"]
+            item_comment = comments.get(item.get("id"), item.get("comment"))
+            normalized_comment = str(item_comment or "").strip()
+            if normalized_comment:
+                line_comment_rows.append((str(item.get("name") or "\u0421\u0442\u0440\u043e\u043a\u0430"), normalized_comment))
+        if line_comment_rows:
+            lines.extend(["", "\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438 \u043a \u0441\u0442\u0440\u043e\u043a\u0430\u043c:"])
+            lines.extend(f"\u2022 {name}: {comment}" for name, comment in line_comment_rows)
+        if common_comment and common_comment.strip():
+            lines.extend(["", f"\u041e\u0431\u0449\u0438\u0439 \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439: {common_comment.strip()}"])
+        return "\n".join(lines)
+
     def _latest_cfo_decisions(
         self,
         request_id: str,
@@ -341,10 +508,6 @@ class RequestService:
             if log.get("action") == "request_restored":
                 decisions.clear()
                 continue
-            if log.get("action") == "cfo_items_returned_for_revision":
-                for item_id in log.get("item_ids") or []:
-                    decisions.pop(str(item_id), None)
-                continue
             if log.get("action") != "cfo_item_decided":
                 continue
             item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
@@ -352,6 +515,7 @@ class RequestService:
             if not decision:
                 decision = ((log.get("changes") or {}).get("status") or {}).get("to")
             if not item_id or decision not in {
+                "on_revision",
                 ItemStatus.approved,
                 ItemStatus.approved_with_changes,
                 ItemStatus.rejected,
@@ -359,6 +523,139 @@ class RequestService:
                 continue
             decisions[str(item_id)] = str(decision)
         return decisions
+
+    def send_cfo_revision(
+        self,
+        repo: Repository,
+        user: dict,
+        request_id: str,
+        *,
+        item_ids: set[str] | None = None,
+        require_complete_review: bool = True,
+        common_comment: str | None = None,
+        group_type: str | None = None,
+        group_name: str | None = None,
+    ) -> list[str]:
+        """Hand off saved revision decisions only from an explicit package action."""
+        request = repo.lock_by_id("requests", request_id)
+        if not request:
+            raise HTTPException(status_code=404, detail="Заявка не найдена")
+        self.permissions.require_cfo_request_access(user, request)
+        decisions = self._latest_cfo_decisions(request_id, repo=repo)
+        items = self._items(request_id, repo=repo)
+        # After a module resubmits a package, the new CFO cycle is limited to
+        # the lines that were returned.  Decisions left on untouched sibling
+        # lines belong to the previous cycle and must never make those lines
+        # part of the next revision package.
+        cycle_item_ids = self.cfo_review_cycle_item_ids(request_id, repo=repo)
+        cycle_started_at = ""
+        if cycle_item_ids is not None:
+            latest_resubmission = max(
+                (
+                    row for row in repo.load_all("req_logs")
+                    if row.get("req_id") == request_id
+                    and (row.get("log") or {}).get("action") == "request_revision_resubmitted_to_cfo"
+                ),
+                key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+                default=None,
+            )
+            cycle_started_at = str((latest_resubmission or {}).get("created_at") or "")
+        latest_decision_at: dict[str, str] = {}
+        for row in sorted(
+            (row for row in repo.load_all("req_logs") if row.get("req_id") == request_id),
+            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        ):
+            log = row.get("log") or {}
+            if log.get("action") == "request_restored":
+                latest_decision_at.clear()
+                continue
+            if log.get("action") != "cfo_item_decided" or log.get("entity") != "req_item":
+                continue
+            item_id = log.get("entity_id")
+            if item_id:
+                latest_decision_at[str(item_id)] = str(row.get("created_at") or "")
+        explicitly_revised_old_ids = {
+            item["id"]
+            for item in items
+            if decisions.get(item["id"]) == "on_revision"
+            and cycle_item_ids is not None
+            and item["id"] not in cycle_item_ids
+            and latest_decision_at.get(item["id"], "") > cycle_started_at
+        }
+        review_items = (
+            [
+                item for item in items
+                if cycle_item_ids is None
+                or item["id"] in cycle_item_ids
+                or item["id"] in explicitly_revised_old_ids
+            ]
+        )
+        selected = [item for item in review_items if decisions.get(item["id"]) == "on_revision"]
+        if item_ids is not None:
+            selected = [item for item in selected if item["id"] in item_ids]
+        if not selected:
+            return []
+        if request.get("status") != RequestStatus.on_review:
+            raise HTTPException(status_code=409, detail="Заявка не находится на проверке ЦФО")
+        if self.returned_item_ids(request_id, repo=repo):
+            raise HTTPException(status_code=409, detail="Заявка находится на доработке у модуля")
+        if require_complete_review and any(item["id"] not in decisions for item in review_items):
+            raise HTTPException(status_code=409, detail="Не все строки рассмотрены")
+        # On a repeated CFO review every returned line needs a fresh decision.
+        approval = getattr(self, "approval_service", None)
+        for position_id in {item.get("cfo_position_id") for item in items} - {None}:
+            position = get_required(repo, "cfo_positions", position_id)
+            step = (
+                repo.get_by_id("steps", position["current_step_id"])
+                if position.get("current_step_id") else None
+            )
+            if position.get("status") == "on_revision" and step and step.get("unit_id") == position.get("cfo_unit_id"):
+                returns = [
+                    row for row in repo.load_all("cfo_position_logs")
+                    if row.get("cfo_position_id") == position_id
+                    and (row.get("log") or {}).get("action") == "position_returned"
+                ]
+                latest = max(
+                    returns,
+                    key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+                    default=None,
+                )
+                if latest:
+                    fresh = {
+                        row["log"].get("entity_id") for row in repo.load_all("req_logs")
+                        if row.get("req_id") == request_id
+                        and (row.get("log") or {}).get("action") == "cfo_item_decided"
+                        and str(row.get("created_at") or "") > str(latest.get("created_at") or "")
+                    }
+                    required = set(latest["log"].get("item_ids") or []) & {item["id"] for item in items}
+                    if not required.issubset(fresh):
+                        raise HTTPException(status_code=409, detail="Не все возвращённые строки рассмотрены")
+        positions = sorted({item["cfo_position_id"] for item in selected if item.get("cfo_position_id")})
+        for position_id in positions:
+            repo.update("cfo_positions", position_id, {"status": CfoPositionStatus.on_revision})
+        comment = "\n".join(f"{item['name']}: {item.get('comment') or ''}" for item in selected)
+        self.log(
+            user, request_id, "cfo_items_returned_for_revision", stage="cfo_review",
+            before=request, after=request, comment=comment,
+            item_ids=sorted(item["id"] for item in selected), cfo_position_ids=positions, repo=repo,
+        )
+        chat = getattr(self, "chat_service", None)
+        if chat:
+            chat.system_message_for_request(
+                request,
+                self.revision_message(
+                repo,
+                selected,
+                action="Ответственный за ЦФО передал строки ответственному за модуль на доработку.",
+                common_comment=common_comment,
+                group_type=group_type,
+                group_name=group_name,
+            ),
+                repo=repo,
+            )
+        if approval:
+            approval._sync_step_statuses(repo)
+        return sorted(item["id"] for item in selected)
 
     def create_request(self, user: dict, payload: dict) -> dict:
         unit_id = payload["unit_id"]
@@ -699,6 +996,11 @@ class RequestService:
                 raise HTTPException(
                     status_code=409,
                     detail={"message": "Не все строки рассмотрены", "item_ids": pending},
+                )
+            if self.cfo_pending_revision_item_ids(request_id, repo=repo):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Есть строки, отмеченные на доработку. Отправьте их модулю через окно «На доработку».",
                 )
             accepted = [
                 item for item in items
@@ -1176,18 +1478,36 @@ class RequestService:
             else self.repo.load_all("cfo_position_logs")
         )
 
+        final_status_by_item: dict[str, str] = {}
+
         def consider(
             item_id: str | None,
             created_at: str | None,
             user_id: str | None,
             action: str | None,
             stage: str | None = None,
+            decision: str | None = None,
         ) -> None:
             if not item_id or not action or action not in self._REGISTER_DECISION_ACTIONS:
                 return
             current = latest.get(item_id)
             if current and str(created_at or "") <= str(current.get("at") or ""):
                 return
+            item_status = decision
+            if item_status in {
+                ItemStatus.approved,
+                ItemStatus.approved_with_changes,
+                ItemStatus.rejected,
+            }:
+                final_status_by_item[item_id] = item_status
+            elif item_status == "on_revision":
+                # CFO review is kept as `on_review` on the request item. When
+                # a previously decided line is marked for revision, retain
+                # the last final decision so the register can show it after
+                # the package is handed off and returned.
+                item_status = final_status_by_item.get(item_id)
+            else:
+                item_status = None
             latest[item_id] = {
                 "at": created_at,
                 "by_id": user_id,
@@ -1195,21 +1515,26 @@ class RequestService:
                 "action": action,
                 "action_label": self._REGISTER_DECISION_LABELS.get(action, action),
                 "stage": stage or self._REGISTER_DECISION_ACTIONS.get(action),
+                "item_status": item_status,
             }
 
+        events: list[tuple[dict, str | None, str | None]] = []
         for row in req_log_rows:
             log = row.get("log") or {}
-            action = log.get("action")
             item_id = log.get("entity_id") if log.get("entity") == "req_item" else None
-            consider(item_id, row.get("created_at"), row.get("user_id"), action, log.get("stage"))
-
+            events.append((row, item_id, log.get("decision") or ((log.get("changes") or {}).get("status") or {}).get("to")))
         for row in position_log_rows:
             log = row.get("log") or {}
-            action = log.get("action")
             item_id = log.get("req_item_id")
             if not item_id and log.get("entity") == "req_item":
                 item_id = log.get("entity_id")
-            consider(item_id, row.get("created_at"), row.get("user_id"), action, log.get("stage"))
+            events.append((row, item_id, log.get("decision") or ((log.get("changes") or {}).get("status") or {}).get("to")))
+        for row, item_id, decision in sorted(
+            events,
+            key=lambda event: (str(event[0].get("created_at") or ""), int(event[0].get("id") or 0)),
+        ):
+            log = row.get("log") or {}
+            consider(item_id, row.get("created_at"), row.get("user_id"), log.get("action"), log.get("stage"), decision)
 
         return latest
 
@@ -1514,6 +1839,8 @@ class RequestService:
             pending_amount = float(entry.get("requested_sum") or 0)
             if cfo_decision and cfo_decision.get("amount") is not None:
                 pending_amount = float(cfo_decision["amount"])
+            if economist_decision and economist_decision.get("amount") is not None:
+                pending_amount = float(economist_decision["amount"])
 
             if step_role != "economist":
                 your = self._register_step_display(
@@ -1521,11 +1848,15 @@ class RequestService:
                     "default",
                     entry.get("approval_stage") or "Ожидает другого этапа маршрута",
                 )
-            elif entry.get("is_approval_actionable"):
+            elif entry.get("is_approval_actionable") or entry.get("is_decision_editable"):
                 your = self._register_step_display(
                     "Ваше решение",
                     "action",
-                    "Согласуйте, скорректируйте сумму или верните на доработку",
+                    (
+                        "Измените своё решение до передачи строки на следующий этап"
+                        if entry.get("is_decision_editable")
+                        else "Согласуйте, скорректируйте сумму или верните на доработку"
+                    ),
                     ready=True,
                     amount=pending_amount,
                     item_status=ItemStatus.on_review,
@@ -1589,9 +1920,13 @@ class RequestService:
                 entry.get("is_approval_actionable") or entry.get("frozen")
             ):
                 your = self._register_step_display(
-                    "Можно согласовать",
+                    "Ваше решение" if entry.get("is_decision_editable") else "Можно согласовать",
                     "action",
-                    "Строка готова — согласуйте блок или верните выбранные строки на доработку",
+                    (
+                        "Измените своё решение до передачи позиции на следующий этап"
+                        if entry.get("is_decision_editable")
+                        else "Строка готова — согласуйте блок или верните выбранные строки на доработку"
+                    ),
                     ready=True,
                     amount=self._register_entry_amount_for_status(entry, status),
                     item_status=status,
@@ -1679,6 +2014,7 @@ class RequestService:
             entry.get("status") != ItemStatus.deleted
             and not entry.get("frozen")
             and not entry.get("fixed")
+            and not entry.get("is_cfo_module_revision_actionable")
             and (
                 bool(entry.get("is_revision_actionable"))
                 or bool(entry.get("is_cfo_module_revision_actionable"))
@@ -1686,18 +2022,23 @@ class RequestService:
                 or bool(entry.get("is_approval_actionable"))
             )
         )
+        can_edit_decision = bool(entry.get("is_decision_editable"))
         can_decide = bool(entry.get("is_approval_actionable")) or bool(
             entry.get("is_cfo_review_actionable")
-            and entry.get("status") == ItemStatus.on_review
-        )
+        ) or can_edit_decision
         if can_decide:
+            decision_detail = (
+                "Измените своё решение до передачи строки на следующий этап"
+                if can_edit_decision
+                else "Вы можете согласовать строку, скорректировать сумму, заполнить аналитику или вернуть на доработку"
+            )
             return {
                 "can_decide": True,
-                "can_edit_amount": True,
+                "can_edit_amount": entry.get("decision_editable_stage") != "approver",
                 "can_edit_analytics": can_edit_analytics,
                 "mode": "editable",
-                "summary": "Можно изменить",
-                "detail": "Вы можете согласовать строку, скорректировать сумму, заполнить аналитику или вернуть на доработку",
+                "summary": "Решение можно изменить" if can_edit_decision else "Можно изменить",
+                "detail": decision_detail,
             }
         if entry.get("fixed"):
             detail = "Строка зафиксирована после финального согласования. Изменения недоступны."
@@ -1972,7 +2313,10 @@ class RequestService:
         request_pending_items: dict[str, int] = {}
         request_active_items: dict[str, int] = {}
         cfo_decisions_by_request: dict[str, dict[str, str]] = {}
+        cfo_revision_pending_by_request: dict[str, set[str]] = {}
+        cfo_review_reopened_by_request: dict[str, set[str]] = {}
         returned_by_request: dict[str, set[str]] = {}
+        cfo_review_cycle_by_request: dict[str, set[str] | None] = {}
         cfo_completed_requests: set[str] = set()
         logs_by_request: dict[str, list[dict]] = {}
         for row in req_log_rows:
@@ -1997,6 +2341,20 @@ class RequestService:
                 request_key,
                 log_rows=request_logs,
             )
+            latest_decision_rows: dict[str, dict] = {}
+            for row in request_logs:
+                log = row.get("log") or {}
+                if log.get("action") != "cfo_item_decided" or log.get("entity") != "req_item":
+                    continue
+                item_id = str(log.get("entity_id") or "")
+                current = latest_decision_rows.get(item_id)
+                row_key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+                current_key = (
+                    (str(current.get("created_at") or ""), int(current.get("id") or 0))
+                    if current else ("", 0)
+                )
+                if item_id and row_key > current_key:
+                    latest_decision_rows[item_id] = row
             returned_log = latest_request_log(
                 request_key,
                 {
@@ -2010,6 +2368,72 @@ class RequestService:
                 if returned_log and (returned_log.get("log") or {}).get("action") == "cfo_items_returned_for_revision"
                 else set()
             )
+            cycle_log = latest_request_log(
+                request_key,
+                {
+                    "cfo_items_returned_for_revision",
+                    "request_revision_resubmitted_to_cfo",
+                    "request_restored",
+                },
+            )
+            cfo_review_cycle_by_request[request_key] = (
+                {
+                    str(item_id)
+                    for item_id in (cycle_log.get("log") or {}).get("item_ids") or []
+                }
+                if cycle_log
+                and (cycle_log.get("log") or {}).get("action") == "request_revision_resubmitted_to_cfo"
+                else None
+            )
+            sent_revision_log = latest_request_log(
+                request_key,
+                {"cfo_items_returned_for_revision"},
+            )
+            resubmitted_log = latest_request_log(
+                request_key,
+                {"request_revision_resubmitted_to_cfo"},
+            )
+            sent_revision_key = (
+                (str(sent_revision_log.get("created_at") or ""), int(sent_revision_log.get("id") or 0))
+                if sent_revision_log else None
+            )
+            resubmitted_key = (
+                (str(resubmitted_log.get("created_at") or ""), int(resubmitted_log.get("id") or 0))
+                if resubmitted_log else None
+            )
+            pending_revision_ids: set[str] = set()
+            reopened_review_ids: set[str] = set()
+            revision_boundary_key = max(
+                (key for key in (sent_revision_key, resubmitted_key) if key is not None),
+                default=None,
+            )
+            for item_id, decision_row in latest_decision_rows.items():
+                log = decision_row.get("log") or {}
+                decision = log.get("decision") or ((log.get("changes") or {}).get("status") or {}).get("to")
+                decision_key = (
+                    str(decision_row.get("created_at") or ""),
+                    int(decision_row.get("id") or 0),
+                )
+                # «На доработку» is pending only until that package is sent
+                # to the module.  Once the module sends the same lines back,
+                # the old decision remains visible and editable instead of
+                # starting a new review cycle.
+                if decision == "on_revision" and (
+                    revision_boundary_key is None or decision_key > revision_boundary_key
+                ):
+                    pending_revision_ids.add(item_id)
+                if (
+                    resubmitted_log
+                    and item_id in {
+                        str(value)
+                        for value in (resubmitted_log.get("log") or {}).get("item_ids") or []
+                    }
+                    and resubmitted_key is not None
+                    and decision_key <= resubmitted_key
+                ):
+                    reopened_review_ids.add(item_id)
+            cfo_revision_pending_by_request[request_key] = pending_revision_ids
+            cfo_review_reopened_by_request[request_key] = reopened_review_ids
             completed_log = latest_request_log(
                 request_key,
                 {
@@ -2173,6 +2597,37 @@ class RequestService:
                 or item["id"] not in approver_decided_by_position.get(position["id"], {}).get(step["id"], set())
             )
 
+        def can_edit_position_decision(position: dict | None, item: dict) -> tuple[bool, str | None]:
+            """Whether the current reviewer may change an unsent decision."""
+            if not position or item.get("fixed"):
+                return False, None
+            step = steps.get(cfo_position_current_step_id(self.repo, position))
+            if not step or step.get("unit_id"):
+                return False, None
+            actor = users.get(step.get("user_id"), {})
+            if step.get("user_id") != user.get("id"):
+                return False, None
+            if actor.get("role") == "economist":
+                if (
+                    user.get("role") == "economist"
+                    and position.get("cfo_unit_id") in economist_cfo_ids
+                    and not item.get("frozen")
+                    and item["id"] in economist_decided_by_position.get(position["id"], set())
+                ):
+                    return True, "economist"
+                return False, None
+            if actor.get("role") == "approver":
+                returned_items = latest_position_return.get(position["id"], (None, set()))[1]
+                if returned_items and item["id"] not in returned_items:
+                    return False, None
+                if (
+                    user.get("role") == "approver"
+                    and item.get("frozen")
+                    and item["id"] in approver_decided_by_position.get(position["id"], {}).get(step["id"], set())
+                ):
+                    return True, "approver"
+            return False, None
+
         def can_act_on_position_block(position: dict | None, item: dict | None = None) -> bool:
             if not position:
                 return False
@@ -2209,10 +2664,28 @@ class RequestService:
             return False
 
         def can_submit_position(position: dict | None, item: dict | None = None) -> bool:
+            if item and item.get("id") in returned_by_request.get(item.get("request_id"), set()):
+                return False
             if item and item.get("fixed"):
                 return False
             step = steps.get(cfo_position_current_step_id(self.repo, position)) if position else None
             if not position or not step:
+                return False
+            position_rows = position_items(position["id"])
+            if not position_rows or all(row.get("fixed") for row in position_rows):
+                return False
+            # The handoff belongs to the whole CFO position, not to an
+            # individual line.  A line returned to the module, or a line
+            # that has not received a current CFO decision yet, must keep the
+            # entire position from being sent to the economist.
+            if any(
+                row["id"] in returned_by_request.get(row.get("request_id"), set())
+                or (
+                    not row.get("fixed")
+                    and row["id"] not in cfo_decisions_by_request.get(row.get("request_id"), {})
+                )
+                for row in position_rows
+            ):
                 return False
             # A position returned from the economist to the responsible CFO
             # may be sent further only after every returned line has received
@@ -2229,7 +2702,6 @@ class RequestService:
                     return False
             return bool(
                 position
-                and not all(row.get("fixed") for row in position_items(position["id"]))
                 and user.get("role") == "employee"
                 and position.get("cfo_unit_id") in employee_cfo_ids
                 and step.get("unit_id") == position.get("cfo_unit_id")
@@ -2251,6 +2723,34 @@ class RequestService:
                 item["id"] in decided and item.get("status") != ItemStatus.on_review
                 for item in items
             )
+
+        def can_submit_workflow_position(position: dict | None) -> bool:
+            """Whether the current reviewer may send a decided position as a package."""
+            if not position or user.get("role") not in {"economist", "approver", "zgd"}:
+                return False
+            step = steps.get(cfo_position_current_step_id(self.repo, position))
+            if not step or step.get("unit_id") or step.get("user_id") != user.get("id"):
+                return False
+            actor = users.get(step.get("user_id"), {})
+            items = position_items(position["id"])
+            if not items or all(row.get("fixed") for row in items):
+                return False
+            if actor.get("role") == "economist":
+                return can_complete_economist_position(position)
+            if actor.get("role") == "approver":
+                if user.get("role") != "approver" or any(
+                    not row.get("frozen") and not row.get("fixed") for row in items
+                ):
+                    return False
+                returned_ids = latest_position_return.get(position["id"], (None, set()))[1]
+                required_ids = returned_ids or {row["id"] for row in items if not row.get("fixed")}
+                decided_ids = approver_decided_by_position.get(position["id"], {}).get(step["id"], set())
+                return bool(required_ids) and required_ids.issubset(decided_ids)
+            if actor.get("role") == "zgd":
+                return user.get("role") == "zgd" and all(
+                    row.get("frozen") or row.get("fixed") for row in items
+                )
+            return False
 
         def approval_stage(position: dict | None, item: dict) -> str | None:
             if not position:
@@ -2303,6 +2803,11 @@ class RequestService:
                 cfo_position_current_step_id(self.repo, position) if position else None
             )
             returned_item_ids = returned_by_request.get(request["id"], set())
+            cfo_review_cycle_item_ids = cfo_review_cycle_by_request.get(request["id"])
+            cfo_review_item_allowed = (
+                cfo_review_cycle_item_ids is None
+                or item["id"] in cfo_review_cycle_item_ids
+            )
             position_revision_item_ids = revision_items_by_position.get(
                 position.get("id") if position else "", set()
             )
@@ -2328,6 +2833,51 @@ class RequestService:
                 and item["id"] not in cfo_revision_decided_by_position.get(position.get("id"), set())
                 and not item.get("frozen")
                 and not item.get("fixed")
+            )
+            is_cfo_review_accessible = (
+                user.get("role") == "employee"
+                and current_cfo_id in employee_cfo_ids
+            )
+            cfo_position_is_current = bool(
+                position
+                and position.get("status") in {
+                    CfoPositionStatus.waiting,
+                    CfoPositionStatus.on_review,
+                    CfoPositionStatus.on_revision,
+                }
+                and position_step_id
+                and steps.get(position_step_id, {}).get("unit_id") == current_cfo_id
+                and not returned_item_ids
+            )
+            is_cfo_review_decision_editable = (
+                cfo_position_is_current
+                and is_cfo_review_accessible
+                and item["id"] in cfo_decisions_by_request.get(request["id"], {})
+                and item_step_decisions.get(item["id"], {}).get("cfo_item_decided", {}).get("by_id") == user.get("id")
+                and (
+                    cfo_review_item_allowed
+                    or cfo_review_cycle_item_ids is not None
+                )
+                and not item.get("frozen")
+                and not item.get("fixed")
+            )
+            position_decision_editable, position_decision_stage = can_edit_position_decision(position, item)
+            is_decision_editable = is_cfo_review_decision_editable or position_decision_editable
+            # Package handoff is position-level, but a row belonging to a
+            # fixed line must not make a filtered module/article group look
+            # actionable.  The package action remains visible through any
+            # non-fixed sibling line in the same shared position.
+            is_workflow_submission_actionable = (
+                not item.get("fixed")
+                and not cfo_revision_pending_by_request.get(request["id"])
+                and (
+                    can_submit_position(position)
+                    or can_submit_workflow_position(position)
+                )
+            )
+            is_economist_completion_actionable = (
+                not item.get("fixed")
+                and can_complete_economist_position(position)
             )
             entry = {
                 "id": item["id"],
@@ -2359,12 +2909,24 @@ class RequestService:
                 "updated_at": str(item.get("updated_at") or request.get("updated_at") or request.get("created_at") or ""),
                 "is_collecting": request.get("status") == RequestStatus.draft,
                 "is_cfo_review": is_cfo_review,
+                "is_cfo_review_item_allowed": (
+                    is_cfo_review and cfo_review_item_allowed
+                ),
                 "is_cfo_review_actionable": (
                     (
                         is_cfo_review
-                        and item["id"] not in cfo_decisions_by_request.get(request["id"], {})
+                        and cfo_review_item_allowed
+                        and is_cfo_review_accessible
+                        and (
+                            item["id"] not in cfo_decisions_by_request.get(request["id"], {})
+                            or item["id"] in cfo_review_reopened_by_request.get(request["id"], set())
+                        )
                     )
                     or is_cfo_revision_actionable
+                ),
+                "is_decision_editable": is_decision_editable,
+                "decision_editable_stage": (
+                    "cfo_review" if is_cfo_review_decision_editable else position_decision_stage
                 ),
                 "is_revision": is_revision,
                 # Keep the workflow state of a CFO position distinguishable
@@ -2373,6 +2935,7 @@ class RequestService:
                 # until the returned position is handed back to the economist.
                 "is_cfo_revision": item["id"] in position_revision_item_ids,
                 "is_module_revision": is_module_revision,
+                "is_cfo_revision_pending": item["id"] in cfo_revision_pending_by_request.get(request["id"], set()),
                 "is_revision_actionable": (
                     item["id"] in returned_item_ids
                     and user.get("role") == "employee"
@@ -2397,12 +2960,20 @@ class RequestService:
                 "is_final_approval_actionable": (
                     user.get("role") in {"approver", "zgd"} and can_act_on_position(position, item)
                 ),
-                "is_position_submission_actionable": can_submit_position(position, item),
-                "is_economist_completion_actionable": can_complete_economist_position(position),
+                "is_position_submission_actionable": (
+                    can_submit_position(position, item)
+                    and not cfo_revision_pending_by_request.get(request["id"])
+                ),
+                "is_workflow_submission_actionable": is_workflow_submission_actionable,
+                "is_economist_completion_actionable": is_economist_completion_actionable,
                 "is_position_actionable": (
                     can_act_on_position(position, item)
-                    or can_submit_position(position, item)
-                    or can_complete_economist_position(position)
+                    or (
+                        can_submit_position(position, item)
+                        and not cfo_revision_pending_by_request.get(request["id"])
+                    )
+                    or is_workflow_submission_actionable
+                    or is_economist_completion_actionable
                 ),
                 "approval_stage": approval_stage(position, item),
                 "frozen": bool(item.get("frozen")),
@@ -2533,6 +3104,12 @@ class RequestService:
             for entry in entries
             if entry.get("is_cfo_review_completable")
         }
+        cfo_decision_editable_rows = sum(
+            1
+            for entry in entries
+            if entry.get("is_decision_editable")
+            and entry.get("decision_editable_stage") == "cfo_review"
+        )
         positions_in_approval = {
             entry["position_id"]
             for entry in entries
@@ -2553,6 +3130,11 @@ class RequestService:
             for entry in entries
             if entry.get("is_economist_completion_actionable") and entry.get("position_id")
         }
+        workflow_ready_positions = {
+            entry["position_id"]
+            for entry in entries
+            if entry.get("is_workflow_submission_actionable") and entry.get("position_id")
+        }
         return {
             "requested_sum": requested,
             "approved_sum": approved_sum,
@@ -2572,10 +3154,12 @@ class RequestService:
             "cfo_review_requests": len(cfo_review_requests),
             "cfo_review_actionable_requests": len(cfo_review_actionable_requests),
             "cfo_review_completable_requests": len(cfo_review_completable_requests),
+            "cfo_decision_editable_rows": cfo_decision_editable_rows,
             "in_approval_positions": len(positions_in_approval),
             "actionable_positions": len(actionable_positions),
             "submission_positions": len(submission_positions),
             "economist_completion_positions": len(economist_completion_positions),
+            "workflow_ready_positions": len(workflow_ready_positions),
         }
 
     def _register_analytics_summary(
@@ -2639,6 +3223,21 @@ class RequestService:
 
         entries = self._sort_register_entries(self._register_entries(user, **filters))
         include_interim_facts = not bool(filters.get("positioned_only"))
+        budget_year_filter = filters.get("budget_year")
+        visible_cfo_ids = {
+            str(entry.get("cfo_id") or "")
+            for entry in entries
+            if entry.get("cfo_id")
+        }
+        cfo_unsubmitted_requests: dict[str, int] = {}
+        for request in self.repo.load_all("requests"):
+            if request.get("status") != RequestStatus.draft:
+                continue
+            if budget_year_filter is not None and int(request.get("budget_year") or 0) != int(budget_year_filter):
+                continue
+            cfo_id = self.permissions.cfo_for_module(request.get("unit_id"))
+            if cfo_id in visible_cfo_ids:
+                cfo_unsubmitted_requests[cfo_id] = cfo_unsubmitted_requests.get(cfo_id, 0) + 1
         labels = {
             "cfo": "ЦФО", "category": "Категория", "article": "Статья / инвестпроект",
             "module": "Модуль", "request": "Заявка",
@@ -2692,16 +3291,26 @@ class RequestService:
             for node in sorted(nodes.values(), key=lambda item: (item["name"].casefold(), item["id"])):
                 children = serialize(node["children"])
                 can_load_rows = node["type"] == "category" if levels == DEFAULT_REGISTER_GROUPS["cfo"] else not children
+                aggregates = self._register_aggregates(
+                    node["entries"],
+                    include_interim_facts=include_interim_facts,
+                )
+                node_cfo_ids = {
+                    str(value)
+                    for value in [node["scope"].get("cfo_id"), *(entry.get("cfo_id") for entry in node["entries"])]
+                    if value
+                }
+                aggregates["cfo_unsubmitted_requests"] = sum(
+                    cfo_unsubmitted_requests.get(cfo_id, 0)
+                    for cfo_id in node_cfo_ids
+                )
                 payload = {
                     "id": node["id"], "type": node["type"], "name": node["name"],
                     "group_value": node["group_value"],
                     "module_id": node["module_id"], "article_id": node["article_id"],
                     "category_id": node["category_id"], "scope": node["scope"],
                     "request_ids": sorted(node["request_ids"]),
-                    "aggregates": self._register_aggregates(
-                        node["entries"],
-                        include_interim_facts=include_interim_facts,
-                    ),
+                    "aggregates": aggregates,
                     "children": children,
                     "can_load_rows": can_load_rows,
                     "label": labels[node["type"]],
@@ -2806,8 +3415,10 @@ class RequestService:
         """Return visible lines that may be selected for a CFO review return.
 
         A return may intentionally invalidate a decision already made in the
-        current, not-yet-completed CFO cycle, so this scope is wider than the
-        set of undecided/actionable lines used by bulk decisions.
+        current, not-yet-completed CFO cycle. A decision from an earlier cycle
+        is included only while the request is still with the CFO and the
+        original decision owner can edit it; once the package moves onward it
+        is locked.
         """
         field_by_group_type = {
             "cfo": "cfo_id",
@@ -2824,8 +3435,18 @@ class RequestService:
             for entry in self._register_entries(user, **filters)
             if entry[field] == group_id
             and (
-                entry.get("is_cfo_review")
+                entry.get("is_cfo_review_item_allowed")
                 or entry.get("is_cfo_module_revision_actionable")
+                or entry.get("is_cfo_revision_pending")
+                # A decision made by this CFO in an earlier cycle remains
+                # editable only while the request is still at the CFO stage.
+                # If the user explicitly selects that line for a new return,
+                # it must be accepted by the package endpoint as well; the
+                # cycle restriction only excludes it from an implicit handoff.
+                or (
+                    entry.get("is_decision_editable")
+                    and entry.get("decision_editable_stage") == "cfo_review"
+                )
             )
             and not entry.get("frozen")
             and not entry.get("fixed")
@@ -2869,7 +3490,7 @@ class RequestService:
             for entry in self._register_entries(user, **filters)
             if entry[field] == group_id
             and entry.get("position_id")
-            and entry.get("is_position_actionable")
+            and entry.get("is_workflow_submission_actionable")
         }
         if not position_ids:
             raise HTTPException(
@@ -2898,7 +3519,15 @@ class RequestService:
         lines = [
             entry for entry in self._sort_register_entries(self._register_entries(user, **filters))
             if entry[field] == group_id
-            and (entry.get("is_cfo_review_actionable") or entry.get("is_approval_actionable"))
+            and (
+                entry.get("is_cfo_review_actionable")
+                or entry.get("is_approval_actionable")
+                or (
+                    user.get("role") in {"employee", "economist"}
+                    and entry.get("is_decision_editable")
+                    and entry.get("decision_editable_stage") in {"cfo_review", "economist"}
+                )
+            )
         ]
         return {"lines": lines}
 
@@ -2929,8 +3558,13 @@ class RequestService:
         cfo_lines = [
             entry for entry in entries
             if (
-                entry.get("is_cfo_review")
+                entry.get("is_cfo_review_item_allowed")
                 or entry.get("is_cfo_module_revision_actionable")
+                or entry.get("is_cfo_revision_pending")
+                or (
+                    entry.get("is_decision_editable")
+                    and entry.get("decision_editable_stage") == "cfo_review"
+                )
             )
             and not entry.get("frozen")
             and not entry.get("fixed")
@@ -2944,7 +3578,11 @@ class RequestService:
             if entry.get("is_position_actionable")
             and not entry.get("fixed")
             and entry.get("status") != ItemStatus.deleted
-            and (entry.get("frozen") or entry.get("is_revision"))
+            and (
+                entry.get("frozen")
+                or entry.get("is_revision")
+                or entry.get("is_economist_completion_actionable")
+            )
         ]
         if mode == "cfo":
             lines = cfo_lines

@@ -19,6 +19,7 @@ from app.models import (
     CfoPositionCommentIn,
     CfoPositionReturnIn,
     CfoPositionRevisionIn,
+    CfoRevisionSelectionIn,
     ItemCreate,
     ItemDecisionIn,
     ItemPatch,
@@ -883,6 +884,16 @@ async def decide_request_item_cfo(
     for message in result.get("chat_messages", []):
         await _broadcast_chat_message(request, message["chat_id"], message, user["id"])
     return result
+
+
+@router.post("/items/{item_id}/cfo-revision-selection")
+def select_request_item_cfo_revision(
+    request: Request, item_id: str, payload: CfoRevisionSelectionIn, user: User
+):
+    """Store a table-level revision choice; the dialog performs the handoff."""
+    return request.app.state.budget_item_service.select_cfo_revision(
+        user, item_id, payload.model_dump()
+    )
 
 
 @router.post("/approval-register/groups/{group_type}/{group_id}/workflow-action")

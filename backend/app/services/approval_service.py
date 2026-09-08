@@ -1209,6 +1209,41 @@ class ApprovalService:
         cfo = repo.get_by_id("units", position.get("cfo_unit_id")) or {}
         return f"Позиция «{article.get('name') or 'Без статьи'}» ЦФО «{cfo.get('name') or 'не указан'}»"
 
+    @classmethod
+    def _revision_chat_text(
+        cls,
+        repo: Repository,
+        position: dict,
+        items: list[dict],
+        comment: str,
+        line_comments: dict[str, str] | None = None,
+    ) -> str:
+        """Describe a position return in a compact system message."""
+        comments = line_comments or {}
+        label = cls._position_chat_label(repo, position)
+        names = [str(item.get("name") or "\u0421\u0442\u0440\u043e\u043a\u0430") for item in items]
+        preview_limit = 4
+        preview_names = names[:preview_limit]
+        lines = [
+            f"{label} \u043e\u0442\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0430 \u043d\u0430 \u0434\u043e\u0440\u0430\u0431\u043e\u0442\u043a\u0443.",
+            "",
+            f"\u0421\u0442\u0440\u043e\u043a\u0438 ({len(items)}):",
+            *(f"\u2022 {name}" for name in preview_names),
+        ]
+        if len(names) > preview_limit:
+            lines.append(f"\u2022 \u0415\u0449\u0451 {len(names) - preview_limit} \u0441\u0442\u0440\u043e\u043a")
+        line_comment_rows: list[tuple[str, str]] = []
+        for item in items:
+            line_comment = str(comments.get(item.get("id"), item.get("comment")) or "").strip()
+            if line_comment:
+                line_comment_rows.append((str(item.get("name") or "\u0421\u0442\u0440\u043e\u043a\u0430"), line_comment))
+        if line_comment_rows:
+            lines.extend(["", "\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438 \u043a \u0441\u0442\u0440\u043e\u043a\u0430\u043c:"])
+            lines.extend(f"\u2022 {name}: {line_comment}" for name, line_comment in line_comment_rows)
+        if comment.strip():
+            lines.extend(["", f"\u041e\u0431\u0449\u0438\u0439 \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439: {comment.strip()}"])
+        return "\n".join(lines)
+
     @staticmethod
     def _all_items_frozen(items: list[dict]) -> bool:
         return bool(items) and all(bool(row.get("frozen")) for row in items)
@@ -1300,6 +1335,39 @@ class ApprovalService:
         if user_id and self.notifications:
             self.notifications.create(user_id, notification_type, payload, repo=repo)
 
+    @staticmethod
+    def _cfo_pending_revision_item_ids(repo: Repository, request_id: str) -> set[str]:
+        """Return unsent CFO revision selections for one request.
+
+        A line decision is only a saved choice until the CFO explicitly sends
+        the package to the module. Decisions from a completed, returned package
+        are historical and must not block a later handoff to the economist.
+        """
+        rows = sorted(
+            (row for row in repo.load_all("req_logs") if row.get("req_id") == request_id),
+            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        )
+        boundary: tuple[str, int] | None = None
+        for row in rows:
+            if (row.get("log") or {}).get("action") in {
+                "cfo_items_returned_for_revision",
+                "request_revision_resubmitted_to_cfo",
+                "request_restored",
+            }:
+                boundary = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+        decisions: dict[str, str] = {}
+        for row in rows:
+            key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+            if boundary is not None and key <= boundary:
+                continue
+            log = row.get("log") or {}
+            if log.get("action") != "cfo_item_decided" or log.get("entity") != "req_item":
+                continue
+            item_id = str(log.get("entity_id") or "")
+            if item_id:
+                decisions[item_id] = str(log.get("decision") or "")
+        return {item_id for item_id, decision in decisions.items() if decision == "on_revision"}
+
     def submit_to_economist(
         self,
         user: dict,
@@ -1335,23 +1403,63 @@ class ApprovalService:
             }:
                 raise HTTPException(status_code=409, detail="Позицию нельзя передать на этом этапе")
             cfo_modules = self.permissions.modules_for_cfos({position["cfo_unit_id"]})
+            pending_revision_request_ids = sorted({
+                item["request_id"]
+                for item in position_items
+                if self._cfo_pending_revision_item_ids(repo, item["request_id"])
+            })
+            if pending_revision_request_ids:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Есть строки, отмеченные на доработку. Отправьте их модулю через окно «На доработку».",
+                        "request_ids": pending_revision_request_ids,
+                    },
+                )
             incomplete_request_ids = []
+            not_submitted_request_ids = []
+            units_by_id = {
+                row["id"]: row
+                for row in repo.load_all("units")
+            }
             for request in repo.load_all("requests"):
                 if (
                     request.get("unit_id") not in cfo_modules
                     or int(request.get("budget_year") or 0) != int(position.get("budget_year") or 0)
                 ):
                     continue
-                if request.get("status") == RequestStatus.draft or (
+                if request.get("status") == RequestStatus.draft:
+                    not_submitted_request_ids.append(request["id"])
+                elif (
                     request.get("status") == RequestStatus.on_review
                     and not request_cfo_review_completed(repo, request["id"])
                 ):
                     incomplete_request_ids.append(request["id"])
+            if not_submitted_request_ids:
+                module_names = sorted({
+                    str(units_by_id.get(request.get("unit_id"), {}).get("name") or "модуля")
+                    for request in repo.load_all("requests")
+                    if request.get("id") in not_submitted_request_ids
+                })
+                modules_label = ", ".join(f"«{name}»" for name in module_names)
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": (
+                            "Передача невозможна: заявка "
+                            f"модуля {modules_label or 'ещё не отправлена'} "
+                            "ещё не отправлена на проверку ЦФО. Дождитесь заявки модуля для проверки."
+                        ),
+                        "reason": "module_request_not_submitted",
+                        "request_ids": sorted(not_submitted_request_ids),
+                    },
+                )
             if incomplete_request_ids:
                 raise HTTPException(
                     status_code=409,
                     detail={
-                        "message": "Не все заявки ЦФО готовы к передаче экономисту",
+                        "message": "Передача невозможна: не все заявки ЦФО прошли проверку по строкам",
+                        "reason": "cfo_review_incomplete",
                         "request_ids": sorted(incomplete_request_ids),
                     },
                 )
@@ -1516,6 +1624,31 @@ class ApprovalService:
                 or (str(row.get("created_at") or ""), int(row.get("id") or 0)) > returned_at
             )
         }
+
+    def _pending_position_decision_ids(
+        self, repo: Repository, position: dict, step: dict, items: list[dict]
+    ) -> list[str]:
+        """Return lines that still need a decision before a package action."""
+        actor = get_required(repo, "users", step["user_id"]) if step.get("user_id") else {}
+        if actor.get("role") == "economist":
+            decided = self._economist_decided_item_ids(repo, position["id"])
+            return [
+                row["id"]
+                for row in items
+                if row["id"] not in decided or row.get("status") == ItemStatus.on_review
+            ]
+        if actor.get("role") == "approver":
+            returned_ids = self._latest_returned_item_ids(repo, position["id"])
+            required_ids = returned_ids or {row["id"] for row in items}
+            decided = self._approver_approved_item_ids(repo, position["id"], step["id"])
+            return [
+                row["id"]
+                for row in items
+                if row["id"] in required_ids
+                and not row.get("fixed")
+                and row["id"] not in decided
+            ]
+        return []
 
     def complete_economist_review(
         self,
@@ -1719,9 +1852,6 @@ class ApprovalService:
                             raise HTTPException(status_code=409, detail=f"Строка {item_id} недоступна для согласования")
                         item = repo.update("req_items", item_id, {"frozen": True})
                         items_by_id[item_id] = item
-                approved_ids = self._approver_approved_item_ids(repo, position_id, step_id)
-                if approved_ids.intersection(requested_ids):
-                    raise HTTPException(status_code=409, detail="Часть выбранных строк уже согласована")
                 event_id = event_id or self._event_id()
                 self._position_log(
                     repo, user, position, "position_items_approved_at_step",
@@ -1733,18 +1863,14 @@ class ApprovalService:
                     event_id=event_id, comment=comment, cfo_position_id=position_id,
                     item_ids=sorted(requested_ids),
                 )
-                latest_returned_ids = self._latest_returned_item_ids(repo, position_id)
-                required_ids = (
-                    latest_returned_ids
-                    if latest_returned_ids
-                    else {row["id"] for row in items}
-                )
-                if not required_ids.issubset(approved_ids | set(requested_ids)):
-                    self._sync_step_statuses(repo)
-                    result = self.public_position(position, repo=result_repo)
-                    result["notification_user_ids"] = []
-                    return result
-                items = self._position_items(repo, position_id)
+                # A line decision must not implicitly move the whole
+                # position.  The reviewer first records decisions for all
+                # required lines; the separate group action sends the
+                # position to the next step as one package.
+                self._sync_step_statuses(repo)
+                result = self.public_position(position, repo=result_repo)
+                result["notification_user_ids"] = []
+                return result
             if not self._all_items_frozen(items):
                 raise HTTPException(status_code=409, detail="Передать дальше можно только статью с замороженными строками")
             if actor.get("role") == "zgd":
@@ -1876,58 +2002,23 @@ class ApprovalService:
             if step.get("unit_id") or self._economist_cfo_id(repo, step):
                 self.permissions.require_step_assignee(user, step)
                 current = get_required(repo, "cfo_positions", position["id"])
-                # A group approval is an explicit decision to accept every
-                # still-open line in the selected positions.  Previously the
-                # code tried to complete the economist review immediately,
-                # which returned 409 as soon as the group contained even one
-                # undecided line.
-                items = self._position_items(repo, current["id"])
-                decided = self._economist_decided_item_ids(repo, current["id"])
-                for item in items:
-                    if item.get("fixed") or item.get("frozen"):
-                        continue
-                    if item["id"] not in decided or item.get("status") == ItemStatus.on_review:
-                        self._decide_item_economist(
-                            repo,
-                            user,
-                            current,
-                            item["id"],
-                            {"decision": ItemStatus.approved, "comment": comment},
-                            event_id=group_event_id,
-                        )
-                if current.get("status") != CfoPositionStatus.approved:
-                    self.complete_economist_review(
-                        user, current["id"], comment, repo=repo
-                    )
+                # Decisions are intentionally separate from route movement.
+                # complete_economist_review validates that every line already
+                # has a decision and raises with the pending line ids when it
+                # does not.  It must never silently approve the remainder.
+                self.complete_economist_review(user, current["id"], comment, repo=repo)
                 results.append(
                     self.freeze_position(
                         user, position["id"], comment, event_id=group_event_id, repo=repo
                     )
                 )
             else:
-                # A group action must follow the same line scope as the
-                # register.  At an intermediate approver step, a partial
-                # return is line-scoped.  The final ZGD step closes the whole
-                # position after that returned line has been rechecked, so it
-                # deliberately keeps the regular all-lines behaviour.
-                review_item_ids = None
-                latest_returned_ids = self._latest_returned_item_ids(repo, position["id"])
-                actor = get_required(repo, "users", step["user_id"])
-                if latest_returned_ids and actor.get("role") == "approver":
-                    items_by_id = {row["id"]: row for row in self._position_items(repo, position["id"])}
-                    review_item_ids = [
-                        item_id for item_id in latest_returned_ids
-                        if item_id in items_by_id and not items_by_id[item_id].get("fixed")
-                    ]
-                    approved_ids = self._approver_approved_item_ids(repo, position["id"], step_id)
-                    review_item_ids = [item_id for item_id in review_item_ids if item_id not in approved_ids]
                 results.append(
                     self.approve_position_at_step(
                         user,
                         step_id,
                         position["id"],
                         comment,
-                        item_ids=review_item_ids or None,
                         event_id=group_event_id,
                         repo=repo,
                     )
@@ -2001,12 +2092,18 @@ class ApprovalService:
         if not position_ids:
             raise HTTPException(status_code=422, detail="Выберите хотя бы одну позицию")
         position_ids = sorted(set(position_ids))
-        if not comment.strip():
-            raise HTTPException(status_code=422, detail="Укажите комментарий к доработке")
         positions = [get_required(repo, "cfo_positions", position_id) for position_id in position_ids]
         group_event_id = self._event_id()
         revision_by_item = {row["item_id"]: row for row in (revision_items or [])}
         selected_item_ids = set(revision_by_item) if revision_by_item else None
+        line_comment = ""
+        if selected_item_ids and len(selected_item_ids) == 1:
+            line_comment = (next(iter(revision_by_item.values())).get("comment") or "").strip()
+        can_edit_lines = user.get("role") in {"economist", "employee"}
+        if not comment.strip() and (
+            not can_edit_lines or not selected_item_ids or len(selected_item_ids) != 1 or not line_comment
+        ):
+            raise HTTPException(status_code=422, detail="Укажите комментарий к доработке")
         if selected_item_ids is not None:
             all_position_item_ids = set()
             for position in positions:
@@ -2102,6 +2199,15 @@ class ApprovalService:
                 raise HTTPException(status_code=422, detail="Возврат возможен на непосредственный дочерний шаг")
             target = get_required(repo, "steps", target_step_id)
             items = self._position_items(repo, position_id)
+            pending_decision_ids = self._pending_position_decision_ids(repo, position, step, items)
+            if pending_decision_ids:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Сначала вынесите решения по всем строкам позиции",
+                        "item_ids": pending_decision_ids,
+                    },
+                )
             selected_ids = set(item_ids or [row["id"] for row in items if not row.get("fixed")])
             selected = [row for row in items if row["id"] in selected_ids]
             if not selected or len(selected) != len(selected_ids):
@@ -2109,7 +2215,7 @@ class ApprovalService:
             if any(row.get("fixed") for row in selected):
                 raise HTTPException(status_code=409, detail="Финально зафиксированную строку может открыть только ЗГД")
             revision_by_item = {row["item_id"]: row for row in (revision_items or [])}
-            line_chat_messages: list[dict] = []
+            revision_line_comments: dict[str, str] = {}
             event_id = event_id or self._event_id()
             can_edit_lines = user.get("role") in {"economist", "employee"}
             for item in selected:
@@ -2141,21 +2247,7 @@ class ApprovalService:
                         req_item_id=item["id"], request_id=item["request_id"],
                         target_step_id=target_step_id,
                     )
-                if self.chat_service and line_comment and can_edit_lines:
-                    role = user.get("role")
-                    if role == "economist":
-                        line_chat_messages.append(
-                            self.chat_service.comment_for_position(
-                                user, position, f"{item.get('name')}: {line_comment}", repo=repo,
-                            )
-                        )
-                    elif role == "employee":
-                        request = get_required(repo, "requests", item["request_id"])
-                        line_chat_messages.append(
-                            self.chat_service.comment_for_request(
-                                user, request, f"{item.get('name')}: {line_comment}", repo=repo,
-                            )
-                        )
+                revision_line_comments[item["id"]] = line_comment
             before = dict(position)
             after = repo.update(
                 "cfo_positions", position_id,
@@ -2175,9 +2267,34 @@ class ApprovalService:
                 comment=comment, cfo_position_id=position_id, target_step_id=target_step_id,
             )
             self._sync_step_statuses(repo)
-            chat_message = None
-            if self.chat_service and user.get("role") == "economist":
-                chat_message = self.chat_service.comment_for_position(user, after, comment, repo=repo)
+            chat_messages: list[dict] = []
+            if self.chat_service:
+                role = user.get("role")
+                if role == "employee":
+                    selected_by_request: dict[str, list[dict]] = {}
+                    for item in selected:
+                        selected_by_request.setdefault(item["request_id"], []).append(item)
+                    for request_id, request_items in selected_by_request.items():
+                        request = get_required(repo, "requests", request_id)
+                        chat_messages.append(
+                            self.chat_service.system_message_for_request(
+                                request,
+                                self._revision_chat_text(
+                                    repo, after, request_items, comment, revision_line_comments,
+                                ),
+                                repo=repo,
+                            )
+                        )
+                else:
+                    chat_messages.append(
+                        self.chat_service.system_message_for_position(
+                            after,
+                            self._revision_chat_text(
+                                repo, after, selected, comment, revision_line_comments,
+                            ),
+                            repo=repo,
+                        )
+                    )
             notify_id = (
                 self.permissions.cfo_economist_id(target["unit_id"])
                 if target.get("unit_id")
@@ -2189,15 +2306,24 @@ class ApprovalService:
             )
         result = self.public_position(after, repo=result_repo)
         result["notification_user_ids"] = [notify_id] if notify_id else []
-        result["chat_messages"] = [message for message in ([chat_message] if chat_message else []) + line_chat_messages if message]
+        result["chat_messages"] = chat_messages
         return result
 
     def return_for_revision(self, user: dict, position_id: str, payload: dict) -> dict:
         position = get_required(self.repo, "cfo_positions", position_id)
         step_id = self._current_step_id(self.repo, position) or ""
+        comment = (payload.get("comment") or "").strip()
+        revision_items = payload.get("items") or []
+        line_comment = (revision_items[0].get("comment") or "").strip() if len(revision_items) == 1 else ""
+        if not comment and (
+            user.get("role") not in {"economist", "employee"}
+            or len(revision_items) != 1
+            or not line_comment
+        ):
+            raise HTTPException(status_code=422, detail="Укажите комментарий к доработке")
         return self.return_position(
-            user, step_id, position_id, payload.get("target_step_id") or "", payload["comment"],
-            [row["item_id"] for row in payload["items"]], payload["items"],
+            user, step_id, position_id, payload.get("target_step_id") or "", comment,
+            [row["item_id"] for row in revision_items], revision_items,
         )
 
     def reopen_fixed_items(

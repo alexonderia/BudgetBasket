@@ -1193,7 +1193,7 @@ function ItemsTable({
     && !item.frozen
     && !item.fixed
     && request.status === 'on_review'
-    && request.available_actions?.includes('complete_cfo_review') === true
+    && request?.available_actions?.includes('complete_cfo_review') === true
     && !!request.cfo_unit_id
     && (user.unit_ids || []).includes(request.cfo_unit_id)
     && !revisionItemIds.has(item.id)
@@ -2695,6 +2695,27 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось изменить статус заявки'), 'error'),
   });
+  const sendCfoRevision = useMutation({
+    mutationFn: () => api.post<{ revision_item_ids?: string[] }>(`/requests/${id}/complete-cfo-review`),
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: detailsKey });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'items'] });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'logs'] });
+      queryClient.invalidateQueries({ queryKey: ['request-logs', id] });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-route'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+      queryClient.invalidateQueries({ queryKey: ['cfo-incoming-requests'] });
+      const count = response.data.revision_item_ids?.length || 0;
+      toast(
+        count
+          ? `На доработку ответственному модулю передано строк: ${count}.`
+          : 'Проверка ЦФО завершена. Данные переданы на следующий этап.',
+        'success',
+      );
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось передать пакет дальше'), 'error'),
+  });
   const approveRequestAtStep = useMutation({
     mutationFn: () => api.post(`/steps/${approvalAction?.step.id}/requests/${id}/approve`),
     onSuccess: () => {
@@ -2822,6 +2843,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       .map((item) => item.id)),
     [approvalRegisterRows],
   );
+  const canSendCfoRevision = user.role === 'employee'
+    && request?.status === 'on_review'
+    && request.available_actions?.includes('complete_cfo_review') === true
+    && (approvalRegisterRows?.items || []).some((item) => item.is_cfo_revision_pending && item.is_cfo_review_item_allowed !== false)
+    && (approvalRegisterRows?.items || []).every((item) => item.is_cfo_review_completable);
   const requestDeletePreviewDefinitions = useMemo<TableColumnDefinition<RequestDeletePreviewRow, RequestDeletePreviewColumn>[]>(() => [
     {
       id: 'kind',
@@ -2946,7 +2972,9 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const activeRouteStep = resolvedApprovalRoute.length
     ? resolvedApprovalRoute[approvalRouteActiveIndex(resolvedApprovalRoute)]?.step
     : null;
-  const requestRequirement = request.status === 'draft' && user.role !== 'employee'
+  const requestRequirement = canSendCfoRevision
+    ? 'Все строки текущего цикла проверены. Нажмите «Отправить на доработку», чтобы передать выбранные строки ответственному за модуль.'
+    : request.status === 'draft' && user.role !== 'employee'
     ? 'Заявка находится в черновике сотрудника и ещё не отправлена на проверку.'
     : request.available_actions?.includes('edit_revision') && user.role !== 'employee'
       ? 'Заявка возвращена на доработку. Ожидаются исправления и повторная отправка сотрудником.'
@@ -2964,6 +2992,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       request.available_actions?.includes('submit')
       || request.available_actions?.includes('edit_revision')
     ))
+    || canSendCfoRevision
     || (activeRouteOwner?.id && activeRouteOwner.id === user.id && ['on_approval', 'on_revision'].includes(activeRouteStep?.request_status || activeRouteStep?.status || '')),
   );
   const filteredRequestSummary = {
@@ -3043,6 +3072,17 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                     {canSubmit && (
                       <Button startIcon={<SendIcon />} variant="contained" onClick={() => lifecycle.mutate('submit')}>
                         Отправить заявку
+                      </Button>
+                    )}
+                    {canSendCfoRevision && (
+                      <Button
+                        startIcon={<SendIcon />}
+                        variant="contained"
+                        color="warning"
+                        onClick={() => sendCfoRevision.mutate()}
+                        disabled={sendCfoRevision.isPending}
+                      >
+                        {sendCfoRevision.isPending ? 'Передаём…' : 'Отправить на доработку'}
                       </Button>
                     )}
                     {canFinalize && (

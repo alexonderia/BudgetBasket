@@ -66,7 +66,7 @@ export const REGISTRY_COLUMN_MIN_WIDTHS: Record<RegistryColumnId, number> = {
   rejected: 100,
   previous_step: 150,
   your_step: 190,
-  status: 120,
+  status: 180,
   actions: 72,
   justification: 160,
   comment: 130,
@@ -460,6 +460,7 @@ export function aggregateRegisterRows(base: ApprovalRegisterGroup['aggregates'],
     actionable_positions: countDistinct(rows.filter((row) => row.is_position_actionable).map((row) => row.position_id)),
     submission_positions: countDistinct(rows.filter((row) => row.is_position_submission_actionable).map((row) => row.position_id)),
     economist_completion_positions: countDistinct(rows.filter((row) => row.is_economist_completion_actionable).map((row) => row.position_id)),
+    workflow_ready_positions: countDistinct(rows.filter((row) => row.is_workflow_submission_actionable).map((row) => row.position_id)),
   };
 }
 

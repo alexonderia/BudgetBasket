@@ -6,7 +6,9 @@ import {
   applyWorkflowColumnVisibility,
   groupReadiness,
   groupReadinessPercent,
+  groupHasCfoCompleteActions,
   groupRegistryStatus,
+  groupHasCfoDecisionActions,
   groupYourStepSummary,
   groupHasWorkflowActions,
   groupHasWorkflowApprove,
@@ -26,6 +28,7 @@ describe('registry display helpers', () => {
   const sampleRow = { id: '1', request_id: 'r', request_status: 'on_review' as const, budget_year: 2025, module_id: 'm', module_name: 'Модуль', cfo_id: 'c', cfo_name: 'ЦФО', category_id: 'cat', category_name: 'Категория', article_id: 'a', article_name: 'Статья', kind: 'dds' as const, name: 'Строка', justification: '', comment: '', files_count: 0, requested_sum: 10, approved_sum: 10, status: 'approved' as const, updated_at: '', is_collecting: false, is_cfo_review: false, is_cfo_review_actionable: false, position_id: null, is_in_approval: false, is_approval_actionable: false, approval_stage: null };
 
   it('shows status-related helpers', () => {
+    expect(rowRegistryStatus({ ...sampleRow, is_cfo_revision_pending: true }).label).toBe('Выбрано на доработку');
     expect(groupReadiness(sampleAggregates)).toBe('Проверено: 1 из 2');
     expect(groupReadinessPercent(sampleAggregates)).toBe(50);
     expect(rowReadiness(sampleRow)).toBe('Рассмотрено');
@@ -92,6 +95,7 @@ describe('registry display helpers', () => {
         ...sampleAggregates,
         actionable_positions: 1,
         revision_rows: 1,
+        workflow_ready_positions: 1,
       },
     };
     expect(groupHasWorkflowActions(group, 'economist')).toBe(true);
@@ -107,6 +111,48 @@ describe('registry display helpers', () => {
 
     expect(groupHasWorkflowActions(group, 'zgd')).toBe(true);
     expect(groupHasWorkflowApprove(group, 'zgd')).toBe(true);
+  });
+
+  it('keeps package actions hidden until the current reviewer decides every line', () => {
+    const group = {
+      id: 'group', type: 'article' as const, name: 'Article', label: 'Article', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request'], can_load_rows: false,
+      aggregates: { ...sampleAggregates, actionable_positions: 1, workflow_ready_positions: 0 },
+    };
+    expect(groupHasWorkflowActions(group, 'approver')).toBe(true);
+    expect(groupHasWorkflowApprove(group, 'approver')).toBe(false);
+    expect(isGroupActionable(group, 'approver')).toBe(true);
+  });
+
+  it('does not expose CFO handoff while another request is still pending', () => {
+    const group = {
+      id: 'group', type: 'cfo' as const, name: 'CFO', label: 'CFO', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request-a', 'request-b'], can_load_rows: false,
+      aggregates: {
+        ...sampleAggregates,
+        cfo_review_completable_requests: 1,
+        cfo_review_actionable_requests: 1,
+        submission_positions: 1,
+      },
+    };
+    expect(groupHasCfoCompleteActions(group)).toBe(false);
+    expect(groupHasWorkflowApprove(group, 'employee')).toBe(false);
+  });
+
+  it('does not expose CFO handoff while a module request is still a draft', () => {
+    const group = {
+      id: 'group', type: 'cfo' as const, name: 'CFO', label: 'CFO', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request-a', 'request-b'], can_load_rows: false,
+      aggregates: {
+        ...sampleAggregates,
+        requests_count: 2,
+        cfo_unsubmitted_requests: 1,
+        cfo_review_completable_requests: 1,
+        submission_positions: 1,
+      },
+    };
+    expect(groupHasCfoCompleteActions(group)).toBe(false);
+    expect(groupHasWorkflowApprove(group, 'employee')).toBe(false);
   });
 
   it('limits group selection to actions available to the current role', () => {
@@ -134,6 +180,16 @@ describe('registry display helpers', () => {
     };
     expect(groupYourStepSummary(aggregates)).toBe('Согласовать и передать: 1');
     expect(groupRegistryStatus(aggregates).label).toBe('Согласуйте и передайте');
+  });
+
+  it('allows a responsible CFO to reject a group before handoff', () => {
+    const group = {
+      id: 'group', type: 'article' as const, name: 'Article', label: 'Article', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request'], can_load_rows: false,
+      aggregates: { ...sampleAggregates, cfo_review_completable_requests: 1 },
+    };
+    expect(groupHasCfoDecisionActions(group, 'employee')).toBe(true);
+    expect(groupHasCfoDecisionActions(group, 'economist')).toBe(false);
   });
 
   it('explains draft and waiting states clearly', () => {
@@ -199,13 +255,96 @@ describe('registry display helpers', () => {
           detail: 'Позиция ждёт повторной проверки ЦФО',
         },
       },
-    }).label).toBe('Передайте экономисту');
+    }).label).toBe('Утверждено');
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      status: 'rejected',
+      is_position_submission_actionable: true,
+      status_context: {
+        editability: {
+          can_decide: false,
+          can_edit_amount: false,
+          can_edit_analytics: false,
+          mode: 'readonly',
+          summary: 'Решение сохранено',
+          detail: 'Позиция готова к передаче экономисту',
+        },
+      },
+    }).label).toBe('Отклонено');
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      status: 'on_review',
+      is_position_submission_actionable: true,
+      status_context: {
+        editability: {
+          can_decide: false,
+          can_edit_amount: false,
+          can_edit_analytics: false,
+          mode: 'readonly',
+          summary: 'Решение сохранено',
+          detail: 'Позиция готова к передаче экономисту',
+        },
+        last_decision: {
+          at: '',
+          action: 'cfo_item_decided',
+          action_label: 'Решение ответственного ЦФО',
+          item_status: 'approved_with_changes',
+        },
+      },
+    }).label).toBe('Утверждено с изменениями');
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      is_revision: true,
+      is_module_revision: true,
+      is_revision_actionable: false,
+      is_position_submission_actionable: true,
+    }).label).toBe('На доработке');
     expect(rowRegistryStatus({
       ...sampleRow,
       is_revision: true,
       is_revision_actionable: true,
       is_position_submission_actionable: true,
     }).label).toBe('На доработке');
+  });
+
+  it('shows the saved decision while allowing it to be changed', () => {
+    const editableContext = {
+      editability: {
+        can_decide: true,
+        can_edit_amount: true,
+        can_edit_analytics: true,
+        mode: 'editable' as const,
+        summary: 'Решение можно изменить',
+        detail: 'Измените решение до передачи строки на следующий этап',
+      },
+      last_decision: {
+        at: '',
+        action: 'cfo_item_decided',
+        action_label: 'Решение ответственного ЦФО',
+        item_status: 'approved' as const,
+      },
+    };
+    expect(rowRegistryStatus({ ...sampleRow, status: 'on_review', is_decision_editable: true, status_context: editableContext }).label).toBe('Утверждено');
+    expect(rowRegistryStatus({ ...sampleRow, status: 'on_review', is_decision_editable: true, status_context: { ...editableContext, last_decision: { ...editableContext.last_decision, item_status: 'approved_with_changes' as const } } }).label).toBe('Утверждено с изменениями');
+    expect(rowRegistryStatus({ ...sampleRow, status: 'on_review', is_decision_editable: true, status_context: { ...editableContext, last_decision: { ...editableContext.last_decision, item_status: 'rejected' as const } } }).label).toBe('Отклонено');
+  });
+
+  it('keeps a pending editable line as awaiting a decision', () => {
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      status: 'on_review',
+      is_decision_editable: false,
+      status_context: {
+        editability: {
+          can_decide: true,
+          can_edit_amount: true,
+          can_edit_analytics: true,
+          mode: 'editable' as const,
+          summary: 'Можно принять решение',
+          detail: 'Вы можете согласовать строку',
+        },
+      },
+    }).label).toBe('Ожидает вашего решения');
   });
 
   it('does not treat already decided lines as actionable', () => {
