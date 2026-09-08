@@ -236,7 +236,7 @@ def test_partial_cfo_review_keeps_request_open_and_consolidates_all_lines(tmp_pa
     assert current[1]["sum_fact"] == 0
 
 
-def test_zgd_can_fix_final_position_lines_one_by_one(tmp_path):
+def test_zgd_approval_is_reversible_until_the_budget_is_locked(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
@@ -270,7 +270,7 @@ def test_zgd_can_fix_final_position_lines_one_by_one(tmp_path):
 
     first = client.post(
         f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
-        json={"comment": "Fix first line", "item_ids": [items[0]["id"]]},
+        json={"comment": "Approve first line", "item_ids": [items[0]["id"]]},
         headers=zgd,
     )
     assert first.status_code == 200, first.text
@@ -283,32 +283,15 @@ def test_zgd_can_fix_final_position_lines_one_by_one(tmp_path):
         headers=zgd,
     )
     by_id = {row["id"]: row for row in refreshed.json()["items"]}
-    assert by_id[items[0]["id"]]["fixed"] is True
+    assert by_id[items[0]["id"]]["fixed"] is False
     assert by_id[items[1]["id"]]["is_final_approval_actionable"] is True
 
-    logs_before_repeat = len([
-        row for row in client.app.state.repo.load_all("cfo_position_logs")
-        if row.get("cfo_position_id") == position_id
-        and (row.get("log") or {}).get("action") in {"position_items_fixed", "position_fixed"}
-    ])
     repeated = client.post(
         f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
-        json={"comment": "Repeat fixed line", "item_ids": [items[0]["id"]]},
+        json={"comment": "Repeat approved line", "item_ids": [items[0]["id"]]},
         headers=zgd,
     )
-    assert repeated.status_code == 409
-    mixed = client.post(
-        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
-        json={"comment": "No partial mutation", "item_ids": [items[1]["id"], items[0]["id"]]},
-        headers=zgd,
-    )
-    assert mixed.status_code == 409
-    assert client.app.state.repo.get_by_id("req_items", items[1]["id"])["fixed"] is False
-    assert len([
-        row for row in client.app.state.repo.load_all("cfo_position_logs")
-        if row.get("cfo_position_id") == position_id
-        and (row.get("log") or {}).get("action") in {"position_items_fixed", "position_fixed"}
-    ]) == logs_before_repeat
+    assert repeated.status_code == 200
     assert client.post(
         f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
         json={"comment": "Unknown line", "item_ids": ["foreign-item"]},
@@ -317,12 +300,29 @@ def test_zgd_can_fix_final_position_lines_one_by_one(tmp_path):
 
     second = client.post(
         f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
-        json={"comment": "Fix second line", "item_ids": [items[1]["id"]]},
+        json={"comment": "Approve second line", "item_ids": [items[1]["id"]]},
         headers=zgd,
     )
     assert second.status_code == 200, second.text
-    assert second.json()["all_items_fixed"] is True
-    assert second.json()["current_step_id"] is None
+    assert second.json()["all_items_fixed"] is False
+    locked = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={"action": "fix", "comment": "Lock reviewed budget"},
+        headers=zgd,
+    )
+    assert locked.status_code == 200, locked.text
+    position = client.get(f"/cfo-positions/{position_id}", headers=zgd).json()
+    assert position["all_items_fixed"] is True
+    assert position["current_step_id"] is None
+    unlocked = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={"action": "unfix", "comment": "Unlock for revision"},
+        headers=zgd,
+    )
+    assert unlocked.status_code == 200, unlocked.text
+    position = client.get(f"/cfo-positions/{position_id}", headers=zgd).json()
+    assert position["all_items_fixed"] is False
+    assert position["current_step_id"] == ROOT_STEP_ID
 
 
 def test_request_cancel_is_blocked_after_economist_forwards_to_general_route(tmp_path):
@@ -413,7 +413,9 @@ def test_zgd_group_status_does_not_keep_fixed_module_actionable_for_shared_posit
         headers=zgd,
     ).json()
     assert rows["group"]["aggregates"]["aggregate_status"] == "approved"
-    assert rows["group"]["aggregates"]["actionable_positions"] == 0
+    # An approval is not a lock: the remaining shared-position line is still
+    # available to ZGD until the explicit budget lock is activated.
+    assert rows["group"]["aggregates"]["actionable_positions"] == 1
 
 
 def test_cfo_return_is_revision_and_module_can_resubmit(tmp_path):
@@ -1464,6 +1466,12 @@ def test_full_position_route_freezes_and_zgd_fixes(tmp_path):
         headers=zgd,
     )
     assert fixed.status_code == 200
+    fixed = client.post(
+        f"/cfo-positions/{position_id}/fix",
+        json={"comment": "Зафиксировано"},
+        headers=zgd,
+    )
+    assert fixed.status_code == 200
     assert fixed.json()["all_items_fixed"] is True
     assert fixed.json()["current_step_id"] is None
     assert client.patch(
@@ -1779,6 +1787,12 @@ def test_zgd_return_to_approver_keeps_budget_frozen_and_repeats_route(tmp_path):
     fixed = client.post(
         f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
         json={"comment": "Финально"},
+        headers=zgd,
+    )
+    assert fixed.status_code == 200, fixed.text
+    fixed = client.post(
+        f"/cfo-positions/{position_id}/fix",
+        json={"comment": ""},
         headers=zgd,
     )
     assert fixed.status_code == 200, fixed.text
@@ -2325,9 +2339,14 @@ def test_workflow_group_approval_after_partial_return_uses_only_returned_lines(t
     assert contributions[items[0]["id"]]["frozen"] is True
     assert contributions[items[1]["id"]]["frozen"] is True
 
+    assert client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Финально согласовано"},
+        headers=zgd,
+    ).status_code == 200
     finalized = client.post(
-        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
-        json={"action": "approve", "comment": "Финально согласовано"},
+        f"/cfo-positions/{position_id}/fix",
+        json={"comment": "Финально согласовано"},
         headers=zgd,
     )
     assert finalized.status_code == 200, finalized.text
@@ -2497,7 +2516,7 @@ def test_approver_can_select_frozen_lines_for_revision_from_register(tmp_path):
     assert by_id[items[1]["id"]]["frozen"] is True
 
 
-def test_zgd_cannot_reopen_a_fixed_line(tmp_path):
+def test_zgd_can_unlock_a_fixed_budget(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
     economist = auth(client, "economist", "economist")
@@ -2509,16 +2528,17 @@ def test_zgd_cannot_reopen_a_fixed_line(tmp_path):
     client.post(f"/cfo-positions/{position_id}/freeze", json={"comment": ""}, headers=economist)
     client.post(f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve", json={"comment": ""}, headers=approver)
     assert client.post(f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve", json={"comment": ""}, headers=zgd).status_code == 200
+    assert client.post(f"/cfo-positions/{position_id}/fix", json={"comment": ""}, headers=zgd).status_code == 200
     reopened = client.post(
-        f"/cfo-positions/{position_id}/reopen-fixed",
+        f"/cfo-positions/{position_id}/unfix",
         json={"target_step_id": APPROVER_STEP_ID, "comment": "Нужна доработка", "items": [{"item_id": items[0]["id"]}]},
         headers=zgd,
     )
-    assert reopened.status_code == 409
+    assert reopened.status_code == 200
     position = client.get(f"/cfo-positions/{position_id}", headers=zgd).json()
-    assert position["contributions"][0]["fixed"] is True
+    assert position["contributions"][0]["fixed"] is False
     assert position["contributions"][0]["frozen"] is True
-    assert client.get(f"/requests/{request['id']}", headers=zgd).json()["status"] == "approved"
+    assert client.get(f"/requests/{request['id']}", headers=zgd).json()["status"] == "on_review"
 
 
 def test_late_module_submission_cannot_enter_position_already_above_cfo(tmp_path):

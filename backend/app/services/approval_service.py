@@ -1700,7 +1700,7 @@ class ApprovalService:
                 for row in items
                 if row["id"] not in decisions
             ]
-        if actor.get("role") == "approver":
+        if actor.get("role") in {"approver", "zgd"}:
             returned_ids = self._latest_returned_item_ids(repo, position["id"])
             required_ids = returned_ids or {row["id"] for row in items}
             decided = self._approver_approved_item_ids(repo, position["id"], step["id"])
@@ -1891,8 +1891,10 @@ class ApprovalService:
             parents = self._parents(step_id, self._edges(repo))
             actor = get_required(repo, "users", step["user_id"])
             before = dict(position)
-            if actor.get("role") == "approver" and item_ids:
-                requested_ids = list(item_ids)
+            # ZGD's approval is a reversible review decision.  Fixing the
+            # budget is a separate explicit action.
+            if actor.get("role") in {"approver", "zgd"} and (item_ids or actor.get("role") == "zgd"):
+                requested_ids = list(item_ids) if item_ids else [row["id"] for row in items if not row.get("fixed")]
                 if not requested_ids:
                     raise HTTPException(status_code=422, detail="Выберите хотя бы одну строку")
                 if len(set(requested_ids)) != len(requested_ids):
@@ -2026,6 +2028,95 @@ class ApprovalService:
         result = self.public_position(after, repo=result_repo)
         result["notification_user_ids"] = [notify_id] if notify_id else []
         return result
+
+    def fix_position(self, user: dict, position_id: str, comment: str = "", *, repo: Repository | None = None) -> dict:
+        """Lock a fully reviewed final position. Only ZGD may lock or unlock it."""
+        result_repo = repo
+        transaction = nullcontext(repo) if repo is not None else self.repo.transaction()
+        with transaction as storage:
+            repo = storage
+            position = repo.lock_by_id("cfo_positions", position_id)
+            if not position:
+                raise HTTPException(status_code=404, detail="Position not found")
+            step_id = self._current_step_id(repo, position)
+            step = get_required(repo, "steps", step_id) if step_id else None
+            if not step or not step.get("user_id"):
+                raise HTTPException(status_code=409, detail="Position is not at the ZGD step")
+            actor = get_required(repo, "users", step["user_id"])
+            if user.get("role") != "zgd" or actor.get("role") != "zgd":
+                raise HTTPException(status_code=403, detail="Only ZGD can lock the budget")
+            self.permissions.require_step_assignee(user, step)
+            if self._parents(step_id, self._edges(repo)):
+                raise HTTPException(status_code=409, detail="ZGD must be the final route step")
+            items = self._position_items(repo, position_id)
+            pending = self._pending_position_decision_ids(repo, position, step, items)
+            if not items or pending:
+                raise HTTPException(status_code=409, detail={"message": "Approve all lines before locking", "item_ids": pending})
+            if any(row.get("fixed") for row in items):
+                raise HTTPException(status_code=409, detail="Budget is already locked")
+            before = dict(position)
+            for item in items:
+                repo.update("req_items", item["id"], {"fixed": True, "frozen": True})
+            after = repo.update("cfo_positions", position_id, {"status": CfoPositionStatus.approved, "current_step_id": None})
+            event_id = self._event_id()
+            self._position_log(repo, user, after, "position_fixed", before=before, after=after,
+                               comment=comment, event_id=event_id, step_id=step_id,
+                               item_ids=[row["id"] for row in items])
+            self._step_log(repo, user, step, "position_fixed", event_id=event_id, comment=comment,
+                           cfo_position_id=position_id)
+            self._sync_request_statuses(repo, user, {row["request_id"] for row in items},
+                                        event_id=event_id, action="request_finalized_by_zgd")
+            sync_annual_budgets(repo)
+            self._sync_step_statuses(repo)
+        return self.public_position(after, repo=result_repo)
+
+    def unfix_position(self, user: dict, position_id: str, comment: str = "", *, repo: Repository | None = None) -> dict:
+        """Unlock a ZGD-fixed position and restore its final route step."""
+        result_repo = repo
+        transaction = nullcontext(repo) if repo is not None else self.repo.transaction()
+        with transaction as storage:
+            repo = storage
+            position = repo.lock_by_id("cfo_positions", position_id)
+            if not position:
+                raise HTTPException(status_code=404, detail="Position not found")
+            items = self._position_items(repo, position_id)
+            if not items or not self._all_items_fixed(items):
+                raise HTTPException(status_code=409, detail="Budget is not locked")
+            fixed_log = max((row for row in repo.load_all("cfo_position_logs")
+                             if row.get("cfo_position_id") == position_id
+                             and (row.get("log") or {}).get("action") == "position_fixed"),
+                            key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)), default=None)
+            step_id = (fixed_log.get("log") or {}).get("step_id") if fixed_log else None
+            step = get_required(repo, "steps", step_id) if step_id else None
+            if not step or not step.get("user_id"):
+                raise HTTPException(status_code=409, detail="Cannot restore the ZGD step")
+            actor = get_required(repo, "users", step["user_id"])
+            if user.get("role") != "zgd" or actor.get("role") != "zgd":
+                raise HTTPException(status_code=403, detail="Only ZGD can unlock the budget")
+            self.permissions.require_step_assignee(user, step)
+            before = dict(position)
+            for item in items:
+                repo.update("req_items", item["id"], {"fixed": False, "frozen": True})
+            after = repo.update("cfo_positions", position_id, {"status": CfoPositionStatus.on_approval, "current_step_id": step_id})
+            event_id = self._event_id()
+            self._position_log(repo, user, after, "position_unfixed", before=before, after=after,
+                               comment=comment, event_id=event_id, step_id=step_id,
+                               current_step_id=step_id, item_ids=[row["id"] for row in items])
+            self._step_log(repo, user, step, "position_unfixed", event_id=event_id, comment=comment,
+                           cfo_position_id=position_id)
+            self._sync_request_statuses(repo, user, {row["request_id"] for row in items},
+                                        event_id=event_id, action="request_reopened_by_zgd")
+            sync_annual_budgets(repo)
+            self._sync_step_statuses(repo)
+        return self.public_position(after, repo=result_repo)
+
+    def fix_positions_from_register(self, user: dict, position_ids: list[str], comment: str = "") -> dict:
+        with self.repo.transaction() as repo:
+            return {"positions": [self.fix_position(user, position_id, comment, repo=repo) for position_id in sorted(set(position_ids))]}
+
+    def unfix_positions_from_register(self, user: dict, position_ids: list[str], comment: str = "") -> dict:
+        with self.repo.transaction() as repo:
+            return {"positions": [self.unfix_position(user, position_id, comment, repo=repo) for position_id in sorted(set(position_ids))]}
 
     def approve_step(self, user: dict, step_id: str, position_ids: list[str]) -> dict:
         available = self.list_step_positions(user, step_id)
@@ -2280,7 +2371,13 @@ class ApprovalService:
             # The return itself is their decision; requiring an artificial
             # approval for every selected line made the group action invisible
             # and forced a contradictory two-step workflow.
-            reviewer_group_return = actor.get("role") == "approver" and bool(item_ids)
+            # ZGD may return a final-stage position for revision without first
+            # approving every line.  This is especially important immediately
+            # after unlocking a budget.  An intermediate approver still needs
+            # an explicit selected-line return.
+            reviewer_group_return = actor.get("role") == "zgd" or (
+                actor.get("role") == "approver" and bool(item_ids)
+            )
             if pending_decision_ids and not reviewer_group_return:
                 raise HTTPException(
                     status_code=409,

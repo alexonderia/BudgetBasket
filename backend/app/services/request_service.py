@@ -2561,9 +2561,8 @@ class RequestService:
                     return False
                 return item["id"] not in economist_decided_by_position.get(position["id"], set())
             # Higher reviewers approve frozen lines, or the unfrozen lines just
-            # returned to their step, one at a time. An approver advances the
-            # position only after every line is checked; ZGD fixes each line
-            # at the final step.
+            # returned to their step, one at a time. ZGD decisions are
+            # reversible until the budget is explicitly locked.
             if actor.get("role") not in {"approver", "zgd"}:
                 return False
             if user.get("role") != actor.get("role") or step.get("user_id") != user.get("id"):
@@ -2579,10 +2578,7 @@ class RequestService:
                 return False
             if not item.get("frozen") and not returned_here:
                 return False
-            return (
-                actor.get("role") != "approver"
-                or item["id"] not in approver_decided_by_position.get(position["id"], {}).get(step["id"], set())
-            )
+            return item["id"] not in approver_decided_by_position.get(position["id"], {}).get(step["id"], set())
 
         def can_edit_position_decision(position: dict | None, item: dict) -> tuple[bool, str | None]:
             """Whether the current reviewer may change an unsent decision."""
@@ -2603,12 +2599,12 @@ class RequestService:
                 ):
                     return True, "economist"
                 return False, None
-            if actor.get("role") == "approver":
+            if actor.get("role") in {"approver", "zgd"}:
                 returned_items = latest_position_return.get(position["id"], (None, set()))[1]
                 if returned_items and item["id"] not in returned_items:
                     return False, None
                 if (
-                    user.get("role") == "approver"
+                    user.get("role") == actor.get("role")
                     and item.get("frozen")
                     and item["id"] in approver_decided_by_position.get(position["id"], {}).get(step["id"], set())
                 ):
@@ -2734,9 +2730,8 @@ class RequestService:
                 decided_ids = approver_decided_by_position.get(position["id"], {}).get(step["id"], set())
                 return bool(required_ids) and required_ids.issubset(decided_ids)
             if actor.get("role") == "zgd":
-                return user.get("role") == "zgd" and all(
-                    row.get("frozen") or row.get("fixed") for row in items
-                )
+                # ZGD is the last route step, so there is no package handoff.
+                return False
             return False
 
         def can_submit_workflow_revision(position: dict | None) -> bool:
@@ -2756,13 +2751,13 @@ class RequestService:
 
         def can_return_workflow_position(position: dict | None) -> bool:
             """Whether a reviewer may return selected position lines as one package."""
-            if not position or user.get("role") != "approver":
+            if not position or user.get("role") not in {"approver", "zgd"}:
                 return False
             step = steps.get(cfo_position_current_step_id(self.repo, position))
             if not step or step.get("unit_id") or step.get("user_id") != user.get("id"):
                 return False
             actor = users.get(step.get("user_id"), {})
-            return actor.get("role") == "approver" and any(
+            return actor.get("role") in {"approver", "zgd"} and any(
                 not row.get("fixed") for row in position_items(position["id"])
             )
 
@@ -2901,6 +2896,19 @@ class RequestService:
                 not item.get("fixed")
                 and can_complete_economist_position(position)
             )
+            is_zgd_lock_actionable = bool(
+                position
+                and user.get("role") == "zgd"
+                and position_step_id
+                and steps.get(position_step_id, {}).get("user_id") == user.get("id")
+                and users.get(steps.get(position_step_id, {}).get("user_id"), {}).get("role") == "zgd"
+                and not item.get("fixed")
+                and all(
+                    row["id"] in approver_decided_by_position.get(position["id"], {}).get(position_step_id, set())
+                    for row in position_items(position["id"])
+                    if not row.get("fixed")
+                )
+            )
             entry = {
                 "id": item["id"],
                 "request_id": request["id"],
@@ -3003,6 +3011,7 @@ class RequestService:
                     if position else False
                 ),
                 "is_economist_completion_actionable": is_economist_completion_actionable,
+                "is_zgd_lock_actionable": is_zgd_lock_actionable,
                 "is_position_actionable": (
                     can_act_on_position(position, item)
                     or (
@@ -3184,6 +3193,12 @@ class RequestService:
             for entry in entries
             if entry.get("is_workflow_return_actionable") and entry.get("position_id")
         }
+        fixed_rows = sum(bool(entry.get("fixed")) for entry in entries)
+        zgd_lock_positions = {
+            entry["position_id"]
+            for entry in entries
+            if entry.get("is_zgd_lock_actionable") and entry.get("position_id")
+        }
         return {
             "requested_sum": requested,
             "approved_sum": approved_sum,
@@ -3211,6 +3226,8 @@ class RequestService:
             "workflow_ready_positions": len(workflow_ready_positions),
             "workflow_revision_positions": len(workflow_revision_positions),
             "workflow_return_positions": len(workflow_return_positions),
+            "fixed_rows": fixed_rows,
+            "zgd_lock_positions": len(zgd_lock_positions),
         }
 
     def _register_analytics_summary(
@@ -3538,6 +3555,8 @@ class RequestService:
                 detail="Неизвестный уровень реестра для группового согласования",
             )
         action_flags = (
+            ("fixed",) if action == "unfix" else
+            ("is_zgd_lock_actionable",) if action == "fix" else
             ("is_workflow_submission_actionable", "is_workflow_revision_actionable", "is_workflow_return_actionable")
             if action == "return_for_revision"
             else ("is_workflow_submission_actionable", "is_workflow_revision_actionable")
@@ -3580,9 +3599,9 @@ class RequestService:
                 entry.get("is_cfo_review_actionable")
                 or entry.get("is_approval_actionable")
                 or (
-                    user.get("role") in {"employee", "economist"}
+                    user.get("role") in {"employee", "economist", "approver", "zgd"}
                     and entry.get("is_decision_editable")
-                    and entry.get("decision_editable_stage") in {"cfo_review", "economist"}
+                    and entry.get("decision_editable_stage") in {"cfo_review", "economist", "approver"}
                 )
             )
         ]

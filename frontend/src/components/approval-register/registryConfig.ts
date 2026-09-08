@@ -291,7 +291,8 @@ export function groupHasWorkflowActions(group: ApprovalRegisterGroup, role?: Use
 }
 
 export function groupHasWorkflowApprove(group: ApprovalRegisterGroup, role?: User['role']) {
-  if (role === 'economist' || role === 'approver' || role === 'zgd') {
+  if (role === 'zgd') return false;
+  if (role === 'economist' || role === 'approver') {
     return (group.aggregates.workflow_ready_positions || 0) > 0;
   }
   if (role === 'employee') {
@@ -314,7 +315,7 @@ export function groupHasWorkflowRevision(group: ApprovalRegisterGroup, role?: Us
  */
 export function groupHasWorkflowReturn(group: ApprovalRegisterGroup, role?: User['role']) {
   if (role === 'economist') return groupHasWorkflowRevision(group, role);
-  return role === 'approver' && (group.aggregates.workflow_return_positions || 0) > 0;
+  return (role === 'approver' || role === 'zgd') && (group.aggregates.workflow_return_positions || 0) > 0;
 }
 
 export function workflowApproveLabel(role: User['role']) {
@@ -433,6 +434,30 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       tone: 'warning',
       hint: 'Решение сохранено. После проверки остальных строк передайте позицию на доработку.',
       shortHint: 'Ожидает передачи на доработку',
+    };
+  }
+  // A previous stage may have already approved and frozen the line while the
+  // position is still waiting for another reviewer.  The saved item decision
+  // must not hide that active route state as a final "Согласовано" status.
+  const waitingForAnotherWorkflowStep = Boolean(
+    item.is_in_approval
+    && isFinalDecisionStatus(item.status)
+    && !item.fixed
+    && !item.is_revision
+    && !item.is_module_revision
+    && !item.is_approval_actionable
+    && !item.is_decision_editable
+    && !item.is_position_submission_actionable
+    && !item.is_workflow_submission_actionable
+    && !item.is_workflow_revision_actionable,
+  );
+  if (waitingForAnotherWorkflowStep) {
+    const stage = item.approval_stage || 'согласования';
+    return {
+      label: 'На согласовании',
+      tone: 'info',
+      hint: `Текущий этап: ${stage}. Ожидается решение другого участника маршрута`,
+      shortHint: 'Ожидает другого этапа',
     };
   }
   const wasReviewedAfterRevision = Boolean(

@@ -111,7 +111,7 @@ describe('registry display helpers', () => {
     expect(groupHasWorkflowApprove(group, 'approver')).toBe(true);
 
     expect(groupHasWorkflowActions(group, 'zgd')).toBe(true);
-    expect(groupHasWorkflowApprove(group, 'zgd')).toBe(true);
+    expect(groupHasWorkflowApprove(group, 'zgd')).toBe(false);
   });
 
   it('keeps package actions hidden until the current reviewer decides every line', () => {
@@ -202,6 +202,17 @@ describe('registry display helpers', () => {
       is_approval_actionable: false,
       approval_stage: 'Проверка экономистом ЦФО',
     }).label).toBe('Ожидает предыдущих этапов');
+    expect(rowRegistryStatus({
+      ...sampleRow,
+      status: 'approved',
+      is_in_approval: true,
+      is_approval_actionable: false,
+      is_decision_editable: false,
+      is_position_submission_actionable: false,
+      is_workflow_submission_actionable: false,
+      is_workflow_revision_actionable: false,
+      approval_stage: 'Согласование проверяющим',
+    }).label).toBe('На согласовании');
     expect(groupRegistryStatus({ ...sampleAggregates, collecting_requests: 1, requests_count: 1 }).label).toBe('Черновик');
     expect(groupRegistryStatus({ ...sampleAggregates, cfo_review_actionable_requests: 1 }).label).toBe('Ожидает вашего решения');
     expect(groupRegistryStatus({ ...sampleAggregates, cfo_review_completable_requests: 1 }).label).toBe('Завершите проверку');
@@ -424,7 +435,7 @@ describe('registry display helpers', () => {
 
     expect(groupHasWorkflowReturn(group, 'approver')).toBe(true);
     expect(groupHasWorkflowReturn(group, 'economist')).toBe(false);
-    expect(groupHasWorkflowReturn(group, 'zgd')).toBe(false);
+    expect(groupHasWorkflowReturn(group, 'zgd')).toBe(true);
   });
 
   it('uses the full plan for a point approval until a fact is entered', () => {

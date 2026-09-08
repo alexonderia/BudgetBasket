@@ -56,8 +56,27 @@ function StatusWithLifecycle({
   );
 }
 
-export function RegistryStatusCell({ status, item }: { status: RegistryStatusDisplay; item?: ApprovalRegisterRow }) {
-  return <StatusVisualCell presentation={rowStatusPresentation(status, item)} />;
+export function RegistryStatusCell({
+  status,
+  item,
+  onPrimaryAction,
+  primaryActionLabel,
+  primaryActionDisabled,
+}: {
+  status: RegistryStatusDisplay;
+  item?: ApprovalRegisterRow;
+  onPrimaryAction?: () => void;
+  primaryActionLabel?: string;
+  primaryActionDisabled?: boolean;
+}) {
+  return (
+    <StatusVisualCell
+      presentation={rowStatusPresentation(status, item)}
+      primaryAction={onPrimaryAction && primaryActionLabel
+        ? { onClick: onPrimaryAction, ariaLabel: primaryActionLabel, disabled: primaryActionDisabled }
+        : undefined}
+    />
+  );
 }
 
 export function RegistryGroupStatusCell({ status, aggregates }: { status: RegistryStatusDisplay; aggregates: RegisterAggregates }) {

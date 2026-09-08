@@ -461,6 +461,8 @@ export function aggregateRegisterRows(base: ApprovalRegisterGroup['aggregates'],
     submission_positions: countDistinct(rows.filter((row) => row.is_position_submission_actionable).map((row) => row.position_id)),
     economist_completion_positions: countDistinct(rows.filter((row) => row.is_economist_completion_actionable).map((row) => row.position_id)),
     workflow_ready_positions: countDistinct(rows.filter((row) => row.is_workflow_submission_actionable).map((row) => row.position_id)),
+    fixed_rows: rows.filter((row) => row.fixed).length,
+    zgd_lock_positions: countDistinct(rows.filter((row) => row.is_zgd_lock_actionable).map((row) => row.position_id)),
   };
 }
 

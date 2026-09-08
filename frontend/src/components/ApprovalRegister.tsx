@@ -33,6 +33,8 @@ import IconButton from '@mui/material/IconButton';
 import InputAdornment from '@mui/material/InputAdornment';
 import InputLabel from '@mui/material/InputLabel';
 import LinearProgress from '@mui/material/LinearProgress';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
 import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import Pagination from '@mui/material/Pagination';
@@ -1195,6 +1197,7 @@ function GroupActions({
   onWorkflowDecision,
   onWorkflowReject,
   onWorkflowReturn,
+  onWorkflowFix,
   compact = false,
 }: {
   group: ApprovalRegisterGroup;
@@ -1207,6 +1210,7 @@ function GroupActions({
   onWorkflowDecision: (group: ApprovalRegisterGroup) => void;
   onWorkflowReject: (group: ApprovalRegisterGroup) => void;
   onWorkflowReturn: (group: ApprovalRegisterGroup) => void;
+  onWorkflowFix: (group: ApprovalRegisterGroup, unlock: boolean) => void;
   compact?: boolean;
 }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -1225,9 +1229,13 @@ function GroupActions({
   const hasWorkflowPackage = groupHasWorkflowApprove(group, user.role);
   const hasWorkflowRevisionPackage = groupHasWorkflowRevision(group, user.role);
   const hasWorkflowReturn = groupHasWorkflowReturn(group, user.role);
+  const hasZgdLock = user.role === 'zgd' && (group.aggregates.zgd_lock_positions || 0) > 0;
+  const hasZgdUnlock = user.role === 'zgd'
+    && (group.aggregates.fixed_rows || 0) > 0
+    && group.aggregates.fixed_rows === group.aggregates.total_rows;
   const hasWorkflowDecision = hasWorkflowActions && !hasWorkflowPackage && !hasWorkflowRevisionPackage;
   const actualWorkflowReject = user.role === 'economist' && hasWorkflowActions && !hasWorkflowRevisionPackage;
-  if (!hasCfo && !hasCfoDecision && !hasComplete && !hasWorkflowActions) return null;
+  if (!hasCfo && !hasCfoDecision && !hasComplete && !hasWorkflowActions && !hasZgdUnlock) return null;
 
   const scopeLabel = group.type === 'article' ? 'статью' : group.type === 'cfo' ? 'ЦФО' : 'группу';
   const primaryApprove = hasCfoReview
@@ -1319,6 +1327,20 @@ function GroupActions({
           )}
         </>
       )}
+      {hasZgdLock && (
+        <Tooltip title="Зафиксировать бюджет: после этого никто, включая ЗГД, не сможет изменить строки до разблокировки">
+          <IconButton size="small" color="primary" aria-label="Зафиксировать бюджет" onClick={() => onWorkflowFix(group, false)}>
+            <LockOutlinedIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+        </Tooltip>
+      )}
+      {hasZgdUnlock && (
+        <Tooltip title="Разблокировать бюджет для доработки">
+          <IconButton size="small" color="warning" aria-label="Разблокировать бюджет" onClick={() => onWorkflowFix(group, true)}>
+            <LockOpenOutlinedIcon sx={{ fontSize: 17 }} />
+          </IconButton>
+        </Tooltip>
+      )}
       {hasCfoReview && hasWorkflowPackage && (
         <>
           <IconButton size="small" onClick={(event) => setAnchor(event.currentTarget)} aria-label="Дополнительные действия по позициям">
@@ -1347,6 +1369,7 @@ function GroupYourDecisionCell({
   onWorkflowDecision,
   onWorkflowReject,
   onWorkflowReturn,
+  onWorkflowFix,
 }: {
   group: ApprovalRegisterGroup;
   user: User;
@@ -1358,6 +1381,7 @@ function GroupYourDecisionCell({
   onWorkflowDecision: (group: ApprovalRegisterGroup) => void;
   onWorkflowReject: (group: ApprovalRegisterGroup) => void;
   onWorkflowReturn: (group: ApprovalRegisterGroup) => void;
+  onWorkflowFix: (group: ApprovalRegisterGroup, unlock: boolean) => void;
 }) {
   const summary = groupYourStepSummary(group.aggregates);
   const quick = canQuickDecideGroup(group, user.role);
@@ -1397,6 +1421,7 @@ function GroupYourDecisionCell({
           onWorkflowDecision={onWorkflowDecision}
           onWorkflowReject={onWorkflowReject}
           onWorkflowReturn={onWorkflowReturn}
+          onWorkflowFix={onWorkflowFix}
         />
       ) : null}
     </Stack>
@@ -1795,6 +1820,30 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
       toast(getApiErrorMessage(error, 'Не удалось сохранить комментарий'), 'error');
     },
   });
+  // A fixed position is immutable for every participant, including ZGD.  The
+  // unlock control is intentionally kept on the row where the lock is shown,
+  // so ZGD does not have to search through a separate group menu to reopen it.
+  const unfixPosition = useMutation({
+    mutationFn: async () => {
+      if (!item.position_id) throw new Error('У строки нет позиции для разблокировки');
+      return api.post(`/cfo-positions/${item.position_id}/unfix`, {
+        // The endpoint accepts the same revision payload as the existing
+        // position actions.  The service unlocks the complete position; the
+        // visible row only supplies a valid item id for payload validation.
+        items: [{ item_id: item.id }],
+        comment: '',
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+      queryClient.invalidateQueries({ queryKey: ['cfo-positions'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-route'] });
+      queryClient.invalidateQueries({ queryKey: ['cfo-approval-route'] });
+      toast('Фиксация бюджета снята. Строки снова доступны для доработки.', 'success');
+    },
+    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось снять фиксацию бюджета'), 'error'),
+  });
   const commitComment = (comment: string) => {
     updateDraftComment(comment);
     saveComment.mutate(comment);
@@ -1933,7 +1982,13 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
     status: (
       <Stack spacing={0.25} alignItems="flex-start" sx={{ width: '100%', minWidth: 0 }}>
         <Box sx={{ width: '100%', minWidth: 0 }}>
-          <RegistryStatusCell status={rowStatus} item={item} />
+          <RegistryStatusCell
+            status={rowStatus}
+            item={item}
+            onPrimaryAction={user.role === 'zgd' && item.fixed && item.position_id ? () => unfixPosition.mutate() : undefined}
+            primaryActionLabel="Снять фиксацию бюджета"
+            primaryActionDisabled={unfixPosition.isPending}
+          />
         </Box>
           {actionEnabled && (
             <Stack direction="row" spacing={0} sx={{ '& .MuiIconButton-root': { p: 0.35 } }}>
@@ -2429,6 +2484,7 @@ function TreeRows({
   onWorkflowDecision,
   onWorkflowReject,
   onWorkflowReturn,
+  onWorkflowFix,
   onItems,
   requestId,
   user,
@@ -2464,6 +2520,7 @@ function TreeRows({
   onWorkflowDecision: (group: ApprovalRegisterGroup) => void;
   onWorkflowReject: (group: ApprovalRegisterGroup) => void;
   onWorkflowReturn: (group: ApprovalRegisterGroup) => void;
+  onWorkflowFix: (group: ApprovalRegisterGroup, unlock: boolean) => void;
   onItems: (groupId: string, items: ApprovalRegisterRow[]) => void;
   requestId?: string;
   user: User;
@@ -2499,7 +2556,7 @@ function TreeRows({
       status: (
         <Stack spacing={0.5} alignItems="flex-start">
           <RegistryGroupStatusCell status={groupRegistryStatus(group.aggregates)} aggregates={group.aggregates} />
-          {approvalMode && isGroupActionable(group, user.role) && (
+          {approvalMode && (isGroupActionable(group, user.role) || (user.role === 'zgd' && (group.aggregates.fixed_rows || 0) === group.aggregates.total_rows)) && (
             <GroupActions
               group={group}
               user={user}
@@ -2511,6 +2568,7 @@ function TreeRows({
               onWorkflowDecision={onWorkflowDecision}
               onWorkflowReject={onWorkflowReject}
               onWorkflowReturn={onWorkflowReturn}
+              onWorkflowFix={onWorkflowFix}
             />
           )}
         </Stack>
@@ -2620,6 +2678,7 @@ function TreeRows({
                 onWorkflowDecision={onWorkflowDecision}
                 onWorkflowReject={onWorkflowReject}
                 onWorkflowReturn={onWorkflowReturn}
+                onWorkflowFix={onWorkflowFix}
                 onItems={onItems}
                 requestId={requestId}
                 user={user}
@@ -2969,7 +3028,7 @@ export function ApprovalRegister({
     onError: (error) => toast(getApiErrorMessage(error, 'Не удалось завершить проверку ЦФО'), 'error'),
   });
   const workflowGroupAction = useMutation({
-    mutationFn: async ({ groups, action, comment = '', targetStepId }: { groups: ApprovalRegisterGroup[]; action: 'submit' | 'approve' | 'return_for_revision'; comment?: string; targetStepId?: string }) => {
+    mutationFn: async ({ groups, action, comment = '', targetStepId }: { groups: ApprovalRegisterGroup[]; action: 'submit' | 'approve' | 'return_for_revision' | 'fix' | 'unfix'; comment?: string; targetStepId?: string }) => {
       for (const group of groups) {
         await api.post(
           `/approval-register/groups/${group.type}/${groupEntityId(group)}/workflow-action`,
@@ -3886,6 +3945,7 @@ export function ApprovalRegister({
               onWorkflowDecision={(group) => { void openWorkflowGroupDecision(group); }}
               onWorkflowReject={(group) => { void openGroupReject([group]); }}
               onWorkflowReturn={(group) => openGroupRevision([group], 'workflow')}
+              onWorkflowFix={(group, unlock) => workflowGroupAction.mutate({ groups: [group], action: unlock ? 'unfix' : 'fix' })}
               onItems={registerGroupItems}
               requestId={requestId}
               user={user}

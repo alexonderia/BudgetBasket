@@ -336,7 +336,7 @@ class RegisterGroupDecisionIn(StrictModel):
 class RegisterGroupWorkflowActionIn(StrictModel):
     """Action over all actionable CFO positions in an article or CFO group."""
 
-    action: Literal["submit", "approve", "return_for_revision"]
+    action: Literal["submit", "approve", "return_for_revision", "fix", "unfix"]
     comment: str = ""
     target_step_id: str | None = None
     items: list["RevisionItemIn"] | None = None

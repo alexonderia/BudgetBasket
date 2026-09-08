@@ -211,6 +211,12 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
         hint,
         primaryIconOnly: true,
       });
+    case 'На согласовании':
+      return withContext({
+        primary: { icon: AccountTreeOutlinedIcon, text: 'На согласовании', variant: 'info', hint },
+        meta: workflowMeta(item) || 'Ожидается решение другого участника маршрута',
+        hint,
+      });
     case 'Ожидает предыдущих этапов':
       return withContext({
         primary: { icon: AccountTreeOutlinedIcon, text: 'На согласовании', variant: 'info', hint },
@@ -503,7 +509,15 @@ function StatusTooltip({ presentation }: { presentation: StatusVisualPresentatio
   );
 }
 
-export function StatusVisualCell({ presentation, disableTooltip = false }: { presentation: StatusVisualPresentation; disableTooltip?: boolean }) {
+export function StatusVisualCell({
+  presentation,
+  disableTooltip = false,
+  primaryAction,
+}: {
+  presentation: StatusVisualPresentation;
+  disableTooltip?: boolean;
+  primaryAction?: { onClick: () => void; ariaLabel: string; disabled?: boolean };
+}) {
   const showActionIndicator = presentation.showActionIndicator && !presentation.primaryIconOnly;
   const hasTooltip = Boolean(
     presentation.hint
@@ -511,11 +525,38 @@ export function StatusVisualCell({ presentation, disableTooltip = false }: { pre
     || presentation.tooltipLines?.some(Boolean),
   );
 
+  const badge = <StatusVisualBadge spec={presentation.primary} iconOnly={presentation.primaryIconOnly} />;
+  const interactiveBadge = primaryAction ? (
+    <Box
+      component="button"
+      type="button"
+      aria-label={primaryAction.ariaLabel}
+      title={primaryAction.ariaLabel}
+      disabled={primaryAction.disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        primaryAction.onClick();
+      }}
+      sx={{
+        display: 'inline-flex',
+        p: 0,
+        m: 0,
+        border: 0,
+        borderRadius: '4px',
+        bgcolor: 'transparent',
+        cursor: primaryAction.disabled ? 'default' : 'pointer',
+        '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
+      }}
+    >
+      {badge}
+    </Box>
+  ) : badge;
+
   const content = (
     <Box sx={{ minWidth: 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 0.25, py: 0.15 }}>
       <Box sx={{ height: BADGE_HEIGHT, display: 'flex', alignItems: 'center', gap: 0.35, minWidth: 0 }}>
         <Box sx={{ minWidth: 0, flex: presentation.primaryIconOnly ? '0 0 auto' : 1, height: BADGE_HEIGHT, display: 'flex', alignItems: 'center' }}>
-          <StatusVisualBadge spec={presentation.primary} iconOnly={presentation.primaryIconOnly} />
+          {interactiveBadge}
         </Box>
         {showActionIndicator ? <ActionIndicatorIcon /> : null}
       </Box>

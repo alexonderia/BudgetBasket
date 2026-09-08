@@ -144,6 +144,9 @@ export interface RegisterAggregates {
   workflow_revision_positions?: number;
   /** Positions a reviewer may return to the immediately preceding route step. */
   workflow_return_positions?: number;
+  /** Lines locked by ZGD; used to expose the reversible final lock control. */
+  fixed_rows?: number;
+  zgd_lock_positions?: number;
 }
 
 export interface RegisterGroupAnalyticsField {
@@ -302,6 +305,7 @@ export interface ApprovalRegisterRow {
   is_workflow_return_actionable?: boolean;
   is_workflow_revision_marked?: boolean;
   is_economist_completion_actionable?: boolean;
+  is_zgd_lock_actionable?: boolean;
   approval_stage: string | null;
   frozen?: boolean;
   fixed?: boolean;

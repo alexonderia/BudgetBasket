@@ -919,6 +919,16 @@ async def act_on_approval_register_group(
             user, position_ids, payload.comment,
         )
         return await _broadcast_notifications(request, result, "cfo_position.updated")
+    if payload.action == "fix":
+        result = request.app.state.approval_service.fix_positions_from_register(
+            user, position_ids, payload.comment,
+        )
+        return await _broadcast_notifications(request, result, "cfo_position.updated")
+    if payload.action == "unfix":
+        result = request.app.state.approval_service.unfix_positions_from_register(
+            user, position_ids, payload.comment,
+        )
+        return await _broadcast_notifications(request, result, "cfo_position.updated")
     result = request.app.state.approval_service.return_positions_from_register(
         user,
         position_ids,
@@ -1212,6 +1222,22 @@ def unfreeze_cfo_position(
     return request.app.state.approval_service.unfreeze_position(
         user, position_id, payload.comment, payload.item_ids
     )
+
+
+@router.post("/cfo-positions/{position_id}/fix")
+async def fix_cfo_position(
+    request: Request, position_id: str, payload: CfoPositionActionIn, user: User
+):
+    result = request.app.state.approval_service.fix_position(user, position_id, payload.comment)
+    return await _broadcast_notifications(request, result, "cfo_position.updated")
+
+
+@router.post("/cfo-positions/{position_id}/unfix")
+async def unfix_cfo_position(
+    request: Request, position_id: str, payload: CfoPositionRevisionIn, user: User
+):
+    result = request.app.state.approval_service.unfix_position(user, position_id, payload.comment)
+    return await _broadcast_notifications(request, result, "cfo_position.updated")
 
 
 @router.post("/cfo-positions/{position_id}/reopen-fixed")
