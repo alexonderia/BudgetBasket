@@ -77,6 +77,8 @@ import {
   groupHasCfoCompleteActions,
   groupHasWorkflowActions,
   groupHasWorkflowApprove,
+  groupHasWorkflowRevision,
+  groupHasWorkflowReturn,
   groupRegistryStatus,
   isGroupActionable,
   isGroupSelectable,
@@ -126,6 +128,7 @@ import { buildRegisterHref, registerDrillFromSearchParams } from '../utils/dashb
 import { filterFieldSx } from '../utils/responsive';
 import { canUseRegisterApprovalMode } from '../utils/roles';
 import { resolveApprovalRoutePanel, type ApprovalRouteModule } from './approval-register/approvalRoutePanel';
+import { stepReadinessLabels } from '../utils/workflowPresentation';
 import { FilePreviewDialog } from './FilePreviewDialog';
 
 const LEGACY_PREFERENCES_KEY = 'budgetbasket:approval-register:preferences';
@@ -183,7 +186,7 @@ function filtersForPersistence(filters: RegistryFilters): RegistryFilters {
 
 const EMPTY_FILTERS: RegistryFilters = { search: '', flow: '', status: '', budgetYear: '', cfoId: '', articleId: '', requestStatus: '', frozen: '', positionedOnly: false, ...EMPTY_ANALYTICS_FILTERS };
 
-type RowDecision = 'approved' | 'approved_with_changes' | 'rejected';
+type RowDecision = 'approved' | 'approved_with_changes' | 'rejected' | 'on_revision';
 type DecisionTarget = {
   rows: ApprovalRegisterRow[];
   decision: RowDecision;
@@ -447,6 +450,10 @@ async function postBulkRowDecision(rows: ApprovalRegisterRow[], decision: RowDec
   if (finalApprovalRows.length && decision !== 'approved') {
     throw new Error('Для возврата строк на доработку используйте кнопку «На доработку».');
   }
+  // Every request below is one UI bulk operation, even when the selected
+  // lines belong to different CFO positions. Reuse one audit event id so the
+  // history drawer can render it as one grouped action.
+  const approvalEventId = finalApprovalRows.length ? crypto.randomUUID() : undefined;
   const workflowRowsByPosition = new Map<string, ApprovalRegisterRow[]>();
   rows.forEach((row) => {
     if (
@@ -473,6 +480,7 @@ async function postBulkRowDecision(rows: ApprovalRegisterRow[], decision: RowDec
     requests.push(api.post(`/steps/${row.current_step_id}/positions/${row.position_id}/approve`, {
       comment,
       item_ids: [row.id],
+      ...(approvalEventId ? { event_id: approvalEventId } : {}),
     }));
   });
   workflowRowsByPosition.forEach((positionRows, positionId) => {
@@ -926,8 +934,10 @@ function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionT
     && target.rows.length === 1 && adjustedAmount !== target.rows[0].requested_sum
     ? 'approved_with_changes'
     : decision;
-  const requiresComment = resolvedDecision === 'rejected' || resolvedDecision === 'approved_with_changes';
-  const title = resolvedDecision === 'rejected'
+  const requiresComment = resolvedDecision === 'rejected' || resolvedDecision === 'approved_with_changes' || resolvedDecision === 'on_revision';
+  const title = resolvedDecision === 'on_revision'
+    ? (target.rows.length === 1 ? 'Отметить строку на доработку' : 'Отметить строки на доработку')
+    : resolvedDecision === 'rejected'
     ? (target.rows.length === 1 ? 'Отклонить строку' : 'Отклонить строки')
     : resolvedDecision === 'approved_with_changes'
       ? 'Согласовать строку'
@@ -950,6 +960,9 @@ function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionT
           <MenuItem value="rejected">Отклонить</MenuItem>
         </Select>
       </FormControl>
+    )}
+    {resolvedDecision === 'on_revision' && (
+      <Alert severity="warning" variant="outlined">Строка останется в текущей позиции до действия «На доработку». Укажите, что нужно исправить.</Alert>
     )}
     {resolvedDecision === 'rejected' && (
       <Alert severity="error" variant="outlined">Отклонение — финальное отрицательное решение по выбранным строкам. Для возврата с возможностью исправления используйте действие группы «На доработку».</Alert>
@@ -1210,8 +1223,10 @@ function GroupActions({
   // handoff/return actions.
   const hasWorkflowActions = groupHasWorkflowActions(group, user.role);
   const hasWorkflowPackage = groupHasWorkflowApprove(group, user.role);
-  const hasWorkflowDecision = hasWorkflowActions && !hasWorkflowPackage;
-  const actualWorkflowReject = user.role === 'economist' && hasWorkflowActions;
+  const hasWorkflowRevisionPackage = groupHasWorkflowRevision(group, user.role);
+  const hasWorkflowReturn = groupHasWorkflowReturn(group, user.role);
+  const hasWorkflowDecision = hasWorkflowActions && !hasWorkflowPackage && !hasWorkflowRevisionPackage;
+  const actualWorkflowReject = user.role === 'economist' && hasWorkflowActions && !hasWorkflowRevisionPackage;
   if (!hasCfo && !hasCfoDecision && !hasComplete && !hasWorkflowActions) return null;
 
   const scopeLabel = group.type === 'article' ? 'статью' : group.type === 'cfo' ? 'ЦФО' : 'группу';
@@ -1295,7 +1310,7 @@ function GroupActions({
               </IconButton>
             </Tooltip>
           )}
-          {user.role !== 'employee' && hasWorkflowPackage && (
+          {user.role !== 'employee' && hasWorkflowReturn && (
             <Tooltip title={returnTitle}>
               <IconButton size="small" color="warning" aria-label={returnTitle} onClick={() => onWorkflowReturn(group)}>
                 <RestartAltIcon sx={{ fontSize: 17 }} />
@@ -1311,7 +1326,7 @@ function GroupActions({
           </IconButton>
           <Menu anchorEl={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
             <MenuItem dense onClick={() => { setAnchor(null); onWorkflowApprove(group); }}>{workflowApproveLabel(user.role)}</MenuItem>
-            {user.role !== 'employee' && (
+            {user.role !== 'employee' && hasWorkflowReturn && (
               <MenuItem dense onClick={() => { setAnchor(null); onWorkflowReturn(group); }}>На доработку (позиции)</MenuItem>
             )}
           </Menu>
@@ -1568,10 +1583,13 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
     return roleTitle(step);
   };
   const stateLabel = (step: ApprovalStep, active: boolean, isNext: boolean) => {
+    if (displayStatus(step) === 'on_revision') {
+      const count = step.readiness?.needs_revision || step.revision_positions_count || 0;
+      return count ? `На доработке: ${count}` : 'На доработке';
+    }
     if (active) return 'Текущий этап';
     if (isNext && !['approved', 'closed'].includes(displayStatus(step))) return 'Следующий этап';
     if (['approved', 'closed'].includes(displayStatus(step))) return 'Согласовано';
-    if (displayStatus(step) === 'on_revision') return 'На доработке';
     if (displayStatus(step) === 'on_approval') return 'На согласовании';
     return 'Ожидает согласования';
   };
@@ -1681,6 +1699,11 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
                       <>
                         <Typography variant="caption" color="text.secondary" sx={{ fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>{ownerLabel(item.step)}</Typography>
                         <Typography variant="caption" sx={{ mt: 0.15, color: tone.main, fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>{stateLabel(item.step, active, isNext)}</Typography>
+                        {stepReadinessLabels(item.step).map((label) => (
+                          <Typography key={label} variant="caption" sx={{ mt: 0.15, color: 'text.secondary', fontSize: 10.5, lineHeight: 1.2, display: 'block' }}>
+                            {label}
+                          </Typography>
+                        ))}
                       </>
                     )}
                   </Box>
@@ -1701,14 +1724,23 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
 function RegistryRowCells({ item, columns, widths, selected, active, user, approvalMode, onSelect, onActive, onDecision, onSaveRowDecision, onOpen, onHistory, structureLevel = 0 }: { item: ApprovalRegisterRow; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selected: boolean; active: boolean; user: User; approvalMode: boolean; onSelect: (checked: boolean) => void; onActive: () => void; onDecision: (target: DecisionTarget) => void; onSaveRowDecision: (row: ApprovalRegisterRow, decision: RowDecision, amount: number, comment?: string) => void; onOpen: () => void; onHistory: () => void; structureLevel?: number }) {
   const requestPointRevision = useContext(PointRevisionContext);
   const registerView = useContext(RegisterViewContext);
+  const queryClient = useQueryClient();
+  const toast = useAppToast();
   const workflowColumns = usesWorkflowStepColumns(user.role);
   const actionEnabled = approvalMode && isRowActionable(item, user.role);
-  const canReturnWorkflowPackage = user.role === 'employee'
-    || Boolean(item.is_workflow_submission_actionable);
+  // A line-level return belongs only to the responsible CFO.  A reviewer
+  // returns selected lines through the group dialog, where one comment is
+  // recorded for the grouping event.  Reusing the CFO endpoint here made an
+  // approver request fail with «Заявка относится к другому ЦФО».
+  const canReturnPointForCfo = user.role === 'employee';
   const moduleRevisionEditable = !item.is_module_revision || registerView === 'module';
   const amountEditable = approvalMode
     && moduleRevisionEditable
     && canEditApprovedAmount(user.role, item);
+  const commentEditable = isRowActionable(item, user.role)
+    || Boolean(item.is_revision_actionable)
+    || Boolean(item.is_cfo_module_revision_actionable)
+    || Boolean(item.is_decision_editable);
   const statusEditable = actionEnabled;
   // Every row action exposed to the responsible-CFO register must go through
   // the same decision dialog.  Keep this based on the rendered action rather
@@ -1750,6 +1782,22 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
   const updateDraftComment = (comment: string) => {
     setDraftComment(comment);
     draftCommentRef.current = comment;
+  };
+  const saveComment = useMutation({
+    mutationFn: async (comment: string) => (await api.patch<BudgetItem>(`/items/${item.id}`, { comment })).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+      queryClient.invalidateQueries({ queryKey: ['registry-request-items', item.request_id] });
+    },
+    onError: (error) => {
+      updateDraftComment(item.comment || '');
+      toast(getApiErrorMessage(error, 'Не удалось сохранить комментарий'), 'error');
+    },
+  });
+  const commitComment = (comment: string) => {
+    updateDraftComment(comment);
+    saveComment.mutate(comment);
   };
   const commitDecision = (decision: RegistryRowDecision, amount: number) => {
     const resolvedDecision = decision === 'approved' && amount !== item.requested_sum
@@ -1911,7 +1959,22 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
                   </IconButton>
                 </Tooltip>
               )}
-              {canReturnWorkflowPackage && (
+              {user.role === 'economist' && actionEnabled && (
+                <Tooltip title="Отметить строку на доработку">
+                  <IconButton
+                    size="small"
+                    color="warning"
+                    aria-label="Отметить строку на доработку"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDecision({ rows: [item], decision: 'on_revision', comment: draftCommentRef.current });
+                    }}
+                  >
+                    <RestartAltIcon sx={{ fontSize: 17 }} />
+                  </IconButton>
+                </Tooltip>
+              )}
+              {canReturnPointForCfo && (
                 <Tooltip title="Вернуть на доработку">
                   <IconButton
                     size="small"
@@ -1935,12 +1998,13 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
     comment: (
       <InlineEditTextCell
         value={draftComment}
-        editable={approvalMode && (actionEnabled || amountEditable)}
+        editable={commentEditable}
         multiline
+        pending={saveComment.isPending}
         placeholder="—"
-        ariaLabel="Комментарий к решению"
-        tooltip="Изменить комментарий: он сохранится вместе с решением по строке"
-        onCommit={updateDraftComment}
+        ariaLabel="Комментарий к строке"
+        tooltip="Нажмите, чтобы изменить комментарий"
+        onCommit={commitComment}
       />
     ),
     files: item.files_count ? (
@@ -1974,7 +2038,7 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
       return result;
     }, {} as Partial<Record<RegistryColumnId, React.ReactNode>>),
   };
-  return <TableRow hover selected={active} tabIndex={0} onClick={onActive} onDoubleClick={onOpen} onKeyDown={(event) => { if (event.key === 'Enter') onOpen(); if (event.key.toLocaleLowerCase('ru-RU') === 'с' && actionEnabled) onDecision({ rows: [item], decision: 'approved' }); }} className="approval-register-row approval-register-row--item" sx={{ '& td': { py: 0.35, px: 0.75, minHeight: 40, bgcolor: '#fff' }, '&.Mui-selected td': { bgcolor: '#edf5ff' }, '&:hover td': { bgcolor: '#f7fbff' } }}>
+  return <TableRow hover selected={active} tabIndex={0} onClick={onActive} onDoubleClick={onOpen} className="approval-register-row approval-register-row--item" sx={{ '& td': { py: 0.35, px: 0.75, minHeight: 40, bgcolor: '#fff' }, '&.Mui-selected td': { bgcolor: '#edf5ff' }, '&:hover td': { bgcolor: '#f7fbff' } }}>
     {columns.map((column) => {
       const fixed = column.id === 'select' || column.id === 'structure';
       const align = ['requested', 'approved', 'rejected'].includes(column.id) ? 'right' : ['select', 'files'].includes(column.id) ? 'center' : 'left';
@@ -3273,32 +3337,37 @@ export function ApprovalRegister({
   };
   const handleBulkReject = () => {
     const actionableRows = selectedRows.filter((row) => isRowActionable(row, user.role));
+    if (selectionRoots.length > 0) {
+      const cfoRoots = cfoGroupsForReturn(selectionRoots);
+      const workflowRoots = workflowGroupsForAction(selectionRoots)
+        .filter((group) => user.role === 'employee' || groupHasWorkflowReturn(group, user.role));
+      if (cfoRoots.length) openGroupRevision(cfoRoots, 'cfo');
+      else if (workflowRoots.length) openGroupRevision(workflowRoots, 'workflow');
+      return;
+    }
     if (['approver', 'zgd'].includes(user.role) && actionableRows.some((row) => row.is_final_approval_actionable)) {
       const workflowRows = actionableRows.filter((row) => row.is_final_approval_actionable);
       if (workflowRows.every((row) => row.is_workflow_submission_actionable)) {
         setRevisionDialog({ mode: 'workflow', initialLines: workflowRows });
       } else {
-        toast('Сначала вынесите решения по всем строкам, затем отправьте позицию на шаг назад', 'info');
+        toast('Для возврата на доработку выберите группировку, а не отдельные строки', 'info');
       }
       return;
     }
     if (['approver', 'zgd'].includes(user.role) && actionableRows.length) {
-      toast('Для этой строки доступно только согласование. Чтобы вернуть пакет, вынесите решения по всем строкам.', 'info');
+      toast('Для возврата на доработку выберите группировку, а не отдельные строки.', 'info');
       return;
     }
     if (actionableRows.length === 1 && user.role === 'employee') {
       openPointRevision(actionableRows[0]);
       return;
     }
-    if (actionableRows.length === 1) {
-      setDecisionTarget({ rows: actionableRows, decision: 'rejected' });
+    if (actionableRows.length === 1 && user.role === 'economist') {
+      setDecisionTarget({ rows: actionableRows, decision: 'on_revision' });
       return;
     }
-    if (selectionRoots.length > 0) {
-      const cfoRoots = cfoGroupsForReturn(selectionRoots);
-      const workflowRoots = workflowGroupsForAction(selectionRoots);
-      if (cfoRoots.length) openGroupRevision(cfoRoots, 'cfo');
-      else openGroupRevision(workflowRoots, 'workflow');
+    if (actionableRows.length === 1) {
+      setDecisionTarget({ rows: actionableRows, decision: 'rejected' });
       return;
     }
     if (actionableRows.length > 0 && user.role === 'employee') {
@@ -3313,7 +3382,12 @@ export function ApprovalRegister({
       });
       return;
     }
-    if (actionableRows.length > 0) setDecisionTarget({ rows: actionableRows, decision: 'rejected' });
+    if (actionableRows.length > 0) {
+      setDecisionTarget({
+        rows: actionableRows,
+        decision: user.role === 'economist' ? 'on_revision' : 'rejected',
+      });
+    }
   };
   const toggleRowSelected = (item: ApprovalRegisterRow, checked: boolean) => {
     if (checked) setSelectedGroups(new Map());
@@ -3667,7 +3741,7 @@ export function ApprovalRegister({
             || (user.role !== 'employee' && selectedRows.some((row) => isRowActionable(row, user.role)))}
         canReject={user.role === 'approver' || user.role === 'zgd'
           ? selectedRows.some((row) => row.is_workflow_submission_actionable)
-            || selectionRoots.some((group) => groupHasWorkflowApprove(group, user.role))
+            || selectionRoots.some((group) => groupHasWorkflowReturn(group, user.role))
           : selectedRows.some((row) => isRowActionable(row, user.role))
             || selectionRoots.some((group) => user.role === 'employee' ? cfoGroupsForReturn([group]).length > 0 : groupHasWorkflowActions(group, user.role))}
         canForward={selectionRoots.some((group) => user.role === 'employee'

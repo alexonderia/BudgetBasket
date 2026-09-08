@@ -62,6 +62,7 @@ import { RequestHistoryDrawer } from '../components/request-history/RequestHisto
 import { FilePreviewDialog } from '../components/FilePreviewDialog';
 import { PageSkeleton } from '../components/PageSkeleton';
 import { ChatMessageImages } from '../components/ChatMessageImages';
+import { ChatMessageText } from '../components/ChatMessageText';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { RequestStatusBadge } from '../components/StatusBadge';
@@ -1206,7 +1207,10 @@ function ItemsTable({
   const disabledForEmployee = !canEmployeeCreateItems;
   // Downstream decisions are made from the CFO-position workspace.
   const canEconomist = false;
-  const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
+  const canDeleteItem = (item: BudgetItem) => user.role === 'employee'
+    && !request.frozen
+    && !request.fixed
+    && (request.status === 'draft' || revisionItemIds.has(item.id));
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
   const updateEconomistMonthPlans = useCallback((itemId: string, month_plans: BudgetItem['month_plans']) => {
     const total = monthPlansTotal(month_plans.map((plan) => String(plan.sum_plan)));
@@ -1731,7 +1735,7 @@ function ItemsTable({
                       </IconButton>
                     </span>
                   </Tooltip>
-                  {canDeleteItem && (
+                  {canDeleteItem(item) && (
                     <Tooltip title="Удалить строку">
                       <span>
                         <IconButton
@@ -1747,6 +1751,21 @@ function ItemsTable({
                     </Tooltip>
                   )}
                 </>
+              )}
+              {canDeleteItem(item) && !canEmployeeCreateItems && !isDeleted && (
+                <Tooltip title="Отменить строку">
+                  <span>
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={() => setDeleteTarget(item)}
+                      disabled={saveTableChanges.isPending}
+                      aria-label="Отменить строку"
+                    >
+                      <CancelOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
               )}
             </Stack>
           </TableCell>
@@ -1831,7 +1850,7 @@ function ItemsTable({
     mutationFn: (itemId: string) => api.delete(`/items/${itemId}`),
     onSuccess: () => {
       refresh();
-      toast('Строка удалена', 'success');
+      toast('Строка исключена из заявки', 'success');
       setDeleteTarget(null);
     },
     onError: (error) => {
@@ -2457,9 +2476,9 @@ function ItemsTable({
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title="Удалить строку?"
-        description={`Строка «${deleteTarget ? catalog.find((entry) => entry.id === (kind === 'dds' ? deleteTarget.dds_id : deleteTarget.invest_id))?.name || '' : ''}» будет удалена вместе со связями файлов.`}
-        confirmLabel="Удалить"
+        title={deleteTarget && revisionItemIds.has(deleteTarget.id) ? 'Отменить строку?' : 'Удалить строку?'}
+        description={`Строка «${deleteTarget ? catalog.find((entry) => entry.id === (kind === 'dds' ? deleteTarget.dds_id : deleteTarget.invest_id))?.name || '' : ''}» ${deleteTarget && revisionItemIds.has(deleteTarget.id) ? 'будет отменена и исключена из заявки' : 'будет удалена вместе со связями файлов'}.`}
+        confirmLabel={deleteTarget && revisionItemIds.has(deleteTarget.id) ? 'Отменить строку' : 'Удалить'}
         confirmColor="error"
         pending={deleteItem.isPending}
         onClose={() => setDeleteTarget(null)}
@@ -2477,7 +2496,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const toast = useAppToast();
   const detailsKey = ['request-details', id];
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [cancelOpen, setCancelOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyTab, setHistoryTab] = useState<'content' | 'approval'>('content');
@@ -2686,10 +2704,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       queryClient.invalidateQueries({ queryKey: ['step-requests'] });
       queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['requests'] });
-      if (action === 'cancel') {
-        setCancelOpen(false);
-        toast('Заявка отменена', 'success');
-      } else if (action === 'restore') {
+      if (action === 'restore') {
         toast('Заявка восстановлена в черновик', 'success');
       }
     },
@@ -2924,10 +2939,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     && !request.frozen
     && !itemsPending
     && allItems.length > 0;
-  const canCancel = user.role === 'employee'
-    && request?.status === 'on_review'
-    && request.available_actions?.includes('cancel')
-    && !request.frozen;
   const canRestore = user.role === 'employee'
     && request?.status === 'cancelled'
     && request.available_actions?.includes('restore');
@@ -3028,17 +3039,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                     {canApproveAllItems && (
                       <Button startIcon={<DoneAllIcon />} variant="contained" onClick={() => setConfirmAction('approve-all-items')}>
                         Зафиксировать все строки
-                      </Button>
-                    )}
-                    {canCancel && (
-                      <Button
-                        startIcon={<CancelOutlinedIcon />}
-                        variant="outlined"
-                        color="error"
-                        onClick={() => setCancelOpen(true)}
-                        disabled={lifecycle.isPending}
-                      >
-                        Отменить заявку
                       </Button>
                     )}
                     {canRestore && (
@@ -3298,7 +3298,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                     {!isOwn && !isSystem && <Typography className="request-chat-sender" variant="caption">{chatSenderName(message.sender)}</Typography>}
                     {isSystem && <Typography className="request-chat-system-label" variant="caption">Системное сообщение</Typography>}
                     <ChatMessageImages files={message.files || []} />
-                    <Typography className="request-chat-text">{message.text}</Typography>
+                    <ChatMessageText text={message.text} />
                     <Typography className="request-chat-time" variant="caption">{chatTime(message.created_at)}</Typography>
                   </Box>
                   </Box>
@@ -3417,17 +3417,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           if (!confirmAction) return;
           lifecycle.mutate(confirmAction, { onSuccess: () => setConfirmAction(null) });
         }}
-      />
-
-      <ConfirmDialog
-        open={cancelOpen}
-        title="Отменить заявку?"
-        description="Заявка будет переведена в статус «Отменена». Её можно будет восстановить, только пока для этого модуля не создана другая активная заявка текущего года."
-        confirmLabel="Отменить заявку"
-        confirmColor="error"
-        pending={lifecycle.isPending}
-        onClose={() => setCancelOpen(false)}
-        onConfirm={() => lifecycle.mutate('cancel')}
       />
 
       <ConfirmDialog

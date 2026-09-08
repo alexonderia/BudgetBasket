@@ -1144,14 +1144,17 @@ def test_cancel_restore_lifecycle_allows_new_request_and_is_idempotent(tmp_path)
     assert client.post(f"/requests/{original['id']}/cancel", headers=employee).status_code == 409
     submitted = client.post(f"/requests/{original['id']}/submit", headers=employee)
     assert submitted.status_code == 200
-    assert "cancel" in submitted.json()["available_actions"]
+    assert "cancel" not in submitted.json()["available_actions"]
 
-    cancelled = client.post(f"/requests/{original['id']}/cancel", headers=employee)
+    blocked_cancel = client.post(f"/requests/{original['id']}/cancel", headers=employee)
+    assert blocked_cancel.status_code == 409
+    client.app.state.repo.update("requests", original["id"], {"status": "cancelled"})
+    cancelled = client.get(f"/requests/{original['id']}", headers=employee)
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
     assert client.post(f"/requests/{original['id']}/cancel", headers=employee).status_code == 200
     logs_after_cancel = client.get(f"/requests/{original['id']}/logs", headers=employee).json()
-    assert [entry["log"]["action"] for entry in logs_after_cancel].count("request_cancelled") == 1
+    assert [entry["log"]["action"] for entry in logs_after_cancel].count("request_cancelled") == 0
     assert client.get("/cfo-positions", headers=employee).json() == []
     assert client.get(
         "/approval-register/rows",

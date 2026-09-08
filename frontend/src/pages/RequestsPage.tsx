@@ -1,5 +1,4 @@
 import AddIcon from '@mui/icons-material/Add';
-import CancelOutlinedIcon from '@mui/icons-material/CancelOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import FactCheckIcon from '@mui/icons-material/FactCheck';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -154,7 +153,6 @@ function RequestsListPage({ user }: { user: User }) {
   const [exporting, setExporting] = useState(false);
   const [exportSettings, setExportSettings] = useState<ExportSettingsState>(() => defaultExportSettings(user));
   const [deleteTarget, setDeleteTarget] = useState<BudgetRequest | null>(null);
-  const [cancelTarget, setCancelTarget] = useState<BudgetRequest | null>(null);
   const [historyTarget, setHistoryTarget] = useState<RequestHistoryTarget | null>(null);
   const deleteTargetId = deleteTarget?.id || '';
 
@@ -418,18 +416,6 @@ function RequestsListPage({ user }: { user: User }) {
     },
   });
 
-  const cancelRequest = useMutation({
-    mutationFn: (requestId: string) => api.post(`/requests/${requestId}/cancel`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['requests'] });
-      toast('Заявка отменена', 'success');
-      setCancelTarget(null);
-    },
-    onError: (error) => {
-      toast(getApiErrorMessage(error, 'Не удалось отменить заявку'), 'error');
-    },
-  });
-
   const restoreRequest = useMutation({
     mutationFn: (requestId: string) => api.post(`/requests/${requestId}/restore`),
     onSuccess: () => {
@@ -586,10 +572,6 @@ function RequestsListPage({ user }: { user: User }) {
   };
   const renderRequestCell = (item: BudgetRequest, columnId: RequestTableColumn) => {
     const canDelete = item.status === 'draft' && user.role === 'employee' && item.available_actions?.includes('delete');
-    const canCancel = item.status === 'on_review'
-      && user.role === 'employee'
-      && item.available_actions?.includes('cancel')
-      && !item.frozen;
     const canRestore = item.status === 'cancelled'
       && user.role === 'employee'
       && item.available_actions?.includes('restore');
@@ -613,18 +595,6 @@ function RequestsListPage({ user }: { user: User }) {
                 <HistoryOutlinedIcon fontSize="small" />
               </IconButton>
             </Tooltip>
-            {canCancel ? (
-              <Tooltip title="Отменить заявку">
-                <IconButton
-                  size="small"
-                  color="warning"
-                  onClick={(event) => { event.stopPropagation(); setCancelTarget(item); }}
-                  aria-label="Отменить заявку"
-                >
-                  <CancelOutlinedIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            ) : null}
             {canRestore ? (
               <Tooltip title="Восстановить заявку">
                 <span>
@@ -1072,17 +1042,6 @@ function RequestsListPage({ user }: { user: User }) {
         </Table>
       </Paper>
       )}
-
-      <ConfirmDialog
-        open={!!cancelTarget}
-        title="Отменить заявку?"
-        description="Заявка будет переведена в статус «Отменена». Её можно будет восстановить, только пока для этого модуля не создана другая активная заявка текущего года."
-        confirmLabel="Отменить заявку"
-        confirmColor="error"
-        pending={cancelRequest.isPending}
-        onClose={() => setCancelTarget(null)}
-        onConfirm={() => cancelTarget && cancelRequest.mutate(cancelTarget.id)}
-      />
 
       <ConfirmDialog
         open={!!deleteTarget}

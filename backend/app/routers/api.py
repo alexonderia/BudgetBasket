@@ -186,7 +186,8 @@ async def approve_position_at_step(
     payload: CfoPositionActionIn, user: User,
 ):
     result = request.app.state.approval_service.approve_position_at_step(
-        user, step_id, position_id, payload.comment, payload.item_ids
+        user, step_id, position_id, payload.comment, payload.item_ids,
+        event_id=payload.event_id,
     )
     return await _broadcast_notifications(request, result, "cfo_position.updated")
 
@@ -906,7 +907,7 @@ async def act_on_approval_register_group(
     request_id: str | None = None,
 ):
     position_ids = request.app.state.request_service.approval_register_group_position_ids(
-        user, group_type, group_id, request_id=request_id,
+        user, group_type, group_id, action=payload.action, request_id=request_id,
     )
     if payload.action == "submit":
         result = request.app.state.approval_service.submit_positions_from_register(
@@ -1051,6 +1052,13 @@ def approval_register_history(request: Request, user: User):
         if not item_id:
             item_change = changes.get("item_id") or {}
             item_id = item_change.get("to") or item_change.get("from") or log.get("req_item_id")
+        # Older reviewer decisions were saved against the CFO position while
+        # retaining the selected item in item_ids. Recover the line context
+        # for single-line events without mutating the audit record.
+        if not item_id:
+            item_ids = log.get("item_ids") or []
+            if len(item_ids) == 1:
+                item_id = item_ids[0]
         item = request_items.get(item_id) if item_id else None
         if not item:
             return None

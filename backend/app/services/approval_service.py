@@ -673,6 +673,10 @@ class ApprovalService:
         positions = positions_override if positions_override is not None else repo.load_all("cfo_positions")
         assignments = repo.load_all("units_responsibles")
         requests = repo.load_all("requests")
+        position_items: dict[str, list[dict]] = {}
+        for item in repo.load_all("req_items"):
+            if item.get("cfo_position_id"):
+                position_items.setdefault(item["cfo_position_id"], []).append(item)
 
         def enrich_user(user_id: str | None) -> dict | None:
             account = users.get(user_id) if user_id else None
@@ -715,6 +719,50 @@ class ApprovalService:
                     }
                 )
             return result
+
+        def readiness_for(step: dict, active_positions: list[dict]) -> dict[str, int]:
+            """Summarise the next real action for positions at one route step."""
+            readiness = {
+                "needs_line_decisions": 0,
+                "awaiting_return_confirmation": 0,
+                "needs_revision": 0,
+                "ready_for_next_action": 0,
+            }
+            is_economist_step = bool(self._economist_cfo_ids(repo, step))
+            for position in active_positions:
+                items = [
+                    item for item in position_items.get(position["id"], [])
+                    if item.get("status") != ItemStatus.deleted
+                ]
+                if not items or self._all_items_fixed(items):
+                    continue
+                if position.get("status") == CfoPositionStatus.on_revision:
+                    readiness["needs_revision"] += 1
+                    continue
+                if step.get("unit_id"):
+                    if position.get("status") in {
+                        CfoPositionStatus.waiting,
+                        CfoPositionStatus.on_review,
+                    }:
+                        readiness["needs_line_decisions"] += 1
+                    else:
+                        readiness["ready_for_next_action"] += 1
+                    continue
+                if is_economist_step:
+                    decisions = self._economist_decisions(repo, position["id"])
+                    if any(item["id"] not in decisions for item in items):
+                        readiness["needs_line_decisions"] += 1
+                    elif any(decisions.get(item["id"]) == "on_revision" for item in items):
+                        readiness["awaiting_return_confirmation"] += 1
+                    else:
+                        readiness["ready_for_next_action"] += 1
+                    continue
+                if self._pending_position_decision_ids(repo, position, step, items):
+                    readiness["needs_line_decisions"] += 1
+                else:
+                    readiness["ready_for_next_action"] += 1
+            return readiness
+
         result = []
         for step in steps:
             actor = self._step_actor(repo, step)
@@ -745,6 +793,7 @@ class ApprovalService:
                         row.get("status") == CfoPositionStatus.on_revision
                         for row in scoped_positions
                     ),
+                    "readiness": readiness_for(step, active),
                     "request_status": self._step_runtime_status(repo, step, positions, edges),
                 }
             )
@@ -1531,11 +1580,21 @@ class ApprovalService:
                 detail="Экономист меняет фактическую сумму; помесячный план изменяет ответственный модуля или ЦФО",
             )
         before = dict(item)
-        after = repo.update(
-            "req_items",
-            item_id,
-            BudgetItemService.normalize_decision(item, decision_payload),
-        )
+        if decision_payload["decision"] == "on_revision":
+            comment = (decision_payload.get("comment") or "").strip()
+            if not comment:
+                raise HTTPException(status_code=422, detail="Для возврата строки на доработку нужен комментарий")
+            after = repo.update(
+                "req_items",
+                item_id,
+                {"status": ItemStatus.on_review, "comment": comment},
+            )
+        else:
+            after = repo.update(
+                "req_items",
+                item_id,
+                BudgetItemService.normalize_decision(item, decision_payload),
+            )
         self._position_log(
             repo, user, position, "economist_item_decided",
             before=before, after=after, comment=payload.get("comment"),
@@ -1596,7 +1655,7 @@ class ApprovalService:
         )
         return {str(item_id) for item_id in (latest.get("log") or {}).get("item_ids") or []}
 
-    def _economist_decided_item_ids(self, repo: Repository, position_id: str) -> set[str]:
+    def _economist_decisions(self, repo: Repository, position_id: str) -> dict[str, str]:
         logs = [
             row for row in repo.load_all("cfo_position_logs")
             if row.get("cfo_position_id") == position_id
@@ -1614,16 +1673,20 @@ class ApprovalService:
         )
         invalidated_item_ids = latest_return[1] if latest_return else set()
         returned_at = latest_return[0] if latest_return else ("", 0)
-        return {
-            str((row.get("log") or {}).get("req_item_id"))
-            for row in logs
-            if (row.get("log") or {}).get("action") == "economist_item_decided"
-            and (row.get("log") or {}).get("req_item_id")
-            and (
-                str((row.get("log") or {}).get("req_item_id")) not in invalidated_item_ids
-                or (str(row.get("created_at") or ""), int(row.get("id") or 0)) > returned_at
-            )
-        }
+        decisions: dict[str, str] = {}
+        for row in logs:
+            log = row.get("log") or {}
+            if log.get("action") != "economist_item_decided" or not log.get("req_item_id"):
+                continue
+            item_id = str(log["req_item_id"])
+            key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+            if item_id in invalidated_item_ids and key <= returned_at:
+                continue
+            decisions[item_id] = str(log.get("decision") or "")
+        return decisions
+
+    def _economist_decided_item_ids(self, repo: Repository, position_id: str) -> set[str]:
+        return set(self._economist_decisions(repo, position_id))
 
     def _pending_position_decision_ids(
         self, repo: Repository, position: dict, step: dict, items: list[dict]
@@ -1631,11 +1694,11 @@ class ApprovalService:
         """Return lines that still need a decision before a package action."""
         actor = get_required(repo, "users", step["user_id"]) if step.get("user_id") else {}
         if actor.get("role") == "economist":
-            decided = self._economist_decided_item_ids(repo, position["id"])
+            decisions = self._economist_decisions(repo, position["id"])
             return [
                 row["id"]
                 for row in items
-                if row["id"] not in decided or row.get("status") == ItemStatus.on_review
+                if row["id"] not in decisions
             ]
         if actor.get("role") == "approver":
             returned_ids = self._latest_returned_item_ids(repo, position["id"])
@@ -1667,10 +1730,10 @@ class ApprovalService:
                 raise HTTPException(status_code=404, detail="Позиция не найдена")
             self._require_economist_work(user, position, repo=repo)
             items = self._position_items(repo, position_id)
-            decided = self._economist_decided_item_ids(repo, position_id)
+            decisions = self._economist_decisions(repo, position_id)
             pending = [
                 row["id"] for row in items
-                if row["id"] not in decided or row.get("status") == ItemStatus.on_review
+                if row["id"] not in decisions or decisions.get(row["id"]) == "on_revision"
             ]
             if not items or pending:
                 raise HTTPException(
@@ -1835,6 +1898,10 @@ class ApprovalService:
                 if len(set(requested_ids)) != len(requested_ids):
                     raise HTTPException(status_code=422, detail="Идентификаторы строк не должны повторяться")
                 items_by_id = {row["id"]: row for row in items}
+                previously_approved_ids = self._approver_approved_item_ids(
+                    repo, position_id, step_id
+                )
+                newly_approved_ids = set(requested_ids) - previously_approved_ids
                 for item_id in requested_ids:
                     item = items_by_id.get(item_id)
                     if not item:
@@ -1857,6 +1924,14 @@ class ApprovalService:
                     repo, user, position, "position_items_approved_at_step",
                     before=before, after=position, comment=comment, event_id=event_id,
                     step_id=step_id, current_step_id=step_id, item_ids=sorted(requested_ids),
+                    # A reviewer decision is represented by an audit event,
+                    # not by the budget line's own status. Record the decision
+                    # explicitly so history can show the actual change.
+                    changes=(
+                        {"reviewer_decision": {"from": "pending", "to": "approved"}}
+                        if newly_approved_ids else {}
+                    ),
+                    req_item_id=requested_ids[0] if len(requested_ids) == 1 else None,
                 )
                 self._step_log(
                     repo, user, step, "position_items_approved_at_step",
@@ -2200,7 +2275,13 @@ class ApprovalService:
             target = get_required(repo, "steps", target_step_id)
             items = self._position_items(repo, position_id)
             pending_decision_ids = self._pending_position_decision_ids(repo, position, step, items)
-            if pending_decision_ids:
+            actor = get_required(repo, "users", step["user_id"]) if step.get("user_id") else {}
+            # A reviewer can return selected lines as a single group action.
+            # The return itself is their decision; requiring an artificial
+            # approval for every selected line made the group action invisible
+            # and forced a contradictory two-step workflow.
+            reviewer_group_return = actor.get("role") == "approver" and bool(item_ids)
+            if pending_decision_ids and not reviewer_group_return:
                 raise HTTPException(
                     status_code=409,
                     detail={

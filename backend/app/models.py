@@ -310,7 +310,10 @@ class StepApproveIn(StrictModel):
 
 
 class ItemDecisionIn(StrictModel):
-    decision: ItemStatus
+    # ``on_revision`` is a saved workflow choice.  Unlike an item status it
+    # leaves the budget line in ``on_review`` until the reviewer explicitly
+    # sends the selected position back to the preceding route step.
+    decision: ItemStatus | Literal["on_revision"]
     comment: str = ""
     sum_plan: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     sum_fact: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
@@ -321,7 +324,7 @@ class ItemDecisionIn(StrictModel):
 
 class BulkItemDecisionIn(StrictModel):
     item_ids: list[str] = Field(min_length=1)
-    decision: ItemStatus
+    decision: ItemStatus | Literal["on_revision"]
     comment: str = ""
 
 
@@ -363,6 +366,7 @@ class AnalyticsFieldsPatch(StrictModel):
 class CfoPositionActionIn(StrictModel):
     comment: str = ""
     item_ids: list[str] = Field(default_factory=list)
+    event_id: str | None = None
 
 
 class CfoPositionCommentIn(StrictModel):

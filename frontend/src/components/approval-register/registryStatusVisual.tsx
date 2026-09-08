@@ -86,10 +86,11 @@ function groupMetaParts(aggregates: RegisterAggregates, options?: { excludeActio
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
   const workflowReadyPositions = aggregates.workflow_ready_positions || 0;
+  const workflowRevisionPositions = aggregates.workflow_revision_positions || 0;
   const decisions = aggregates.cfo_review_actionable_requests
-    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions, 0);
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions - workflowRevisionPositions, 0);
   const packagePositions = Math.max(workflowReadyPositions - economistCompletionPositions, 0);
-  const actionable = decisions + submissionPositions + economistCompletionPositions + packagePositions;
+  const actionable = decisions + submissionPositions + economistCompletionPositions + packagePositions + workflowRevisionPositions;
 
   if (!options?.excludeActionable && decisions > 0) {
     parts.push(`${decisions} требуют решения`);
@@ -102,6 +103,9 @@ function groupMetaParts(aggregates: RegisterAggregates, options?: { excludeActio
   }
   if (!options?.excludeActionable && packagePositions > 0) {
     parts.push(`${packagePositions} готовы к пакетной отправке`);
+  }
+  if (!options?.excludeActionable && workflowRevisionPositions > 0) {
+    parts.push(`${workflowRevisionPositions} на доработку`);
   }
   if (aggregates.rejected_rows > 0) {
     parts.push(`${aggregates.rejected_rows} отклонено`);

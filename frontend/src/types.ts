@@ -140,6 +140,10 @@ export interface RegisterAggregates {
   economist_completion_positions?: number;
   /** Positions whose current reviewer has decided every required line and can send the package. */
   workflow_ready_positions?: number;
+  /** Positions where the economist has marked one or more lines for revision. */
+  workflow_revision_positions?: number;
+  /** Positions a reviewer may return to the immediately preceding route step. */
+  workflow_return_positions?: number;
 }
 
 export interface RegisterGroupAnalyticsField {
@@ -203,7 +207,7 @@ export interface RegisterLineStatusDecision {
   action: string;
   action_label: string;
   stage?: string | null;
-  item_status?: ItemStatus | null;
+  item_status?: ItemStatus | 'on_revision' | null;
 }
 
 export interface RegisterLineStatusOwner {
@@ -229,13 +233,23 @@ export interface RegisterLineStatusContext {
   your_step?: RegisterStepDecisionDisplay | null;
 }
 
+export interface RegisterItemComment {
+  id: string;
+  comment: string;
+  author_name?: string | null;
+  author_role?: User['role'] | string | null;
+  created_at?: string | null;
+  action?: string;
+  event_id?: string | null;
+}
+
 export interface RegisterStepDecisionDisplay {
   label: string;
   tone: 'success' | 'error' | 'warning' | 'info' | 'action' | 'default';
   hint: string;
   ready?: boolean;
   amount?: number | null;
-  item_status?: ItemStatus | null;
+  item_status?: ItemStatus | 'on_revision' | null;
 }
 
 export interface ApprovalRegisterRow {
@@ -255,6 +269,7 @@ export interface ApprovalRegisterRow {
   name: string;
   justification: string;
   comment: string;
+  comment_history?: RegisterItemComment[];
   files_count: number;
   requested_sum: number;
   approved_sum: number;
@@ -283,6 +298,9 @@ export interface ApprovalRegisterRow {
   is_position_actionable?: boolean;
   is_position_submission_actionable?: boolean;
   is_workflow_submission_actionable?: boolean;
+  is_workflow_revision_actionable?: boolean;
+  is_workflow_return_actionable?: boolean;
+  is_workflow_revision_marked?: boolean;
   is_economist_completion_actionable?: boolean;
   approval_stage: string | null;
   frozen?: boolean;
@@ -348,6 +366,12 @@ export interface ApprovalStep {
   active_positions_count?: number;
   revision_positions_count?: number;
   active_requests_count?: number;
+  readiness?: {
+    needs_line_decisions: number;
+    awaiting_return_confirmation: number;
+    needs_revision: number;
+    ready_for_next_action: number;
+  };
 }
 
 export interface CfoPosition {
@@ -430,6 +454,7 @@ export interface RequestLog {
     entity_id?: string;
     event_id?: string;
     cfo_position_id?: string;
+    step_id?: string;
     req_item_id?: string;
     item_ids?: string[];
     request_ids?: string[];

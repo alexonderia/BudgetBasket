@@ -4,7 +4,7 @@ from fastapi import HTTPException
 
 from app.models import CfoPositionStatus, ItemStatus, RequestStatus
 from app.repositories.base import Repository
-from app.services.common import clean_request_item_name, get_required
+from app.services.common import cfo_position_current_step_id, clean_request_item_name, get_required
 from app.services.permission_service import PermissionService
 from app.services.request_service import ANALYTICS_FIELDS, RequestService
 
@@ -334,11 +334,45 @@ class BudgetItemService:
             raise HTTPException(status_code=409, detail="Нет строк для обновления аналитики")
         return {"updated_count": len(updated_ids), "item_ids": updated_ids}
 
+    def _require_comment_edit_access(self, user: dict, item: dict, request: dict) -> None:
+        """Allow the person responsible at the active stage to edit a line comment."""
+        if request.get("status") == RequestStatus.draft:
+            self.permissions.require_employee_edit_request(user, request)
+            return
+        if request.get("status") != RequestStatus.on_review:
+            raise HTTPException(status_code=409, detail="Комментарий нельзя изменить на текущем статусе заявки")
+        if item["id"] in self.requests.returned_item_ids(request["id"]):
+            self.permissions.require_employee_unit_access(user, request["unit_id"])
+            return
+        if self._is_cfo_revision_item(item) or not self.requests.cfo_review_completed(request["id"]):
+            self.permissions.require_cfo_request_access(user, request)
+            return
+        position_id = item.get("cfo_position_id")
+        position = self.repo.get_by_id("cfo_positions", position_id) if position_id else None
+        if not position:
+            raise HTTPException(status_code=409, detail="Для строки не определён текущий этап согласования")
+        step_id = cfo_position_current_step_id(self.repo, position)
+        step = self.repo.get_by_id("steps", step_id) if step_id else None
+        if not step:
+            raise HTTPException(status_code=409, detail="Для строки не определён текущий этап согласования")
+        self.permissions.require_step_assignee(user, step)
+
+    def _patch_item_comment(self, user: dict, item: dict, request: dict, comment: object) -> dict:
+        self._require_comment_edit_access(user, item, request)
+        return self._apply_item_update(
+            user,
+            item,
+            request,
+            {"comment": str(comment or "").strip()},
+        )
+
     def patch_item(self, user: dict, item_id: str, patch: dict) -> dict:
         item = get_required(self.repo, "req_items", item_id)
         request = get_required(self.repo, "requests", item["request_id"])
         if item.get("status") == ItemStatus.deleted:
             raise HTTPException(status_code=400, detail="Удалённую строку нельзя изменить")
+        if set(patch) == {"comment"}:
+            return self._patch_item_comment(user, item, request, patch["comment"])
         returned_item_ids = self.requests.returned_item_ids(request["id"])
         cfo_review_cycle_item_ids = self.requests.cfo_review_cycle_item_ids(request["id"])
         saved_cfo_decision_editable = False
@@ -753,9 +787,18 @@ class BudgetItemService:
     def delete_item(self, user: dict, item_id: str) -> dict:
         item = get_required(self.repo, "req_items", item_id)
         request = get_required(self.repo, "requests", item["request_id"])
-        self.permissions.require_employee_edit_request(user, request)
         if item.get("status") == ItemStatus.deleted:
             return self._public_item(item)
+        is_returned_revision = (
+            request.get("status") == RequestStatus.on_review
+            and item_id in self.requests.returned_item_ids(request["id"])
+        )
+        if is_returned_revision:
+            self.permissions.require_employee_unit_access(user, request["unit_id"])
+            if item.get("frozen") or item.get("fixed"):
+                raise HTTPException(status_code=409, detail="Закрытую строку нельзя удалить")
+        else:
+            self.permissions.require_employee_edit_request(user, request)
         with self.repo.transaction() as repo:
             updated = repo.update(
                 "req_items", item_id,

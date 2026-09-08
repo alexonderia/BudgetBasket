@@ -82,6 +82,9 @@ function actionDescription(entry: RequestLog, plural = false) {
     if (decision === 'approved') return `Ответственный ЦФО согласовал ${suffix}`;
     if (decision === 'rejected') return `Ответственный ЦФО отклонил ${suffix}`;
   }
+  if (entry.log.action === 'position_items_approved_at_step') {
+    return `Согласующий согласовал ${suffix}`;
+  }
   if (entry.log.action === 'position_returned') return `${reviewer} вернул ${plural ? 'строки' : 'позицию'} на доработку`;
   if (entry.log.action === 'position_sent_to_economist') return 'Ответственный ЦФО передал позицию экономисту';
   if (entry.log.action === 'position_frozen_and_forwarded') return 'Экономист зафиксировал строки и передал их дальше';
@@ -100,7 +103,7 @@ function HistoryEntry({
   // Route UUIDs and timestamps are implementation details. For position
   // actions show only the business result (usually the status transition).
   const changes = entry.source === 'cfo_position'
-    ? allChanges.filter((change) => ['Статус', 'Утверждённая сумма', 'Фиксация бюджета'].includes(change.field))
+    ? allChanges.filter((change) => ['Статус', 'Утверждённая сумма', 'Фиксация бюджета', 'Решение согласующего'].includes(change.field))
     : allChanges;
   const isLineChange = !!entry.subject;
   const visual = historyVisualMeta(entry);
@@ -159,14 +162,15 @@ function HistoryEntry({
   return (
     <Box sx={{ mb: 1, p: 1.25, border: 1, borderColor: 'divider', borderRadius: 1.5, bgcolor: 'background.paper' }}>
       {content}
-      {!isLineChange && <HistoryChangeList changes={changes} />}
+      {!isLineChange && changes.length > 0 && <HistoryChangeList changes={changes} />}
     </Box>
   );
 }
 
 function GroupHistoryEntry({ entries }: { entries: RequestLog[] }) {
   const first = entries[0];
-  const isPositionGroup = entries.every((entry) => entry.log.entity === 'cfo_position' && entry.log.action !== 'economist_item_decided');
+  const isReviewerDecisionGroup = entries.every((entry) => entry.log.action === 'position_items_approved_at_step');
+  const isPositionGroup = isReviewerDecisionGroup || entries.every((entry) => entry.log.entity === 'cfo_position' && entry.log.action !== 'economist_item_decided');
   const positions = new Set(entries.map((entry) => entry.log.cfo_position_id || entry.log.entity_id));
   const itemIds = new Set(entries.flatMap((entry) => entry.log.item_ids || [entry.log.req_item_id]).filter(Boolean));
   const requestIds = new Set(entries.flatMap((entry) => entry.log.request_ids || [entry.request_id]).filter(Boolean));
@@ -177,6 +181,7 @@ function GroupHistoryEntry({ entries }: { entries: RequestLog[] }) {
   });
 
   const decisionFor = (entry: RequestLog) => {
+    if (entry.log.action === 'position_items_approved_at_step') return 'approved';
     const status = entry.log.decision || entry.log.changes?.status?.to;
     return typeof status === 'string'
       ? historyStatusLabel(status)
@@ -207,6 +212,8 @@ function GroupHistoryEntry({ entries }: { entries: RequestLog[] }) {
   const positionStatusLabel = typeof positionStatus === 'string'
     ? historyStatusLabel(positionStatus)
     : '';
+  const groupStatusLabel = positionStatusLabel || (isReviewerDecisionGroup ? 'Согласовано' : '');
+  const groupChanges = isReviewerDecisionGroup ? historyChanges(first) : [];
 
   const resultFor = (entry: RequestLog) => {
     const decision = decisionFor(entry);
@@ -238,7 +245,7 @@ function GroupHistoryEntry({ entries }: { entries: RequestLog[] }) {
           <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" sx={{ pt: 0.25 }}>
             <Chip size="small" variant="outlined" label={groupSummary} />
             {isPositionGroup
-              ? positionStatusLabel && <Chip size="small" color={firstDecision.color} icon={firstDecision.icon} label={positionStatusLabel} />
+              ? groupStatusLabel && <Chip size="small" color={firstDecision.color} icon={firstDecision.icon} label={groupStatusLabel} />
               : decisionsSummary && <Chip size="small" color={firstDecision.color} icon={firstDecision.icon} label={decisionsSummary} />}
           </Stack>
           {first.log.comment && (
@@ -252,6 +259,7 @@ function GroupHistoryEntry({ entries }: { entries: RequestLog[] }) {
       </AccordionSummary>
       <AccordionDetails id={`request-log-group-${first.log.event_id}-details`} sx={{ px: 0, pt: 0, pb: 1.5 }}>
         <Stack spacing={1.25} sx={{ px: 1.5, py: 1.25, bgcolor: 'grey.50' }}>
+          {groupChanges.length > 0 && <HistoryChangeList changes={groupChanges} heading />}
           <Typography variant="caption" color="text.secondary" fontWeight={800} sx={{ textTransform: 'uppercase', letterSpacing: 0.6 }}>Состав операции</Typography>
           {[...positionsWithLines.values()].map((positionEntries) => {
             const positionFirst = positionEntries[0];

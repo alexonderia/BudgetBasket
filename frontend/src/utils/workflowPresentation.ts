@@ -161,11 +161,32 @@ export function stepViewerRequirement(step: ApprovalStep, viewerUserId: string) 
   const mine = stepAssignee(step)?.id === viewerUserId;
   const status = step.request_status || step.status;
   if (!mine) return null;
+  const readiness = stepReadinessLabels(step);
+  if (readiness.length) return readiness[0];
   if (status === 'on_approval') return 'Требуется ваше решение сейчас';
   if (status === 'on_revision') return 'Требуется повторная проверка';
   if (status === 'approved') return 'Ваш этап завершён';
   if (status === 'closed') return 'Маршрут закрыт';
   return 'Ваших действий пока нет';
+}
+
+export function stepReadinessLabels(step: ApprovalStep): string[] {
+  const readiness = step.readiness;
+  if (!readiness) return [];
+  const labels: string[] = [];
+  if (readiness.needs_line_decisions) {
+    labels.push(`Нужны решения по строкам: ${readiness.needs_line_decisions}`);
+  }
+  if (readiness.awaiting_return_confirmation) {
+    labels.push(`Ожидают подтверждения возврата: ${readiness.awaiting_return_confirmation}`);
+  }
+  if (readiness.needs_revision && (step.request_status || step.status) !== 'on_revision') {
+    labels.push(`Нужна доработка: ${readiness.needs_revision}`);
+  }
+  if (readiness.ready_for_next_action) {
+    labels.push(`Готовы к следующему действию: ${readiness.ready_for_next_action}`);
+  }
+  return labels;
 }
 
 export function requestWorkflowRequirement(request: BudgetRequest, activeStep?: ApprovalStep | null) {

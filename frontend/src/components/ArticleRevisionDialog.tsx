@@ -59,11 +59,12 @@ const GROUP_TYPE_LABELS: Record<RevisionTarget['groupType'], string> = {
   request: 'заявку',
 };
 
-type RevisionLineStatus = ItemStatus | 'on_revision';
+type RevisionLineStatus = ItemStatus | 'on_revision' | 'workflow_revision_selected';
 
 const REVISION_STATUS_LABELS: Record<RevisionLineStatus, string> = {
   ...STATUS_LABELS,
   on_revision: 'На доработку',
+  workflow_revision_selected: 'Выбрана на доработку',
 };
 
 const REVISION_STATUS_COLORS: Record<RevisionLineStatus, { bgcolor: string; color: string; borderColor: string }> = {
@@ -73,9 +74,11 @@ const REVISION_STATUS_COLORS: Record<RevisionLineStatus, { bgcolor: string; colo
   rejected: { bgcolor: '#FEF2F2', color: '#B91C1C', borderColor: '#FECACA' },
   deleted: { bgcolor: '#F3F4F6', color: '#6B7280', borderColor: '#D1D5DB' },
   on_revision: { bgcolor: '#FFF7ED', color: '#C2410C', borderColor: '#FED7AA' },
+  workflow_revision_selected: { bgcolor: '#FFF7ED', color: '#C2410C', borderColor: '#FED7AA' },
 };
 
 function revisionLineStatus(line: RevisionLine): RevisionLineStatus {
+  if (line.is_workflow_revision_marked) return 'workflow_revision_selected';
   if (line.is_cfo_revision_pending) return 'on_revision';
   const selectedStatus = line.status_context?.last_decision?.item_status;
   return selectedStatus || line.status;
@@ -130,7 +133,7 @@ export function ArticleRevisionDialog({
       .filter((line) => (
         mode === 'cfo'
           ? line.is_cfo_revision_pending
-          : line.is_module_revision || line.is_revision
+          : line.is_workflow_revision_marked || line.is_module_revision || line.is_revision
       ))
       .map((line) => line.id);
     return activeRevision.length ? activeRevision : lines.map((line) => line.id);

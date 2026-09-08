@@ -12,6 +12,7 @@ import {
   groupYourStepSummary,
   groupHasWorkflowActions,
   groupHasWorkflowApprove,
+  groupHasWorkflowReturn,
   isGroupActionable,
   isGroupSelectable,
   isRowActionable,
@@ -411,6 +412,19 @@ describe('registry display helpers', () => {
   it('parses amounts with spaces and rejects non-numeric input', () => {
     expect(parseMoneyInput('1 250,50')).toBe(1250.5);
     expect(parseMoneyInput('12x')).toBeNull();
+  });
+
+  it('offers an approver a group return independently of package approval', () => {
+    const group = {
+      aggregates: {
+        workflow_ready_positions: 0,
+        workflow_return_positions: 1,
+      },
+    } as never;
+
+    expect(groupHasWorkflowReturn(group, 'approver')).toBe(true);
+    expect(groupHasWorkflowReturn(group, 'economist')).toBe(false);
+    expect(groupHasWorkflowReturn(group, 'zgd')).toBe(false);
   });
 
   it('uses the full plan for a point approval until a fact is entered', () => {

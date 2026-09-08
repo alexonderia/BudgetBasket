@@ -23,6 +23,7 @@ import { chatWebSocketUrl } from '../api/websocket';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { AUTH_TOKEN_KEY, AUTH_USER_KEY } from '../utils/session';
 import { ChatMessageImages } from './ChatMessageImages';
+import { ChatMessageText } from './ChatMessageText';
 import type { FileAttachment, Profile } from '../types';
 
 type ChatSender = { id: string; login: string; profile?: Profile | null };
@@ -176,7 +177,7 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
             {!isOwn && !isSystem && <Typography className="request-chat-sender" variant="caption">{senderName(message.sender)}</Typography>}
             {isSystem && <Typography className="request-chat-system-label" variant="caption">Системное сообщение</Typography>}
             {reply && <Box className="chat-reply-reference"><Typography variant="caption" fontWeight={700}>{senderName(reply.sender)}</Typography><Typography variant="caption" noWrap>{reply.text}</Typography></Box>}
-            <ChatMessageImages files={message.files || []} /><Stack className="chat-message-content" direction="row" alignItems="flex-end" spacing={0.55}><Typography className="request-chat-text">{message.text}</Typography><Stack className="chat-message-meta" direction="row" alignItems="center" spacing={0.3}><Typography className="request-chat-time" variant="caption">{messageTime(message.created_at)}</Typography>{isOwn && (read ? <DoneAllIcon className="chat-message-status read" fontSize="inherit" /> : <DoneIcon className="chat-message-status" fontSize="inherit" />)}</Stack></Stack>
+            <ChatMessageImages files={message.files || []} /><Stack className="chat-message-content" direction="row" alignItems="flex-end" spacing={0.55}><ChatMessageText text={message.text} /><Stack className="chat-message-meta" direction="row" alignItems="center" spacing={0.3}><Typography className="request-chat-time" variant="caption">{messageTime(message.created_at)}</Typography>{isOwn && (read ? <DoneAllIcon className="chat-message-status read" fontSize="inherit" /> : <DoneIcon className="chat-message-status" fontSize="inherit" />)}</Stack></Stack>
           </Box>{!isSystem && writable && <Tooltip title="Ответить"><IconButton className="chat-message-forward" size="small" onClick={() => setReplyTo(message)} aria-label="Ответить"><ReplyOutlinedIcon fontSize="small" /></IconButton></Tooltip>}</Box></Fragment>;
         })}
       </Box>

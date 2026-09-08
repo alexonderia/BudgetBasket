@@ -128,8 +128,9 @@ export function groupYourStepSummary(aggregates: RegisterAggregates) {
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
   const workflowReadyPositions = aggregates.workflow_ready_positions || 0;
+  const workflowRevisionPositions = aggregates.workflow_revision_positions || 0;
   const decisions = aggregates.cfo_review_actionable_requests
-    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions, 0);
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions - workflowRevisionPositions, 0);
   if (decisions > 0) {
     return `К решению: ${decisions}`;
   }
@@ -138,6 +139,9 @@ export function groupYourStepSummary(aggregates: RegisterAggregates) {
   }
   if (workflowReadyPositions > 0) {
     return `Согласовать и передать: ${workflowReadyPositions}`;
+  }
+  if (workflowRevisionPositions > 0) {
+    return `На доработку: ${workflowRevisionPositions}`;
   }
   if ((aggregates.revision_rows || 0) > 0) {
     return 'На доработке';
@@ -298,6 +302,21 @@ export function groupHasWorkflowApprove(group: ApprovalRegisterGroup, role?: Use
   return groupHasWorkflowActions(group, role);
 }
 
+export function groupHasWorkflowRevision(group: ApprovalRegisterGroup, role?: User['role']) {
+  return role === 'economist'
+    && (group.aggregates.workflow_revision_positions || 0) > 0;
+}
+
+/**
+ * A reviewer can return a position as a package.  This is deliberately
+ * separate from `groupHasWorkflowApprove`: a reviewer may choose revision
+ * instead of first approving every line one by one.
+ */
+export function groupHasWorkflowReturn(group: ApprovalRegisterGroup, role?: User['role']) {
+  if (role === 'economist') return groupHasWorkflowRevision(group, role);
+  return role === 'approver' && (group.aggregates.workflow_return_positions || 0) > 0;
+}
+
 export function workflowApproveLabel(role: User['role']) {
   if (role === 'employee') return 'Передать экономисту';
   if (role === 'economist') return 'Согласовать и передать';
@@ -406,6 +425,14 @@ export function rowRegistryStatus(item: ApprovalRegisterRow): RegistryStatusDisp
       tone: 'warning',
       hint: 'Решение сохранено. Завершите проверку остальных строк и нажмите «Отправить дальше».',
       shortHint: 'Ожидает отправки выборки',
+    };
+  }
+  if (item.is_workflow_revision_marked) {
+    return {
+      label: 'Выбрано на доработку',
+      tone: 'warning',
+      hint: 'Решение сохранено. После проверки остальных строк передайте позицию на доработку.',
+      shortHint: 'Ожидает передачи на доработку',
     };
   }
   const wasReviewedAfterRevision = Boolean(

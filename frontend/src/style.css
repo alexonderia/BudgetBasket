@@ -894,6 +894,11 @@
     overflow-wrap: anywhere;
   }
 
+  .request-chat-message-system .request-chat-list-item {
+    display: block;
+    text-align: left;
+  }
+
   .chat-image-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));

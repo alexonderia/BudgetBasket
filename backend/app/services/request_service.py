@@ -162,55 +162,6 @@ class RequestService:
         cfo_id = self.permissions.cfo_for_module(request["unit_id"])
         return bool(cfo_id and cfo_id in self.permissions.employee_cfo_ids(user["id"]))
 
-    def _can_cancel_before_general_route(
-        self,
-        request: dict,
-        *,
-        repo: Repository | None = None,
-    ) -> bool:
-        storage = repo or self.repo
-        if request.get("status") != RequestStatus.on_review:
-            return False
-        position_ids = {
-            item.get("cfo_position_id")
-            for item in self._items(request["id"], repo=storage)
-            if item.get("cfo_position_id")
-        }
-        if not position_ids:
-            return False
-        positions = {
-            row["id"]: row
-            for row in storage.load_all("cfo_positions")
-            if row["id"] in position_ids
-        }
-        if len(positions) != len(position_ids):
-            return False
-        steps = {row["id"]: row for row in storage.load_all("steps")}
-        users = {row["id"]: row for row in storage.load_all("users")}
-        cfo_id = self.permissions.cfo_for_module(request["unit_id"])
-        if not cfo_id:
-            return False
-        for position in positions.values():
-            step = steps.get(cfo_position_current_step_id(storage, position))
-            step_user = users.get(step.get("user_id"), {}) if step else {}
-            if not step or not (
-                step.get("unit_id") == cfo_id
-                or step_user.get("role") == "economist"
-            ):
-                return False
-        downstream_actions = {
-            "position_frozen_and_forwarded",
-            "position_approved_at_step",
-            "position_returned",
-            "position_items_fixed",
-            "position_fixed",
-        }
-        return not any(
-            row.get("cfo_position_id") in position_ids
-            and (row.get("log") or {}).get("action") in downstream_actions
-            for row in storage.load_all("cfo_position_logs")
-        )
-
     def public_request(
         self,
         request: dict,
@@ -229,8 +180,6 @@ class RequestService:
         elif request.get("status") == RequestStatus.cancelled and self._has_module_access(user, request):
             actions.append("restore")
         elif request.get("status") == RequestStatus.on_review:
-            if self._has_module_access(user, request) and self._can_cancel_before_general_route(request):
-                actions.append("cancel")
             if self.returned_item_ids(request["id"]) and self._has_module_access(user, request):
                 actions.extend(["edit_revision", "submit"])
             elif not self.cfo_review_completed(request["id"]) and self._has_cfo_access(user, request):
@@ -883,25 +832,11 @@ class RequestService:
         self.permissions.require_employee_unit_access(user, request["unit_id"])
         if request.get("status") == RequestStatus.cancelled:
             return self.public_request(request, user=user)
-        with self.repo.transaction() as repo:
-            locked = repo.lock_by_id("requests", request_id)
-            if not locked:
-                raise HTTPException(status_code=404, detail="Заявка не найдена")
-            if locked.get("status") == RequestStatus.cancelled:
-                updated = locked
-            else:
-                self.permissions.require_employee_cancel_request(user, locked)
-                if not self._can_cancel_before_general_route(locked, repo=repo):
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Заявку можно отменить только до передачи на общий маршрут согласования",
-                    )
-                updated = repo.update("requests", request_id, {"status": RequestStatus.cancelled})
-                self.log(user, request_id, "request_cancelled", before=locked, after=updated, repo=repo)
-                approval_service = getattr(self, "approval_service", None)
-                if approval_service:
-                    approval_service._sync_step_statuses(repo)
-        return self.public_request(updated, user=user)
+        self.permissions.require_employee_cancel_request(user, request)
+        raise HTTPException(
+            status_code=409,
+            detail="Заявку нельзя отменить после попадания на маршрут согласования",
+        )
 
     def restore(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
@@ -1578,6 +1513,7 @@ class RequestService:
                 str(item.get("status") or ItemStatus.on_review),
                 float(item.get("sum_fact") or 0),
                 float(item.get("sum_plan") or 0),
+                decision=str(log.get("decision") or ""),
             )
             bucket[action] = {
                 "at": created_at,
@@ -1626,7 +1562,11 @@ class RequestService:
         fallback_status: str,
         fallback_sum_fact: float,
         fallback_sum_plan: float,
+        *,
+        decision: str = "",
     ) -> tuple[float | None, str]:
+        if decision == "on_revision":
+            return None, "on_revision"
         status_change = changes.get("status") or {}
         sum_change = changes.get("sum_fact") or {}
         status = str(status_change.get("to") or fallback_status)
@@ -2254,6 +2194,46 @@ class RequestService:
         item_rows = self.repo.load_all("req_items")
         req_log_rows = self.repo.load_all("req_logs")
         position_log_rows = self.repo.load_all("cfo_position_logs")
+        # The item stores only its latest comment. Keep the complete line-level
+        # comment trail from approval and revision audit events for the register.
+        comments_by_item: dict[str, list[dict]] = {}
+        seen_comment_events: set[tuple[str, str, str]] = set()
+
+        def add_log_comments(row: dict, *, source: str) -> None:
+            log = row.get("log") or {}
+            comment = str(log.get("comment") or "").strip()
+            if not comment:
+                return
+            item_ids: list[str] = []
+            if log.get("entity") == "req_item" and log.get("entity_id"):
+                item_ids.append(str(log["entity_id"]))
+            if log.get("req_item_id"):
+                item_ids.append(str(log["req_item_id"]))
+            item_ids.extend(str(item_id) for item_id in (log.get("item_ids") or []) if item_id)
+            event_id = str(log.get("event_id") or "")
+            actor = users.get(row.get("user_id")) or {}
+            actor_name = self._register_user_display_name(users, profiles, row.get("user_id"))
+            for item_id in dict.fromkeys(item_ids):
+                dedupe_key = (item_id, event_id or f"{source}:{row.get('id')}", comment)
+                if dedupe_key in seen_comment_events:
+                    continue
+                seen_comment_events.add(dedupe_key)
+                comments_by_item.setdefault(item_id, []).append({
+                    "id": f"{source}:{row.get('id')}",
+                    "comment": comment,
+                    "author_name": actor_name,
+                    "author_role": actor.get("role"),
+                    "created_at": str(row.get("created_at") or ""),
+                    "action": log.get("action") or "",
+                    "event_id": event_id or None,
+                })
+
+        for row in req_log_rows:
+            add_log_comments(row, source="request")
+        for row in position_log_rows:
+            add_log_comments(row, source="position")
+        for comments in comments_by_item.values():
+            comments.sort(key=lambda value: (value.get("created_at") or "", value.get("id") or ""), reverse=True)
         item_decisions = self._build_register_item_decisions(
             users,
             profiles,
@@ -2473,7 +2453,8 @@ class RequestService:
         for link in self.repo.load_all("req_item_files"):
             file_counts[link.get("req_item_id")] = file_counts.get(link.get("req_item_id"), 0) + 1
         economist_decided_by_position: dict[str, set[str]] = {}
-        economist_decision_logs: list[tuple[str, str, tuple[str, int]]] = []
+        economist_decisions_by_position: dict[str, dict[str, str]] = {}
+        economist_decision_logs: list[tuple[str, str, tuple[str, int], str]] = []
         approver_decided_by_position: dict[str, dict[str, set[str]]] = {}
         latest_position_return: dict[str, tuple[tuple[str, int], set[str]]] = {}
         approver_decision_logs: list[tuple[str, str, tuple[str, int], set[str]]] = []
@@ -2503,7 +2484,12 @@ class RequestService:
             if log.get("action") == "economist_item_decided":
                 item_id = log.get("req_item_id")
                 if item_id:
-                    economist_decision_logs.append((position_id, str(item_id), key))
+                    economist_decision_logs.append((
+                        position_id,
+                        str(item_id),
+                        key,
+                        str(log.get("decision") or ""),
+                    ))
             if log.get("action") == "position_returned":
                 previous = latest_position_return.get(position_id)
                 if previous is None or key > previous[0]:
@@ -2511,11 +2497,12 @@ class RequestService:
                         key,
                         {str(item_id) for item_id in log.get("item_ids") or []},
                     )
-        for position_id, item_id, key in economist_decision_logs:
+        for position_id, item_id, key, decision in economist_decision_logs:
             returned = latest_position_return.get(position_id)
             if returned and item_id in returned[1] and key <= returned[0]:
                 continue
             economist_decided_by_position.setdefault(position_id, set()).add(item_id)
+            economist_decisions_by_position.setdefault(position_id, {})[item_id] = decision
         for position_id, step_id, key, item_ids in approver_decision_logs:
             if key > approver_step_resets.get((position_id, step_id), ("", 0)):
                 approver_decided_by_position.setdefault(position_id, {}).setdefault(step_id, set()).update(item_ids)
@@ -2752,6 +2739,33 @@ class RequestService:
                 )
             return False
 
+        def can_submit_workflow_revision(position: dict | None) -> bool:
+            """Whether an economist has decided every line and marked one for return."""
+            if not position or user.get("role") != "economist":
+                return False
+            step = steps.get(cfo_position_current_step_id(self.repo, position))
+            if not step or step.get("unit_id") or step.get("user_id") != user.get("id"):
+                return False
+            items = [row for row in position_items(position["id"]) if not row.get("fixed")]
+            if not items:
+                return False
+            decisions = economist_decisions_by_position.get(position["id"], {})
+            if any(row["id"] not in decisions for row in items):
+                return False
+            return any(decisions.get(row["id"]) == "on_revision" for row in items)
+
+        def can_return_workflow_position(position: dict | None) -> bool:
+            """Whether a reviewer may return selected position lines as one package."""
+            if not position or user.get("role") != "approver":
+                return False
+            step = steps.get(cfo_position_current_step_id(self.repo, position))
+            if not step or step.get("unit_id") or step.get("user_id") != user.get("id"):
+                return False
+            actor = users.get(step.get("user_id"), {})
+            return actor.get("role") == "approver" and any(
+                not row.get("fixed") for row in position_items(position["id"])
+            )
+
         def approval_stage(position: dict | None, item: dict) -> str | None:
             if not position:
                 return None
@@ -2875,6 +2889,14 @@ class RequestService:
                     or can_submit_workflow_position(position)
                 )
             )
+            is_workflow_revision_actionable = (
+                not item.get("fixed")
+                and can_submit_workflow_revision(position)
+            )
+            is_workflow_return_actionable = (
+                not item.get("fixed")
+                and can_return_workflow_position(position)
+            )
             is_economist_completion_actionable = (
                 not item.get("fixed")
                 and can_complete_economist_position(position)
@@ -2896,6 +2918,15 @@ class RequestService:
                 "name": item.get("name") or "Без наименования",
                 "justification": item.get("justification") or "",
                 "comment": item.get("comment") or "",
+                "comment_history": comments_by_item.get(item["id"], []) or ([{
+                    "id": f"item:{item['id']}",
+                    "comment": str(item.get("comment") or "").strip(),
+                    "author_name": None,
+                    "author_role": None,
+                    "created_at": str(item.get("updated_at") or ""),
+                    "action": "",
+                    "event_id": None,
+                }] if str(item.get("comment") or "").strip() else []),
                 **{field: str(item.get(field) or "").strip() for field in ANALYTICS_FIELDS},
                 "files_count": file_counts.get(item["id"], 0),
                 "requested_sum": float(item.get("sum_plan") or 0),
@@ -2965,6 +2996,12 @@ class RequestService:
                     and not cfo_revision_pending_by_request.get(request["id"])
                 ),
                 "is_workflow_submission_actionable": is_workflow_submission_actionable,
+                "is_workflow_revision_actionable": is_workflow_revision_actionable,
+                "is_workflow_return_actionable": is_workflow_return_actionable,
+                "is_workflow_revision_marked": (
+                    economist_decisions_by_position.get(position["id"], {}).get(item["id"]) == "on_revision"
+                    if position else False
+                ),
                 "is_economist_completion_actionable": is_economist_completion_actionable,
                 "is_position_actionable": (
                     can_act_on_position(position, item)
@@ -2973,6 +3010,8 @@ class RequestService:
                         and not cfo_revision_pending_by_request.get(request["id"])
                     )
                     or is_workflow_submission_actionable
+                    or is_workflow_revision_actionable
+                    or is_workflow_return_actionable
                     or is_economist_completion_actionable
                 ),
                 "approval_stage": approval_stage(position, item),
@@ -3135,6 +3174,16 @@ class RequestService:
             for entry in entries
             if entry.get("is_workflow_submission_actionable") and entry.get("position_id")
         }
+        workflow_revision_positions = {
+            entry["position_id"]
+            for entry in entries
+            if entry.get("is_workflow_revision_actionable") and entry.get("position_id")
+        }
+        workflow_return_positions = {
+            entry["position_id"]
+            for entry in entries
+            if entry.get("is_workflow_return_actionable") and entry.get("position_id")
+        }
         return {
             "requested_sum": requested,
             "approved_sum": approved_sum,
@@ -3160,6 +3209,8 @@ class RequestService:
             "submission_positions": len(submission_positions),
             "economist_completion_positions": len(economist_completion_positions),
             "workflow_ready_positions": len(workflow_ready_positions),
+            "workflow_revision_positions": len(workflow_revision_positions),
+            "workflow_return_positions": len(workflow_return_positions),
         }
 
     def _register_analytics_summary(
@@ -3464,6 +3515,7 @@ class RequestService:
         user: dict,
         group_type: str,
         group_id: str,
+        action: str | None = None,
         **filters,
     ) -> list[str]:
         """Return the actionable article positions represented by a register group.
@@ -3485,12 +3537,17 @@ class RequestService:
                 status_code=422,
                 detail="Неизвестный уровень реестра для группового согласования",
             )
+        action_flags = (
+            ("is_workflow_submission_actionable", "is_workflow_revision_actionable", "is_workflow_return_actionable")
+            if action == "return_for_revision"
+            else ("is_workflow_submission_actionable", "is_workflow_revision_actionable")
+        )
         position_ids = {
             entry["position_id"]
             for entry in self._register_entries(user, **filters)
             if entry[field] == group_id
             and entry.get("position_id")
-            and entry.get("is_workflow_submission_actionable")
+            and any(entry.get(flag) for flag in action_flags)
         }
         if not position_ids:
             raise HTTPException(
@@ -3582,6 +3639,7 @@ class RequestService:
                 entry.get("frozen")
                 or entry.get("is_revision")
                 or entry.get("is_economist_completion_actionable")
+                or entry.get("is_workflow_revision_actionable")
             )
         ]
         if mode == "cfo":

@@ -61,7 +61,7 @@ import CfoPositionsPage from './CfoPositionsPage';
 import { money, requestStatusLabels, roleLabels, stepStatusLabels } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
 import { downloadAuthorized } from '../utils/download';
-import { stepViewerRequirement } from '../utils/workflowPresentation';
+import { stepReadinessLabels, stepViewerRequirement } from '../utils/workflowPresentation';
 
 type EdgeDeletePreviewNode = {
   id: string;
@@ -241,14 +241,11 @@ function stepDisplayStatus(step: ApprovalStep): StepStatus {
 
 function stepStatusLabel(step: ApprovalStep): string {
   const status = stepDisplayStatus(step);
-  const base = stepStatusLabels[status];
-  const activeSuffix = status === 'on_approval' && (step.active_positions_count || 0) > 0
-    ? `: ${step.active_positions_count}`
-    : '';
-  const revisionSuffix = (step.revision_positions_count || 0) > 0
-    ? ` · На доработке: ${step.revision_positions_count}`
-    : '';
-  return `${base}${activeSuffix}${revisionSuffix}`;
+  if (status === 'on_revision') {
+    const count = step.readiness?.needs_revision || step.revision_positions_count || 0;
+    return count ? `На доработке: ${count}` : 'На доработке';
+  }
+  return stepStatusLabels[status];
 }
 
 function canDeleteApprovalStep(step: ApprovalStep) {
@@ -579,6 +576,7 @@ function ApprovalGraph({
         minCardHeight
         + Math.max(0, textLines(title, 25) - 1) * 22
         + Math.max(0, textLines(stepStatusLabel(step), 28) - 1) * 20
+        + stepReadinessLabels(step).reduce((height, label) => height + textLines(label, 30) * 17, 0)
         + Math.max(0, textLines(assignee, 30) - 1) * 18
         + contactExtraHeight(step.unit_id ? step.responsible : step.user)
         + viewerMessageHeight
@@ -1131,6 +1129,7 @@ function ApprovalGraph({
           const displayStatus = stepDisplayStatus(step);
           const statusTone = graphStepStatusTones[displayStatus];
           const viewerRequirement = viewerUserId ? stepViewerRequirement(step, viewerUserId) : null;
+          const readinessLabels = stepReadinessLabels(step);
           return (
             <Card
               key={step.id}
@@ -1203,7 +1202,12 @@ function ApprovalGraph({
                       '& .MuiChip-label': { display: 'block', py: 0.45, whiteSpace: 'normal', lineHeight: 1.2 },
                     }}
                   />
-                  {viewerRequirement && (
+                  {readinessLabels.map((label) => (
+                    <Typography key={label} variant="caption" sx={{ color: 'text.secondary', fontWeight: 600, lineHeight: 1.25 }}>
+                      {label}
+                    </Typography>
+                  ))}
+                  {viewerRequirement && !readinessLabels.length && (
                     <Typography
                       variant="caption"
                       fontWeight={700}

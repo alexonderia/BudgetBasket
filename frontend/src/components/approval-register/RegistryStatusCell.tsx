@@ -13,13 +13,14 @@ import {
 } from './registryStatusVisual';
 import { WorkflowStepCell } from './registryWorkflowStepVisual';
 
-export type RegistryRowDecision = 'approved' | 'approved_with_changes' | 'rejected';
+export type RegistryRowDecision = 'approved' | 'approved_with_changes' | 'rejected' | 'on_revision';
 type RegistryStatusAction = '' | RegistryRowDecision;
 
 const STATUS_EDIT_OPTIONS: Array<{ value: RegistryStatusAction; label: string }> = [
   { value: '', label: 'Выберите действие' },
   { value: 'approved', label: 'Согласовать' },
   { value: 'rejected', label: 'Отклонить' },
+  { value: 'on_revision', label: 'На доработку' },
 ];
 
 function statusActionHint(item: ApprovalRegisterRow, active: boolean) {
@@ -104,7 +105,7 @@ export function EditableRegistryStatusCell({
         value=""
         editable
         options={item.is_final_approval_actionable || item.decision_editable_stage === 'approver'
-          ? STATUS_EDIT_OPTIONS.filter((option) => option.value !== 'rejected')
+          ? STATUS_EDIT_OPTIONS.filter((option) => option.value !== 'rejected' && option.value !== 'on_revision')
           : STATUS_EDIT_OPTIONS}
         display={<StatusVisualCell presentation={presentation} disableTooltip />}
         ariaLabel="Статус и действие по строке"

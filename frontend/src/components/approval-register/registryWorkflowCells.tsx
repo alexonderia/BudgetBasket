@@ -13,7 +13,7 @@ import {
 import { parseMoneyInput, type RegistryStatusDisplay } from './registryConfig';
 import { WorkflowStepStatusIcon } from './registryWorkflowStepVisual';
 
-function compactStatus(status: ItemStatus | null | undefined, waiting: boolean): RegistryStatusDisplay {
+function compactStatus(status: ItemStatus | 'on_revision' | null | undefined, waiting: boolean): RegistryStatusDisplay {
   if (waiting) {
     return {
       label: 'Ожидает вашего решения',
@@ -29,6 +29,9 @@ function compactStatus(status: ItemStatus | null | undefined, waiting: boolean):
   }
   if (status === 'rejected') {
     return { label: 'Отклонено', tone: 'error', hint: 'Бюджет не выделен' };
+  }
+  if (status === 'on_revision') {
+    return { label: 'На доработке', tone: 'warning', hint: 'Строка отмечена для возврата на доработку' };
   }
   return { label: 'Ожидает вашего решения', tone: 'warning', hint: 'Ожидает решения' };
 }
@@ -95,7 +98,7 @@ export function RegistryYourDecisionCell({
   };
 
   const commitStatus = (decision: RegistryRowDecision) => {
-    if (decision === 'rejected' || decision === 'approved_with_changes') {
+    if (decision === 'rejected' || decision === 'approved_with_changes' || decision === 'on_revision') {
       onDecision(decision, amount);
       return;
     }
