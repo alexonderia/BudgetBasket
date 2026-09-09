@@ -2037,34 +2037,54 @@ class ApprovalService:
             repo = storage
             position = repo.lock_by_id("cfo_positions", position_id)
             if not position:
-                raise HTTPException(status_code=404, detail="Position not found")
+                raise HTTPException(status_code=404, detail="Позиция не найдена")
             step_id = self._current_step_id(repo, position)
             step = get_required(repo, "steps", step_id) if step_id else None
             if not step or not step.get("user_id"):
-                raise HTTPException(status_code=409, detail="Position is not at the ZGD step")
+                raise HTTPException(status_code=409, detail="Позиция не находится на этапе ЗГД")
             actor = get_required(repo, "users", step["user_id"])
             if user.get("role") != "zgd" or actor.get("role") != "zgd":
-                raise HTTPException(status_code=403, detail="Only ZGD can lock the budget")
+                raise HTTPException(status_code=403, detail="Только ЗГД может зафиксировать бюджет")
             self.permissions.require_step_assignee(user, step)
             if self._parents(step_id, self._edges(repo)):
-                raise HTTPException(status_code=409, detail="ZGD must be the final route step")
+                raise HTTPException(status_code=409, detail="Этап ЗГД должен быть последним этапом маршрута")
             items = self._position_items(repo, position_id)
-            pending = self._pending_position_decision_ids(repo, position, step, items)
-            if not items or pending:
-                raise HTTPException(status_code=409, detail={"message": "Approve all lines before locking", "item_ids": pending})
-            if any(row.get("fixed") for row in items):
-                raise HTTPException(status_code=409, detail="Budget is already locked")
+            if not items:
+                raise HTTPException(status_code=409, detail="В позиции нет строк для фиксации")
+            items_to_fix = [row for row in items if not row.get("fixed")]
+            if not items_to_fix:
+                raise HTTPException(status_code=409, detail="Бюджет уже зафиксирован")
+            pending = self._pending_position_decision_ids(repo, position, step, items_to_fix)
+            if pending:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Сначала согласуйте все строки перед фиксацией",
+                        "item_ids": pending,
+                    },
+                )
             before = dict(position)
-            for item in items:
+            for item in items_to_fix:
                 repo.update("req_items", item["id"], {"fixed": True, "frozen": True})
-            after = repo.update("cfo_positions", position_id, {"status": CfoPositionStatus.approved, "current_step_id": None})
+            fixed_items = self._position_items(repo, position_id)
+            all_items_fixed = self._all_items_fixed(fixed_items)
+            after = (
+                repo.update(
+                    "cfo_positions",
+                    position_id,
+                    {"status": CfoPositionStatus.approved, "current_step_id": None},
+                )
+                if all_items_fixed
+                else position
+            )
             event_id = self._event_id()
-            self._position_log(repo, user, after, "position_fixed", before=before, after=after,
+            self._position_log(repo, user, after, "position_fixed" if all_items_fixed else "position_items_fixed", before=before, after=after,
                                comment=comment, event_id=event_id, step_id=step_id,
-                               item_ids=[row["id"] for row in items])
-            self._step_log(repo, user, step, "position_fixed", event_id=event_id, comment=comment,
+                               current_step_id=None if all_items_fixed else step_id,
+                               item_ids=[row["id"] for row in items_to_fix])
+            self._step_log(repo, user, step, "position_fixed" if all_items_fixed else "position_items_fixed", event_id=event_id, comment=comment,
                            cfo_position_id=position_id)
-            self._sync_request_statuses(repo, user, {row["request_id"] for row in items},
+            self._sync_request_statuses(repo, user, {row["request_id"] for row in items_to_fix},
                                         event_id=event_id, action="request_finalized_by_zgd")
             sync_annual_budgets(repo)
             self._sync_step_statuses(repo)
@@ -2078,10 +2098,10 @@ class ApprovalService:
             repo = storage
             position = repo.lock_by_id("cfo_positions", position_id)
             if not position:
-                raise HTTPException(status_code=404, detail="Position not found")
+                raise HTTPException(status_code=404, detail="Позиция не найдена")
             items = self._position_items(repo, position_id)
             if not items or not self._all_items_fixed(items):
-                raise HTTPException(status_code=409, detail="Budget is not locked")
+                raise HTTPException(status_code=409, detail="Бюджет ещё не зафиксирован полностью")
             fixed_log = max((row for row in repo.load_all("cfo_position_logs")
                              if row.get("cfo_position_id") == position_id
                              and (row.get("log") or {}).get("action") == "position_fixed"),
@@ -2089,10 +2109,10 @@ class ApprovalService:
             step_id = (fixed_log.get("log") or {}).get("step_id") if fixed_log else None
             step = get_required(repo, "steps", step_id) if step_id else None
             if not step or not step.get("user_id"):
-                raise HTTPException(status_code=409, detail="Cannot restore the ZGD step")
+                raise HTTPException(status_code=409, detail="Не удалось восстановить этап ЗГД")
             actor = get_required(repo, "users", step["user_id"])
             if user.get("role") != "zgd" or actor.get("role") != "zgd":
-                raise HTTPException(status_code=403, detail="Only ZGD can unlock the budget")
+                raise HTTPException(status_code=403, detail="Только ЗГД может снять фиксацию бюджета")
             self.permissions.require_step_assignee(user, step)
             before = dict(position)
             for item in items:

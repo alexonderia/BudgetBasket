@@ -325,6 +325,54 @@ def test_zgd_approval_is_reversible_until_the_budget_is_locked(tmp_path):
     assert position["current_step_id"] == ROOT_STEP_ID
 
 
+def test_zgd_can_fix_remaining_lines_after_partial_position_lock(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    zgd = auth(client, "zgd", "zgd")
+    request, items = create_submitted_request(client, employee, item_count=2)
+    position_id = complete_cfo(
+        client,
+        employee,
+        request["id"],
+        [(item["id"], "approved") for item in items],
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(
+        client, employee, economist, position_id, [item["id"] for item in items]
+    )
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": ""},
+        headers=economist,
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": ""},
+        headers=approver,
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "", "item_ids": [item["id"] for item in items]},
+        headers=zgd,
+    ).status_code == 200
+
+    # Simulate a position created by the previous final-approval flow, where
+    # one line could already be fixed before the remaining lines were fixed.
+    repo = client.app.state.repo
+    repo.update("req_items", items[0]["id"], {"fixed": True, "frozen": True})
+
+    locked = client.post(
+        f"/approval-register/groups/article/{DDS_OPER_ID}/workflow-action",
+        json={"action": "fix", "comment": ""},
+        headers=zgd,
+    )
+    assert locked.status_code == 200, locked.text
+    position = client.get(f"/cfo-positions/{position_id}", headers=zgd).json()
+    assert position["all_items_fixed"] is True
+    assert position["current_step_id"] is None
+
+
 def test_request_cancel_is_blocked_after_economist_forwards_to_general_route(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")
