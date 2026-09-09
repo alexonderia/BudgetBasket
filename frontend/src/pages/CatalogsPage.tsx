@@ -10,6 +10,7 @@ import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import IconButton from '@mui/material/IconButton';
+import InputAdornment from '@mui/material/InputAdornment';
 import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
@@ -23,6 +24,7 @@ import Tabs from '@mui/material/Tabs';
 import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
+import SearchIcon from '@mui/icons-material/Search';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
@@ -194,6 +196,7 @@ export default function CatalogsPage({ user }: { user: User }) {
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<CatalogKind>('dds');
   const [departmentId, setDepartmentId] = useState('');
+  const [search, setSearch] = useState('');
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [actionTarget, setActionTarget] = useState<CatalogActionTarget | null>(null);
@@ -213,6 +216,28 @@ export default function CatalogsPage({ user }: { user: User }) {
     .filter((row) => !!row.article)
     .sort((a, b) => a.article.name.localeCompare(b.article.name, 'ru') || a.name.localeCompare(b.name, 'ru')),
   [catalog]);
+  const { visibleArticles, visibleRows } = useMemo(() => {
+    const searchTerms = search.trim().toLocaleLowerCase('ru-RU').split(/\s+/).filter(Boolean);
+    if (!searchTerms.length) return { visibleArticles: articles, visibleRows: rows };
+
+    const matches = (values: string[]) => {
+      const searchableText = values.join(' ').toLocaleLowerCase('ru-RU');
+      return searchTerms.every((term) => searchableText.includes(term));
+    };
+    const matchingArticleIds = new Set(
+      articles.filter((article) => matches([article.name])).map((article) => article.id),
+    );
+    const nextRows = rows.filter((row) => matchingArticleIds.has(row.article.id) || matches([row.name, row.article.name]));
+    const visibleArticleIds = new Set([
+      ...matchingArticleIds,
+      ...nextRows.map((row) => row.article.id),
+    ]);
+
+    return {
+      visibleArticles: articles.filter((article) => visibleArticleIds.has(article.id)),
+      visibleRows: nextRows,
+    };
+  }, [articles, rows, search]);
   const canManageCategories = user.role === 'admin' || (
     user.role === 'economist'
     && units.some((unit) => unit.parent_id === departmentId && user.unit_ids?.includes(unit.id))
@@ -255,6 +280,16 @@ export default function CatalogsPage({ user }: { user: User }) {
         <TextField select size="small" label="Объединение" value={departmentId} onChange={(event) => setDepartmentId(event.target.value)} sx={filterFieldSx(280)}>
           {departments.map((department) => <MenuItem key={department.id} value={department.id}>{department.name}</MenuItem>)}
         </TextField>
+        <TextField
+          size="small"
+          label="Поиск"
+          placeholder={`${meta.article}, категория`}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          inputProps={{ 'aria-label': `Поиск по ${meta.title.toLocaleLowerCase()}` }}
+          sx={filterFieldSx(260)}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 18 }} color="action" /></InputAdornment> }}
+        />
         {user.role === 'admin' && <Button startIcon={<AddIcon />} variant="contained" onClick={() => setImportDialogOpen(true)} disabled={!departmentId}>Добавить / импорт</Button>}
         {canManageCategories && <Button startIcon={<AddIcon />} variant="outlined" onClick={() => setCategoryDialogOpen(true)} disabled={!articles.length}>Добавить категорию</Button>}
       </Stack>
@@ -266,8 +301,8 @@ export default function CatalogsPage({ user }: { user: User }) {
       Изменения в строках сохраняются сразу; во время редактирования нажмите Esc, чтобы отменить несохранённое изменение.
     </Typography>
     <Box sx={{ overflowX: 'auto' }}><Table size="small"><TableHead><TableRow><TableCell>{meta.article} / категория</TableCell><TableCell>Уровень</TableCell><TableCell>Активна</TableCell>{(user.role === 'admin' || canManageCategories) && <TableCell>Действия</TableCell>}</TableRow></TableHead>
-      <TableBody>{articles.map((article) => {
-        const categories = rows.filter((row) => row.article.id === article.id);
+      <TableBody>{visibleArticles.map((article) => {
+        const categories = visibleRows.filter((row) => row.article.id === article.id);
         return <Fragment key={article.id}>
           <TableRow sx={{ bgcolor: 'action.hover' }}>
             <TableCell>
@@ -318,7 +353,7 @@ export default function CatalogsPage({ user }: { user: User }) {
             </Stack></TableCell>}
           </TableRow>)}
         </Fragment>;
-      })}{articles.length === 0 && <TableRow><TableCell colSpan={(user.role === 'admin' || canManageCategories) ? 4 : 3} align="center">Записи НСИ не найдены</TableCell></TableRow>}</TableBody>
+      })}{visibleArticles.length === 0 && <TableRow><TableCell colSpan={(user.role === 'admin' || canManageCategories) ? 4 : 3} align="center">Записи НСИ не найдены</TableCell></TableRow>}</TableBody>
     </Table></Box></Paper>
     <ImportDialog open={importDialogOpen} kind={kind} departmentId={departmentId} departments={departments} catalog={catalog} onClose={() => setImportDialogOpen(false)} onDownloadTemplate={downloadTemplate} onImported={(result) => { if (result.rows.length) toast(`Импорт завершён: создано ${result.created}, обновлено ${result.updated}`, 'success'); queryClient.invalidateQueries({ queryKey: [meta.path] }); }} />
     <CategoryDialog open={categoryDialogOpen} kind={kind} departmentId={departmentId} articles={articles} onClose={() => setCategoryDialogOpen(false)} />
