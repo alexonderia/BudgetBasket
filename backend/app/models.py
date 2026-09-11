@@ -309,6 +309,18 @@ class StepApproveIn(StrictModel):
     position_ids: list[str] = Field(default_factory=list)
 
 
+class PositionLineApprovalIn(StrictModel):
+    step_id: str
+    position_id: str
+    item_ids: list[str] = Field(min_length=1)
+
+
+class BulkPositionLineApprovalIn(StrictModel):
+    positions: list[PositionLineApprovalIn] = Field(min_length=1)
+    comment: str = ""
+    event_id: str | None = None
+
+
 class ItemDecisionIn(StrictModel):
     # ``on_revision`` is a saved workflow choice.  Unlike an item status it
     # leaves the budget line in ``on_review`` until the reviewer explicitly

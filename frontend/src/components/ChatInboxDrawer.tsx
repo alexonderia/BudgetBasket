@@ -19,6 +19,7 @@ import Typography from '@mui/material/Typography';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
+import { usePagedChat } from '../api/usePagedChat';
 import { chatWebSocketUrl } from '../api/websocket';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { AUTH_TOKEN_KEY, AUTH_USER_KEY } from '../utils/session';
@@ -27,7 +28,9 @@ import { ChatMessageText } from './ChatMessageText';
 import type { FileAttachment, Profile } from '../types';
 
 type ChatSender = { id: string; login: string; profile?: Profile | null };
-type ChatMessage = { id: string; text: string; created_at: string; is_system?: boolean; reply_to?: string | null; sender: ChatSender | null; files: FileAttachment[] };
+type ChatMessage = {
+  reply_preview?: ChatMessage;
+  read_by_other?: boolean; id: string; text: string; created_at: string; is_system?: boolean; reply_to?: string | null; sender: ChatSender | null; files: FileAttachment[] };
 type ChatSummary = {
   id: string;
   kind: 'module_cfo' | 'cfo_economist';
@@ -77,9 +80,9 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
     queryFn: async () => (await api.get<ChatSummary[]>('/chats')).data,
     enabled: open,
   });
-  const { data: chat } = useQuery({
+  const { data: chat, hasOlder, loadOlder, loadingOlder, olderError } = usePagedChat<ChatDetails>({
     queryKey: ['chats', selectedChat?.id],
-    queryFn: async () => (await api.get<ChatDetails>(`/chats/${selectedChat!.id}`)).data,
+    url: `/chats/${selectedChat?.id || ''}`,
     enabled: open && !!selectedChat,
   });
   const markRead = useMutation({
@@ -151,7 +154,7 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
     lastMarkedReadRef.current = marker;
     markRead.mutate({ chatId: selectedChat.id, messageId: latest.id }, { onError: () => { lastMarkedReadRef.current = ''; } });
   }, [chat, currentUserId, markRead, open, selectedChat]);
-  useEffect(() => { messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' }); }, [chat?.messages.length]);
+  useEffect(() => { messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' }); }, [chat?.messages.at(-1)?.id]);
 
   const grouped = [
     { kind: 'module_cfo' as const, label: 'Модуль — ЦФО' },
@@ -166,13 +169,14 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
         <IconButton onClick={onClose} aria-label="Закрыть чат"><CloseIcon /></IconButton>
       </Stack>
       <Box ref={messagesRef} className="chat-inbox-messages" aria-live="polite">
+        {hasOlder && <Button size="small" disabled={loadingOlder} onClick={() => void loadOlder(messagesRef.current)}>{olderError ? 'Повторить загрузку сообщений' : 'Предыдущие сообщения'}</Button>}
         {!chat?.messages.length && <Box className="request-chat-empty"><ForumOutlinedIcon color="primary" fontSize="large" /><Typography fontWeight={700}>Начните обсуждение</Typography></Box>}
         {chat?.messages.map((message, index) => {
           const isSystem = !!message.is_system; const isOwn = !isSystem && message.sender?.id === currentUserId;
           const previous = chat.messages[index - 1]; const startsNewDay = !previous || chatDayKey(previous.created_at) !== chatDayKey(message.created_at);
-          const reply = message.reply_to ? chat.messages.find((item) => item.id === message.reply_to) : undefined;
+          const reply = message.reply_preview || (message.reply_to ? chat.messages.find((item) => item.id === message.reply_to) : undefined);
           const messageIndex = chat.messages.findIndex((item) => item.id === message.id);
-          const read = isOwn && chat.participants.filter((item) => item.user_id !== currentUserId).some((item) => chat.messages.findIndex((entry) => entry.id === item.last_read_message_id) >= messageIndex);
+          const read = isOwn && (message.read_by_other ?? chat.participants.filter((item) => item.user_id !== currentUserId).some((item) => chat.messages.findIndex((entry) => entry.id === item.last_read_message_id) >= messageIndex));
           return <Fragment key={message.id}>{startsNewDay && <Box className="chat-day-divider">{chatDayLabel(message.created_at)}</Box>}<Box className={`request-chat-message ${isOwn ? 'request-chat-message-own' : ''} ${isSystem ? 'request-chat-message-system' : ''}`}><Box className="request-chat-bubble">
             {!isOwn && !isSystem && <Typography className="request-chat-sender" variant="caption">{senderName(message.sender)}</Typography>}
             {isSystem && <Typography className="request-chat-system-label" variant="caption">Системное сообщение</Typography>}

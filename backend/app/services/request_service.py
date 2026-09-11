@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from contextlib import nullcontext
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 
 from app.models import APPROVED_ITEM_STATUSES, CfoPositionStatus, ItemStatus, RequestStatus, StepStatus
 from app.repositories.base import Repository
+from app.repositories.queries import find_rows, scoped_register_read
 from app.services.common import (
     cfo_position_current_step_id,
     get_required,
@@ -168,9 +170,10 @@ class RequestService:
         summary: dict | None = None,
         *,
         user: dict | None = None,
+        _flags: dict | None = None,
     ) -> dict:
         summary = summary or self.summary(request["id"])
-        active_items = self._items(request["id"])
+        active_items = self._items(request["id"]) if _flags is None else []
         all_items_frozen = bool(active_items) and all(bool(item.get("frozen")) for item in active_items)
         all_items_fixed = bool(active_items) and all(bool(item.get("fixed")) for item in active_items)
         cfo_id = self.permissions.cfo_for_module(request["unit_id"])
@@ -195,8 +198,8 @@ class RequestService:
             "sum_fact": summary["approved_sum"],
             "total_approved_sum": summary["approved_sum"],
             "summary": summary,
-            "frozen": all_items_frozen,
-            "fixed": all_items_fixed,
+            "frozen": bool(_flags["frozen"]) if _flags is not None else all_items_frozen,
+            "fixed": bool(_flags["fixed"]) if _flags is not None else all_items_fixed,
             "available_actions": actions,
             "unit_budget": {
                 "annual_budget": float(
@@ -213,10 +216,17 @@ class RequestService:
         created_from: str | None = None,
         created_to: str | None = None,
         budget_year: int | None = None,
-    ) -> list[dict]:
+        *, page: int = 1, page_size: int | None = None,
+    ) -> list[dict] | dict:
         visible = self.permissions.visible_request_ids(user)
         result: list[dict] = []
-        for request in self.repo.load_all("requests"):
+        filters = {key: value for key, value in {"status": status, "unit_id": unit_id, "budget_year": budget_year}.items() if value is not None}
+        count = None
+        if page_size and hasattr(self.repo, "request_page"):
+            source, count, page = self.repo.request_page(visible, filters, page=page, page_size=page_size, created_from=created_from, created_to=created_to)
+        else:
+            source = find_rows(self.repo, "requests", filters=filters, in_filters={"id": visible} if visible is not None else None)
+        for request in source:
             if visible is not None and request["id"] not in visible:
                 continue
             if status and request.get("status") != status:
@@ -230,8 +240,25 @@ class RequestService:
                 continue
             if created_to and created_at > created_to:
                 continue
-            result.append(self.public_request(request, user=user))
-        return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+            result.append(request)
+        result.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        if page_size and count is None:
+            count = len(result)
+            page = self._register_pagination(count, page, page_size)["page"]
+            result = self._slice_register_page(result, page, page_size)
+        if hasattr(self.repo, "request_summaries"):
+            ids = {row["id"] for row in result}
+            summaries = self.repo.request_summaries(ids)
+            context = self.repo.read_snapshot({"req_logs": find_rows(self.repo, "req_logs", in_filters={"req_id": ids})})
+        else:
+            summaries, context = {}, nullcontext()
+        public = []
+        with context:
+            for row in result:
+                totals = summaries.get(row["id"])
+                summary = {key: value for key, value in totals.items() if key not in {"fixed", "frozen"}} if totals else None
+                public.append(self.public_request(row, summary, user=user, _flags=totals))
+        return {"items": public, "pagination": self._register_pagination(count, page, page_size)} if page_size else public
 
     def get_request(self, user: dict, request_id: str) -> dict:
         request = get_required(self.repo, "requests", request_id)
@@ -2144,6 +2171,7 @@ class RequestService:
     # The register intentionally works from request lines, rather than CFO
     # positions.  Positions only exist after the CFO review, while authors
     # must also be able to see their draft and in-review lines.
+    @scoped_register_read
     def _register_entries(
         self,
         user: dict,
@@ -2169,6 +2197,8 @@ class RequestService:
         positioned_only: bool = False,
         fixed_only: bool = False,
         module_ids: set[str] | None = None,
+        _details: bool = True,
+        _status_context: bool = False,
     ) -> list[dict]:
         allowed_item_ids = set(item_ids) if item_ids is not None else None
         request_statuses = (
@@ -2228,10 +2258,11 @@ class RequestService:
                     "event_id": event_id or None,
                 })
 
-        for row in req_log_rows:
-            add_log_comments(row, source="request")
-        for row in position_log_rows:
-            add_log_comments(row, source="position")
+        if _details:
+            for row in req_log_rows:
+                add_log_comments(row, source="request")
+            for row in position_log_rows:
+                add_log_comments(row, source="position")
         for comments in comments_by_item.values():
             comments.sort(key=lambda value: (value.get("created_at") or "", value.get("id") or ""), reverse=True)
         item_decisions = self._build_register_item_decisions(
@@ -3072,7 +3103,7 @@ class RequestService:
                 item_decisions=item_decisions,
                 item_step_decisions=item_step_decisions,
                 economist_decided_by_position=economist_decided_by_position,
-            )
+            ) if _details or _status_context else None
             entries.append(entry)
         return entries
 
@@ -3282,14 +3313,14 @@ class RequestService:
             })
         return result
 
-    def approval_register(self, user: dict, view: str = "cfo", group_by: list[str] | None = None, **filters) -> dict:
+    def approval_register(self, user: dict, view: str = "cfo", group_by: list[str] | None = None, *, _entries: list[dict] | None = None, **filters) -> dict:
         if view not in DEFAULT_REGISTER_GROUPS:
             raise HTTPException(status_code=422, detail="Неизвестное представление реестра")
         levels = tuple(group_by or DEFAULT_REGISTER_GROUPS[view])
         if not levels or len(levels) != len(set(levels)) or any(level not in REGISTER_GROUP_LEVELS for level in levels):
             raise HTTPException(status_code=422, detail="Укажите уникальные допустимые уровни группировки")
 
-        entries = self._sort_register_entries(self._register_entries(user, **filters))
+        entries = self._sort_register_entries(self._register_entries(user, **filters) if _entries is None else _entries)
         include_interim_facts = not bool(filters.get("positioned_only"))
         budget_year_filter = filters.get("budget_year")
         visible_cfo_ids = {
@@ -3698,7 +3729,21 @@ class RequestService:
             for key, value in filters.items()
             if key not in ANALYTICS_FIELDS
         }
-        entries = self._register_entries(user, **scoped_filters)
+        if (
+            hasattr(self.repo, "register_analytics_filters")
+            and not scoped_filters.get("search")
+            and not scoped_filters.get("mine_only")
+            and not any(
+                scoped_filters.get(key) in {"uncategorized", "unassigned"}
+                for key in ("article_id", "category_id", "cfo_id")
+            )
+        ):
+            return self.repo.register_analytics_filters(
+                self.permissions.visible_request_ids(user),
+                scoped_filters,
+                self.repo.load_all("units"),
+            )
+        entries = self._register_entries(user, **scoped_filters, _details=False)
         result: dict[str, list[str]] = {}
         for field in ANALYTICS_FIELDS:
             values = sorted(

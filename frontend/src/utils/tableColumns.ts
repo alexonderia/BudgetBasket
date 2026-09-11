@@ -118,6 +118,7 @@ type UseTableColumnControlsOptions<T, K extends string> = {
   rows: T[];
   columns: TableColumnDefinition<T, K>[];
   initialSort?: TableSortState<K>;
+  remoteOptions?: Partial<Record<K, TableFilterOption[]>>;
   adjustFilterSelection?: (context: {
     columnId: K;
     optionValue: string;
@@ -185,6 +186,7 @@ export function useTableColumnControls<T, K extends string>({
   rows,
   columns,
   initialSort = null,
+  remoteOptions,
   adjustFilterSelection,
 }: UseTableColumnControlsOptions<T, K>) {
   const [sort, setSort] = useState<TableSortState<K>>(initialSort);
@@ -214,6 +216,10 @@ export function useTableColumnControls<T, K extends string>({
     return columns.reduce((accumulator, column) => {
       const optionMap = new Map<string, TableFilterOption>();
       const optionSearch = normalizeSearch(filterSearchValues[column.id] || '');
+      if (remoteOptions) {
+        accumulator[column.id] = (remoteOptions[column.id] || []).filter((option) => !optionSearch || option.label.toLocaleLowerCase('ru-RU').includes(optionSearch));
+        return accumulator;
+      }
       const scopedRows = rows.filter((row) => columns.every((candidate) => rowMatchesColumnFilter(row, candidate.id, column.id)));
 
       for (const row of scopedRows) {
@@ -234,7 +240,7 @@ export function useTableColumnControls<T, K extends string>({
       accumulator[column.id] = options;
       return accumulator;
     }, {} as Record<K, TableFilterOption[]>);
-  }, [columns, columnsById, filterSearchValues, rows, selectedFilterValues]);
+  }, [columns, columnsById, filterSearchValues, rows, selectedFilterValues, remoteOptions]);
 
   const filteredRows = useMemo(
     () => rows.filter((row) => columns.every((column) => rowMatchesColumnFilter(row, column.id))),

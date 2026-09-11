@@ -8,6 +8,8 @@ from fastapi.encoders import jsonable_encoder
 
 from app.models import APPROVED_ITEM_STATUSES, CfoPositionStatus, ItemStatus, RequestStatus, StepStatus
 from app.repositories.base import Repository
+from app.repositories.queries import find_rows
+from app.repositories.pagination import cursor_page, decode_cursor, encode_cursor
 from app.services.budget_item_service import BudgetItemService
 from app.services.budget_totals import sync_annual_budgets
 from app.services.common import (
@@ -32,6 +34,21 @@ class ApprovalService:
     @staticmethod
     def _event_id() -> str:
         return str(uuid4())
+
+    @staticmethod
+    def _preload_approval_batch(repo: Repository) -> list[dict]:
+        """Prime stable lookup tables once before a multi-position write."""
+        for collection in (
+            "requests",
+            "req_items",
+            "cfo_positions",
+            "steps",
+            "users",
+            "dds_catalog",
+            "invests_catalog",
+        ):
+            repo.load_all(collection)
+        return repo.load_all("cfo_position_logs")
 
     @staticmethod
     def _steps(repo: Repository) -> dict[str, dict]:
@@ -73,7 +90,12 @@ class ApprovalService:
         if not candidate_set:
             return None
         incoming = [
-            row for row in repo.load_all("cfo_position_logs")
+            row
+            for row in find_rows(
+                repo,
+                "cfo_position_logs",
+                filters={"cfo_position_id": position["id"]},
+            )
             if row.get("cfo_position_id") == position["id"]
             and (row.get("log") or {}).get("action") in {
                 "position_sent_to_economist",
@@ -140,11 +162,24 @@ class ApprovalService:
 
     @staticmethod
     def _approver_approved_item_ids(
-        repo: Repository, position_id: str, step_id: str
+        repo: Repository,
+        position_id: str,
+        step_id: str,
+        *,
+        logs: list[dict] | None = None,
     ) -> set[str]:
         """Return line decisions made during the position's current visit to a reviewer step."""
         logs = [
-            row for row in repo.load_all("cfo_position_logs")
+            row
+            for row in (
+                logs
+                if logs is not None
+                else find_rows(
+                    repo,
+                    "cfo_position_logs",
+                    filters={"cfo_position_id": position_id},
+                )
+            )
             if row.get("cfo_position_id") == position_id
         ]
         reset_key = max(
@@ -522,6 +557,8 @@ class ApprovalService:
         step: dict,
         positions: list[dict],
         edges: list[dict],
+        *,
+        position_logs: list[dict] | None = None,
     ) -> list[dict]:
         if step.get("unit_id"):
             return [row for row in positions if row.get("cfo_unit_id") == step["unit_id"]]
@@ -530,7 +567,11 @@ class ApprovalService:
             return [row for row in positions if row.get("cfo_unit_id") in cfo_ids]
         historical_ids = {
             row.get("cfo_position_id")
-            for row in repo.load_all("cfo_position_logs")
+            for row in (
+                position_logs
+                if position_logs is not None
+                else repo.load_all("cfo_position_logs")
+            )
             if row.get("step_id") == step["id"]
             or (row.get("log") or {}).get("step_id") == step["id"]
         }
@@ -545,6 +586,9 @@ class ApprovalService:
         step: dict,
         positions: list[dict],
         edges: list[dict],
+        *,
+        position_items: dict[str, list[dict]] | None = None,
+        position_logs: list[dict] | None = None,
     ) -> str:
         step_id = step["id"]
         active = [row for row in positions if self._current_step_id(repo, row) == step_id]
@@ -579,11 +623,20 @@ class ApprovalService:
                 return StepStatus.approved
             return StepStatus.on_approval
 
-        scoped = self._positions_for_step(repo, step, positions, edges)
+        scoped = self._positions_for_step(
+            repo, step, positions, edges, position_logs=position_logs
+        )
         if not scoped:
             return StepStatus.waiting
 
-        if all(self._all_items_fixed(self._position_items(repo, row["id"])) for row in scoped):
+        if all(
+            self._all_items_fixed(
+                position_items.get(row["id"], [])
+                if position_items is not None
+                else self._position_items(repo, row["id"])
+            )
+            for row in scoped
+        ):
             return StepStatus.closed
 
         upstream = self._collect_upstream_step_ids(step_id, edges)
@@ -607,14 +660,36 @@ class ApprovalService:
 
     def _sync_step_statuses(self, repo: Repository) -> None:
         steps = list(repo.load_all("steps"))
+        active_request_ids = {
+            request["id"]
+            for request in repo.load_all("requests")
+            if request.get("status") != RequestStatus.cancelled
+        }
+        position_items: dict[str, list[dict]] = {}
+        for item in repo.load_all("req_items"):
+            position_id = item.get("cfo_position_id")
+            if (
+                position_id
+                and item.get("status") != ItemStatus.deleted
+                and item.get("request_id") in active_request_ids
+            ):
+                position_items.setdefault(position_id, []).append(item)
         positions = [
             position
             for position in repo.load_all("cfo_positions")
-            if self._position_items(repo, position["id"])
+            if position["id"] in position_items
         ]
         edges = self._edges(repo)
+        position_logs = repo.load_all("cfo_position_logs")
         for step in steps:
-            status = self._step_runtime_status(repo, step, positions, edges)
+            status = self._step_runtime_status(
+                repo,
+                step,
+                positions,
+                edges,
+                position_items=position_items,
+                position_logs=position_logs,
+            )
             if step.get("status") != status:
                 repo.update("steps", step["id"], {"status": status})
 
@@ -1239,15 +1314,18 @@ class ApprovalService:
         return self.sync_automatic_steps(user)
 
     def _position_items(self, repo: Repository, position_id: str) -> list[dict]:
+        candidates = find_rows(
+            repo, "req_items", filters={"cfo_position_id": position_id}
+        )
+        request_ids = {row.get("request_id") for row in candidates if row.get("request_id")}
         active_request_ids = {
             request["id"]
-            for request in repo.load_all("requests")
+            for request in find_rows(repo, "requests", in_filters={"id": request_ids})
             if request.get("status") != RequestStatus.cancelled
         }
         return [
-            row for row in repo.load_all("req_items")
-            if row.get("cfo_position_id") == position_id
-            and row.get("status") != ItemStatus.deleted
+            row for row in candidates
+            if row.get("status") != ItemStatus.deleted
             and row.get("request_id") in active_request_ids
         ]
 
@@ -1301,7 +1379,13 @@ class ApprovalService:
     def _all_items_fixed(items: list[dict]) -> bool:
         return bool(items) and all(bool(row.get("fixed")) for row in items)
 
-    def public_position(self, position: dict, *, repo: Repository | None = None) -> dict:
+    def public_position(
+        self,
+        position: dict,
+        *,
+        repo: Repository | None = None,
+        public_steps_by_id: dict[str, dict] | None = None,
+    ) -> dict:
         storage = repo or self.repo
         units = {row["id"]: row for row in storage.load_all("units")}
         requests = {row["id"]: row for row in storage.load_all("requests")}
@@ -1344,11 +1428,36 @@ class ApprovalService:
             "can_forward": self._all_items_frozen(items),
             "contributions": contributions,
             "current_step": (
-                self._public_steps(storage, [get_required(storage, "steps", current_step_id)])[0]
+                public_steps_by_id.get(current_step_id)
+                if public_steps_by_id is not None
+                else self._public_steps(
+                    storage, [get_required(storage, "steps", current_step_id)]
+                )[0]
                 if current_step_id
                 else None
             ),
         }
+
+    def _public_position_batch(self, repo: Repository, positions: list[dict]) -> list[dict]:
+        """Serialize several positions while calculating their step context once."""
+        step_ids = {
+            step_id
+            for position in positions
+            if (step_id := self._current_step_id(repo, position))
+        }
+        public_steps = self._public_steps(
+            repo,
+            [get_required(repo, "steps", step_id) for step_id in sorted(step_ids)],
+        ) if step_ids else []
+        by_id = {step["id"]: step for step in public_steps}
+        return [
+            self.public_position(
+                position,
+                repo=repo,
+                public_steps_by_id=by_id,
+            )
+            for position in positions
+        ]
 
     def list_positions(
         self,
@@ -1357,16 +1466,31 @@ class ApprovalService:
         budget_year: int | None = None,
         cfo_unit_id: str | None = None,
         status: str | None = None,
+        page: int = 1,
+        page_size: int | None = None,
     ) -> list[dict]:
         visible = self.permissions.visible_position_ids(user)
+        paged = None
+        filters = {key: value for key, value in {"budget_year": budget_year, "cfo_unit_id": cfo_unit_id, "status": status}.items() if value is not None}
+        if page_size and hasattr(self.repo, "page_rows"):
+            paged = self.repo.page_rows("cfo_positions", filters=filters, in_filters={"id": visible} if visible is not None else None, page=page, page_size=page_size, nonempty_positions=True)
+            position_ids = {row["id"] for row in paged["items"]}
+            items = find_rows(self.repo, "req_items", in_filters={"cfo_position_id": position_ids})
+            request_ids = {row["request_id"] for row in items}
+            with self.repo.read_snapshot({"req_items": items, "requests": find_rows(self.repo, "requests", in_filters={"id": request_ids}), "req_logs": find_rows(self.repo, "req_logs", in_filters={"req_id": request_ids}), "cfo_position_logs": find_rows(self.repo, "cfo_position_logs", in_filters={"cfo_position_id": position_ids})}):
+                return {**paged, "items": [self.public_position(row) for row in paged["items"]]}
         rows = [
-            row for row in self.repo.load_all("cfo_positions")
+            row for row in find_rows(self.repo, "cfo_positions", filters=filters, in_filters={"id": visible} if visible is not None else None)
             if (visible is None or row["id"] in visible)
             and bool(self._position_items(self.repo, row["id"]))
             and (budget_year is None or int(row["budget_year"]) == budget_year)
             and (cfo_unit_id is None or row["cfo_unit_id"] == cfo_unit_id)
             and (status is None or row["status"] == status)
         ]
+        if page_size:
+            from app.repositories.pagination import numbered_page
+            paged = numbered_page(self.repo, "cfo_positions", in_filters={"id": {row["id"] for row in rows}}, page=page, page_size=page_size)
+            return {**paged, "items": [self.public_position(row) for row in paged["items"]]}
         return [self.public_position(row) for row in rows]
 
     def get_position(self, user: dict, position_id: str) -> dict:
@@ -1643,7 +1767,9 @@ class ApprovalService:
     @staticmethod
     def _latest_returned_item_ids(repo: Repository, position_id: str) -> set[str]:
         logs = [
-            row for row in repo.load_all("cfo_position_logs")
+            row for row in find_rows(
+                repo, "cfo_position_logs", filters={"cfo_position_id": position_id}
+            )
             if row.get("cfo_position_id") == position_id
             and (row.get("log") or {}).get("action") == "position_returned"
         ]
@@ -1657,7 +1783,9 @@ class ApprovalService:
 
     def _economist_decisions(self, repo: Repository, position_id: str) -> dict[str, str]:
         logs = [
-            row for row in repo.load_all("cfo_position_logs")
+            row for row in find_rows(
+                repo, "cfo_position_logs", filters={"cfo_position_id": position_id}
+            )
             if row.get("cfo_position_id") == position_id
         ]
         latest_return = max(
@@ -1875,6 +2003,9 @@ class ApprovalService:
         *,
         event_id: str | None = None,
         repo: Repository | None = None,
+        sync_steps: bool = True,
+        serialize_result: bool = True,
+        previously_approved_ids: set[str] | None = None,
     ) -> dict:
         result_repo = repo
         transaction = nullcontext(repo) if repo is not None else self.repo.transaction()
@@ -1900,8 +2031,10 @@ class ApprovalService:
                 if len(set(requested_ids)) != len(requested_ids):
                     raise HTTPException(status_code=422, detail="Идентификаторы строк не должны повторяться")
                 items_by_id = {row["id"]: row for row in items}
-                previously_approved_ids = self._approver_approved_item_ids(
-                    repo, position_id, step_id
+                previously_approved_ids = (
+                    self._approver_approved_item_ids(repo, position_id, step_id)
+                    if previously_approved_ids is None
+                    else previously_approved_ids
                 )
                 newly_approved_ids = set(requested_ids) - previously_approved_ids
                 for item_id in requested_ids:
@@ -1944,8 +2077,13 @@ class ApprovalService:
                 # position.  The reviewer first records decisions for all
                 # required lines; the separate group action sends the
                 # position to the next step as one package.
-                self._sync_step_statuses(repo)
-                result = self.public_position(position, repo=result_repo)
+                if sync_steps:
+                    self._sync_step_statuses(repo)
+                result = (
+                    self.public_position(position, repo=result_repo)
+                    if serialize_result
+                    else dict(position)
+                )
                 result["notification_user_ids"] = []
                 return result
             if not self._all_items_frozen(items):
@@ -2019,13 +2157,18 @@ class ApprovalService:
                     action="request_finalized_by_zgd",
                 )
                 sync_annual_budgets(repo)
-            self._sync_step_statuses(repo)
+            if sync_steps:
+                self._sync_step_statuses(repo)
             notify_id = next_step.get("user_id") if next_step else None
             self._notify(
                 repo, notify_id, "cfo_position.assigned",
                 {"cfo_position_id": position_id, "step_id": next_step["id"] if next_step else None},
             )
-        result = self.public_position(after, repo=result_repo)
+        result = (
+            self.public_position(after, repo=result_repo)
+            if serialize_result
+            else dict(after)
+        )
         result["notification_user_ids"] = [notify_id] if notify_id else []
         return result
 
@@ -2139,17 +2282,98 @@ class ApprovalService:
             return {"positions": [self.unfix_position(user, position_id, comment, repo=repo) for position_id in sorted(set(position_ids))]}
 
     def approve_step(self, user: dict, step_id: str, position_ids: list[str]) -> dict:
-        available = self.list_step_positions(user, step_id)
-        selected = position_ids or [row["id"] for row in available]
+        selected = sorted(set(position_ids)) if position_ids else [
+            row["id"] for row in self.list_step_positions(user, step_id)
+        ]
         with self.repo.transaction() as repo:
+            position_logs = self._preload_approval_batch(repo)
+            raw = [
+                self.approve_position_at_step(
+                    user,
+                    step_id,
+                    position_id,
+                    repo=repo,
+                    sync_steps=False,
+                    serialize_result=False,
+                    previously_approved_ids=self._approver_approved_item_ids(
+                        repo,
+                        position_id,
+                        step_id,
+                        logs=position_logs,
+                    ),
+                )
+                for position_id in selected
+            ]
+            self._sync_step_statuses(repo)
+            fresh = [get_required(repo, "cfo_positions", row["id"]) for row in raw]
+            public = self._public_position_batch(repo, fresh)
             return {
                 "positions": [
-                    self.approve_position_at_step(
-                        user, step_id, position_id, repo=repo
-                    )
-                    for position_id in selected
+                    {
+                        **public[index],
+                        "notification_user_ids": row.get("notification_user_ids", []),
+                    }
+                    for index, row in enumerate(raw)
                 ]
             }
+
+    def approve_position_lines_bulk(
+        self,
+        user: dict,
+        selections: list[dict],
+        comment: str = "",
+        event_id: str | None = None,
+    ) -> dict:
+        """Record reviewer decisions for many lines in one transaction."""
+        if not selections:
+            raise HTTPException(status_code=422, detail="Выберите хотя бы одну строку")
+        grouped: dict[tuple[str, str], set[str]] = {}
+        for selection in selections:
+            key = (str(selection["step_id"]), str(selection["position_id"]))
+            grouped.setdefault(key, set()).update(str(value) for value in selection["item_ids"])
+        group_event_id = event_id or self._event_id()
+        with self.repo.transaction() as repo:
+            position_logs = self._preload_approval_batch(repo)
+            raw = []
+            for (step_id, position_id), item_ids in sorted(grouped.items()):
+                raw.append(
+                    self.approve_position_at_step(
+                        user,
+                        step_id,
+                        position_id,
+                        comment,
+                        sorted(item_ids),
+                        event_id=group_event_id,
+                        repo=repo,
+                        sync_steps=False,
+                        serialize_result=False,
+                        previously_approved_ids=self._approver_approved_item_ids(
+                            repo,
+                            position_id,
+                            step_id,
+                            logs=position_logs,
+                        ),
+                    )
+                )
+            self._sync_step_statuses(repo)
+            fresh = [get_required(repo, "cfo_positions", row["id"]) for row in raw]
+            public = self._public_position_batch(repo, fresh)
+            results = [
+                {
+                    **public[index],
+                    "notification_user_ids": row.get("notification_user_ids", []),
+                }
+                for index, row in enumerate(raw)
+            ]
+        return {
+            "positions": results,
+            "notification_user_ids": sorted({
+                user_id
+                for row in results
+                for user_id in row.get("notification_user_ids", [])
+                if user_id
+            }),
+        }
 
     def approve_positions_from_register(self, user: dict, position_ids: list[str], comment: str = "") -> dict:
         """Approve a whole article/CFO group at the actor's current route step.
@@ -2176,12 +2400,14 @@ class ApprovalService:
         if not position_ids:
             raise HTTPException(status_code=422, detail="Выберите хотя бы одну позицию")
         position_ids = sorted(set(position_ids))
+        position_logs = self._preload_approval_batch(repo)
         positions = [get_required(repo, "cfo_positions", position_id) for position_id in position_ids]
         group_event_id = self._event_id()
         step_ids = {self._current_step_id(repo, position) for position in positions}
         if None in step_ids:
             raise HTTPException(status_code=409, detail="Часть позиций ещё не передана на согласование")
         results: list[dict] = []
+        deferred_indexes: list[int] = []
         for position in positions:
             step_id = self._current_step_id(repo, position)
             step = get_required(repo, "steps", step_id)
@@ -2199,6 +2425,7 @@ class ApprovalService:
                     )
                 )
             else:
+                deferred_indexes.append(len(results))
                 results.append(
                     self.approve_position_at_step(
                         user,
@@ -2207,8 +2434,29 @@ class ApprovalService:
                         comment,
                         event_id=group_event_id,
                         repo=repo,
+                        sync_steps=False,
+                        serialize_result=False,
+                        previously_approved_ids=self._approver_approved_item_ids(
+                            repo,
+                            position["id"],
+                            step_id,
+                            logs=position_logs,
+                        ),
                     )
                 )
+        if deferred_indexes:
+            self._sync_step_statuses(repo)
+            fresh = [
+                get_required(repo, "cfo_positions", results[index]["id"])
+                for index in deferred_indexes
+            ]
+            public = self._public_position_batch(repo, fresh)
+            for public_index, index in enumerate(deferred_indexes):
+                row = results[index]
+                results[index] = {
+                    **public[public_index],
+                    "notification_user_ids": row.get("notification_user_ids", []),
+                }
         return {
             "positions": results,
             "notification_user_ids": sorted({
@@ -2533,12 +2781,14 @@ class ApprovalService:
             detail="Зафиксированный ЗГД бюджет нельзя повторно открыть",
         )
 
-    def position_logs(self, user: dict, position_id: str) -> list[dict]:
+    def position_logs(self, user: dict, position_id: str, *, page_size=None, before=None) -> list[dict] | dict:
         position = get_required(self.repo, "cfo_positions", position_id)
         self.permissions.require_view_position(user, position)
+        if page_size:
+            return cursor_page(self.repo, "cfo_position_logs", filters={"cfo_position_id": position_id}, page_size=page_size, before=before)
         return sorted(
             [
-                row for row in self.repo.load_all("cfo_position_logs")
+                row for row in find_rows(self.repo, "cfo_position_logs", filters={"cfo_position_id": position_id})
                 if row.get("cfo_position_id") == position_id
             ],
             key=lambda row: str(row.get("created_at") or ""),
@@ -2586,12 +2836,12 @@ class ApprovalService:
             )
         return {"id": logged["id"], "ok": True}
 
-    def request_history(self, user: dict, request_id: str) -> list[dict]:
+    def request_history(self, user: dict, request_id: str, *, page_size=None, before=None) -> list[dict] | dict:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_view_request(user, request)
-        return self.register_history(user, request_id=request_id)
+        return self.register_history(user, request_id=request_id, page_size=page_size, before=before)
 
-    def register_history(self, user: dict, request_id: str | None = None) -> list[dict]:
+    def register_history(self, user: dict, request_id: str | None = None, *, page_size=None, before=None) -> list[dict] | dict:
         """Return one chronological audit trail for all requests visible to a user."""
         visible_request_ids = self.permissions.visible_request_ids(user)
         if request_id:
@@ -2602,18 +2852,21 @@ class ApprovalService:
             request_ids = {row["id"] for row in self.repo.load_all("requests")}
         else:
             request_ids = visible_request_ids
+        if hasattr(self.repo, "history_rows"):
+            logs = self.repo.history_rows(request_ids, limit=page_size + 1 if page_size else None, before=decode_cursor(before))
+            return self._history_page(logs, page_size) if page_size else logs
         item_ids = {
-            row["id"] for row in self.repo.load_all("req_items")
+            row["id"] for row in find_rows(self.repo, "req_items", in_filters={"request_id": request_ids})
             if row.get("request_id") in request_ids
         }
         position_ids = {
             row.get("cfo_position_id")
-            for row in self.repo.load_all("req_items")
+            for row in find_rows(self.repo, "req_items", in_filters={"request_id": request_ids})
             if row.get("id") in item_ids and row.get("cfo_position_id")
         }
         logs = [
             {**row, "source": "request"}
-            for row in self.repo.load_all("req_logs")
+            for row in find_rows(self.repo, "req_logs", in_filters={"req_id": request_ids})
             if row.get("req_id") in request_ids
         ]
         logs += [
@@ -2623,7 +2876,22 @@ class ApprovalService:
             or (row.get("log") or {}).get("req_item_id") in item_ids
             or row.get("cfo_position_id") in position_ids
         ]
+        if page_size:
+            logs.sort(key=lambda row: (str(row["created_at"]), self._history_cursor_id(row)), reverse=True)
+            cursor = decode_cursor(before)
+            if cursor:
+                logs = [row for row in logs if (str(row["created_at"]), self._history_cursor_id(row)) < tuple(cursor)]
+            return self._history_page(logs[:page_size + 1], page_size)
         return sorted(logs, key=lambda row: str(row.get("created_at") or ""), reverse=True)
+
+    @staticmethod
+    def _history_cursor_id(row):
+        return f"{row['source']}:{int(row['id']):020d}"
+
+    def _history_page(self, rows, page_size):
+        page = rows[:page_size]
+        cursor = encode_cursor({"created_at": page[-1]["created_at"], "id": self._history_cursor_id(page[-1])}) if len(rows) > page_size else None
+        return {"items": page, "next_cursor": cursor}
 
     def step_logs(self, user: dict, step_id: str, **filters) -> list[dict]:
         step = get_required(self.repo, "steps", step_id)

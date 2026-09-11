@@ -52,8 +52,9 @@ import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, createContext, useCallback, useContext, useDeferredValue, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
 import { getApiErrorMessage, getDownloadApiErrorMessage } from '../utils/apiErrors';
@@ -112,7 +113,7 @@ import {
   sortRegisterGroups,
   sortRegisterItems,
 } from './approval-register/registryTableColumns';
-import { useTableColumnControls, type TableSortState } from '../utils/tableColumns';
+import { useTableColumnControls, type TableSortState, type TableFilterOption } from '../utils/tableColumns';
 import { RegistryGroupStatusCell, RegistryStatusCell, type RegistryRowDecision } from './approval-register/RegistryStatusCell';
 import { RegistryYourDecisionCell } from './approval-register/registryWorkflowCells';
 import { STATUS_LEGEND_SPECS, StatusVisualBadge, rowStatusPresentation } from './approval-register/registryStatusVisual';
@@ -266,6 +267,9 @@ function revisionTargetFromGroup(group: ApprovalRegisterGroup) {
   };
 }
 
+const RegisterQueryContext = createContext<Record<string, unknown>>({});
+const EMPTY_REGISTER_CONTROLS: ReturnType<typeof buildRegisterControlRows> = [];
+
 function collectDescendantGroups(group: ApprovalRegisterGroup): ApprovalRegisterGroup[] {
   return [group, ...group.children.flatMap(collectDescendantGroups)];
 }
@@ -273,7 +277,7 @@ function collectDescendantGroups(group: ApprovalRegisterGroup): ApprovalRegister
 function collectExpandableGroupIds(group: ApprovalRegisterGroup): string[] {
   const ids: string[] = [];
   const visit = (node: ApprovalRegisterGroup) => {
-    if (node.children.length || node.can_load_rows) ids.push(node.id);
+    if (node.has_children || node.children.length || node.can_load_rows) ids.push(node.id);
     node.children.forEach(visit);
   };
   visit(group);
@@ -291,7 +295,7 @@ function collectDefaultExpandedGroupIds(groups: ApprovalRegisterGroup[], view: R
   const ids: string[] = [];
   const visit = (nodes: ApprovalRegisterGroup[]) => {
     nodes.forEach((group) => {
-      if (expandTypes.has(group.type) && (group.children.length || group.can_load_rows)) {
+      if (expandTypes.has(group.type) && (group.has_children || group.children.length || group.can_load_rows)) {
         ids.push(group.id);
       }
       visit(group.children);
@@ -478,13 +482,24 @@ async function postBulkRowDecision(rows: ApprovalRegisterRow[], decision: RowDec
       comment,
     }));
   }
-  finalApprovalRows.forEach((row) => {
-    requests.push(api.post(`/steps/${row.current_step_id}/positions/${row.position_id}/approve`, {
+  if (finalApprovalRows.length) {
+    const positionRows = new Map<string, { step_id: string; position_id: string; item_ids: string[] }>();
+    finalApprovalRows.forEach((row) => {
+      const key = `${row.current_step_id}:${row.position_id}`;
+      const selection = positionRows.get(key) || {
+        step_id: row.current_step_id!,
+        position_id: row.position_id!,
+        item_ids: [],
+      };
+      selection.item_ids.push(row.id);
+      positionRows.set(key, selection);
+    });
+    requests.push(api.post('/approval-position-lines/approve/bulk', {
+      positions: [...positionRows.values()],
       comment,
-      item_ids: [row.id],
       ...(approvalEventId ? { event_id: approvalEventId } : {}),
     }));
-  });
+  }
   workflowRowsByPosition.forEach((positionRows, positionId) => {
     requests.push(api.post(`/cfo-positions/${positionId}/items/decision/bulk`, {
       item_ids: positionRows.map((row) => row.id),
@@ -538,7 +553,7 @@ function updateRegisterCache(queryClient: ReturnType<typeof useQueryClient>, pre
     };
   });
   queryClient.setQueriesData<ApprovalRegisterResponse>({ queryKey: ['approval-register'] }, (current) => {
-    if (!current) return current;
+    if (!current?.groups || !current?.aggregates) return current;
     const updateGroups = (groups: ApprovalRegisterGroup[]): ApprovalRegisterGroup[] => groups.map((group) => {
       const includesItem = group.module_id === previous.module_id && group.request_ids.includes(previous.request_id);
       return {
@@ -1746,6 +1761,8 @@ function ApprovalRoutePanel({ requestId, user }: { requestId?: string; user: Use
   );
 }
 
+const VirtualRowContext = createContext<React.HTMLAttributes<HTMLTableRowElement> & { ref?: React.Ref<HTMLTableRowElement>; 'data-index'?: number }>({});
+
 function RegistryRowCells({ item, columns, widths, selected, active, user, approvalMode, onSelect, onActive, onDecision, onSaveRowDecision, onOpen, onHistory, structureLevel = 0 }: { item: ApprovalRegisterRow; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selected: boolean; active: boolean; user: User; approvalMode: boolean; onSelect: (checked: boolean) => void; onActive: () => void; onDecision: (target: DecisionTarget) => void; onSaveRowDecision: (row: ApprovalRegisterRow, decision: RowDecision, amount: number, comment?: string) => void; onOpen: () => void; onHistory: () => void; structureLevel?: number }) {
   const requestPointRevision = useContext(PointRevisionContext);
   const registerView = useContext(RegisterViewContext);
@@ -2093,7 +2110,8 @@ function RegistryRowCells({ item, columns, widths, selected, active, user, appro
       return result;
     }, {} as Partial<Record<RegistryColumnId, React.ReactNode>>),
   };
-  return <TableRow hover selected={active} tabIndex={0} onClick={onActive} onDoubleClick={onOpen} className="approval-register-row approval-register-row--item" sx={{ '& td': { py: 0.35, px: 0.75, minHeight: 40, bgcolor: '#fff' }, '&.Mui-selected td': { bgcolor: '#edf5ff' }, '&:hover td': { bgcolor: '#f7fbff' } }}>
+  const virtualRow = useContext(VirtualRowContext);
+  return <TableRow {...virtualRow} hover selected={active} tabIndex={0} onClick={onActive} onDoubleClick={onOpen} className="approval-register-row approval-register-row--item" sx={{ '& td': { py: 0.35, px: 0.75, minHeight: 40, bgcolor: '#fff' }, '&.Mui-selected td': { bgcolor: '#edf5ff' }, '&:hover td': { bgcolor: '#f7fbff' } }}>
     {columns.map((column) => {
       const fixed = column.id === 'select' || column.id === 'structure';
       const align = ['requested', 'approved', 'rejected'].includes(column.id) ? 'right' : ['select', 'files'].includes(column.id) ? 'center' : 'left';
@@ -2121,8 +2139,9 @@ function RegisterPaginationRow({
 }) {
   const rangeStart = pagination.total_items ? (page - 1) * pageSize + 1 : 0;
   const rangeEnd = pagination.total_items ? Math.min(page * pageSize, pagination.total_items) : 0;
+  const virtualRow = useContext(VirtualRowContext);
   return (
-    <TableRow className="approval-register-request-pagination">
+    <TableRow {...virtualRow} className="approval-register-request-pagination">
       <TableCell colSpan={columnsCount} sx={{ p: 0, bgcolor: '#fafbfd', borderTop: '1px solid rgba(15, 23, 42, 0.06)' }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ width: '100%', minHeight: 34 }}>
           <Stack
@@ -2185,22 +2204,18 @@ function RegisterPaginationRow({
 }
 
 function RegisterRows({ group, expanded, filters, columns, widths, selectedIds, activeId, user, approvalMode, onToggleSelected, onActive, onDecision, onSaveRowDecision, onOpen, onHistory, onItems, requestId, visibleItemIds, columnSort }: { group: ApprovalRegisterGroup; expanded: boolean; filters: RegistryFilters; columns: typeof REGISTRY_COLUMNS; widths: Record<RegistryColumnId, number>; selectedIds: Set<string>; activeId: string | null; user: User; approvalMode: boolean; onToggleSelected: (item: ApprovalRegisterRow, checked: boolean) => void; onActive: (item: ApprovalRegisterRow) => void; onDecision: (target: DecisionTarget) => void; onSaveRowDecision: (row: ApprovalRegisterRow, decision: RowDecision, amount: number, comment?: string) => void; onOpen: (item: ApprovalRegisterRow) => void; onHistory: (item: ApprovalRegisterRow) => void; onItems: (groupId: string, items: ApprovalRegisterRow[]) => void; requestId?: string; visibleItemIds: Set<string> | null; columnSort: TableSortState<RegistryColumnId> | null }) {
+  const remoteQuery = useContext(RegisterQueryContext);
   const filteredItemsByGroup = useContext(FilteredRegisterItemsContext);
   const filteredItems = filteredItemsByGroup?.get(group.id);
   const usesColumnFilteredItems = filteredItemsByGroup !== null;
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => Number(sessionStorage.getItem(REQUEST_PAGE_SIZE_KEY)) || 50);
-  useEffect(() => { setPage(1); }, [group.id, filters.flow, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  useEffect(() => { setPage(1); }, [group.id, remoteQuery, filters.flow, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isFetching, error } = useQuery({
-    queryKey: ['approval-register-rows', group.id, group.module_id, group.article_id, group.category_id, requestId, page, pageSize, filters],
-    queryFn: async ({ signal }) => (await api.get<ApprovalRegisterRowsResponse>('/approval-register/rows', {
-      params: buildRegisterFilterParams(filters, registerRowScopeParams(group, {
-        request_id: requestId,
-        page,
-        page_size: pageSize,
-      })),
-      signal,
-    })).data,
+    queryKey: ['approval-register-rows', group.id, group.module_id, group.article_id, group.category_id, requestId, page, pageSize, filters, remoteQuery],
+    queryFn: async ({ signal }) => (await api.post<ApprovalRegisterRowsResponse>('/approval-register/query', {
+      ...remoteQuery, mode: 'rows', scope: group.scope || {}, page, page_size: pageSize,
+    }, { signal })).data,
     enabled: expanded && !usesColumnFilteredItems,
     placeholderData: (previous) => previous,
   });
@@ -2269,6 +2284,7 @@ function ModuleGroupHeaderRow({
   user: User;
   view: RegistryView;
 }) {
+  const virtualRow = useContext(VirtualRowContext);
   const cells: Partial<Record<RegistryColumnId, React.ReactNode>> = {
     select: null,
     structure: (
@@ -2299,7 +2315,7 @@ function ModuleGroupHeaderRow({
     }, {} as Partial<Record<RegistryColumnId, React.ReactNode>>),
   };
   return (
-    <TableRow hover className="approval-register-row" sx={{ '& td': { py: 0.25, px: 0.75, height: 34, bgcolor: '#fff', fontSize: 13 } }}>
+    <TableRow {...virtualRow} hover className="approval-register-row" sx={{ '& td': { py: 0.25, px: 0.75, height: 34, bgcolor: '#fff', fontSize: 13 } }}>
       {columns.map((column) => {
         const fixed = column.id === 'select' || column.id === 'structure';
         return (
@@ -2374,22 +2390,18 @@ function CategoryModuleRows({
   visibleItemIds: Set<string> | null;
   columnSort: TableSortState<RegistryColumnId> | null;
 }) {
+  const remoteQuery = useContext(RegisterQueryContext);
   const filteredItemsByGroup = useContext(FilteredRegisterItemsContext);
   const filteredItems = filteredItemsByGroup?.get(category.id);
   const usesColumnFilteredItems = filteredItemsByGroup !== null;
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => Number(sessionStorage.getItem(REQUEST_PAGE_SIZE_KEY)) || 50);
-  useEffect(() => { setPage(1); }, [category.id, filters.flow, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  useEffect(() => { setPage(1); }, [category.id, remoteQuery, filters.flow, filters.status, filters.budgetYear, filters.search, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
   const { data, isFetching, error } = useQuery({
-    queryKey: ['approval-register-rows', category.id, category.category_id, category.article_id, requestId, page, pageSize, filters],
-    queryFn: async ({ signal }) => (await api.get<ApprovalRegisterRowsResponse>('/approval-register/rows', {
-      params: buildRegisterFilterParams(filters, registerRowScopeParams(category, {
-        request_id: requestId,
-        page,
-        page_size: pageSize,
-      })),
-      signal,
-    })).data,
+    queryKey: ['approval-register-rows', category.id, category.category_id, category.article_id, requestId, page, pageSize, filters, remoteQuery],
+    queryFn: async ({ signal }) => (await api.post<ApprovalRegisterRowsResponse>('/approval-register/query', {
+      ...remoteQuery, mode: 'rows', scope: category.scope || {}, page, page_size: pageSize,
+    }, { signal })).data,
     enabled: expanded && !usesColumnFilteredItems,
     placeholderData: (previous) => previous,
   });
@@ -2458,6 +2470,7 @@ function CategoryModuleRows({
 }
 
 function TreeRows({
+  headerOnly = false,
   groups,
   level,
   expanded,
@@ -2494,6 +2507,7 @@ function TreeRows({
   visibleItemIds,
   columnSort,
 }: {
+  headerOnly?: boolean;
   groups: ApprovalRegisterGroup[];
   level: number;
   expanded: Set<string>;
@@ -2535,9 +2549,10 @@ function TreeRows({
     [columnSort, groups, visibleGroupIds],
   );
 
+  const virtualRow = useContext(VirtualRowContext);
   return <>{displayGroups.map((group) => {
     const isExpanded = expanded.has(group.id);
-    const hasContent = group.children.length > 0 || group.can_load_rows;
+    const hasContent = group.has_children || group.children.length > 0 || group.can_load_rows;
     const groupSelectable = isGroupSelectable(group, user.role);
     const descendants = collectDescendantGroups(group);
     const selectedChildGroup = descendants.some((entry) => entry.id !== group.id && selectedGroupIds.has(entry.id));
@@ -2597,7 +2612,7 @@ function TreeRows({
     };
     return (
       <Fragment key={group.id}>
-        <TableRow hover className="approval-register-row" sx={{ '& td': { py: 0.25, px: 0.75, height: 34, bgcolor: level === 0 ? '#f4f9ff' : '#fff', borderBottom: level === 0 ? '1px solid rgba(15, 23, 42, 0.08)' : undefined, fontSize: 13 }, '&:hover td': { bgcolor: '#edf6ff' } }}>
+        <TableRow {...virtualRow} hover className="approval-register-row" sx={{ '& td': { py: 0.25, px: 0.75, height: 34, bgcolor: level === 0 ? '#f4f9ff' : '#fff', borderBottom: level === 0 ? '1px solid rgba(15, 23, 42, 0.08)' : undefined, fontSize: 13 }, '&:hover td': { bgcolor: '#edf6ff' } }}>
           {columns.map((column) => {
             const fixed = column.id === 'select' || column.id === 'structure';
             return (
@@ -2623,7 +2638,7 @@ function TreeRows({
             );
           })}
         </TableRow>
-        {isExpanded && group.type === 'category' && group.can_load_rows ? (
+        {headerOnly ? null : isExpanded && group.type === 'category' && group.can_load_rows ? (
           <CategoryModuleRows
             category={group}
             modules={group.children}
@@ -2717,6 +2732,123 @@ function TreeRows({
       </Fragment>
     );
   })}</>;
+}
+
+type VirtualEntry = { key: string; group: ApprovalRegisterGroup; level: number; kind: 'group' | 'module' | 'item' | 'page'; item?: ApprovalRegisterRow; owner?: string };
+
+function VirtualTreeRows(props: React.ComponentProps<typeof TreeRows> & { scrollRef: React.RefObject<HTMLDivElement | null> }) {
+  const remoteQuery = useContext(RegisterQueryContext);
+  const [pages, setPages] = useState<Record<string, number>>({});
+  const [pageSize, setPageSize] = useState(() => {
+    const saved = Number(sessionStorage.getItem(REQUEST_PAGE_SIZE_KEY));
+    return [1, 10, 25, 50, 100, 200].includes(saved) ? saved : 50;
+  });
+  const [visibleOwners, setVisibleOwners] = useState<Set<string>>(new Set());
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  useEffect(() => { setPages({}); }, [remoteQuery]);
+  const leaves = useMemo(() => {
+    const result: ApprovalRegisterGroup[] = [];
+    const visit = (groups: ApprovalRegisterGroup[]) => groups.forEach((group) => {
+      if (!props.expanded.has(group.id)) return;
+      if (group.can_load_rows) result.push(group);
+      if (!(group.type === 'category' && group.can_load_rows)) visit(group.children);
+    });
+    visit(props.groups);
+    return result;
+  }, [props.groups, props.expanded]);
+  const results = useQueries({ queries: leaves.map((group) => ({
+    queryKey: ['approval-register-rows', group.id, remoteQuery, pages[group.id] || 1, pageSize],
+    queryFn: async ({ signal }: { signal: AbortSignal }) => {
+      const response = await api.post<ApprovalRegisterRowsResponse>('/approval-register/query', {
+        ...remoteQuery, mode: 'rows', scope: group.scope || {}, page: pages[group.id] || 1, page_size: pageSize, include_aggregates: false,
+      }, { signal });
+      return { ...response.data, group: { ...response.data.group, aggregates: group.aggregates } };
+    },
+    enabled: visibleOwners.has(group.id),
+  })) });
+  const byGroup = new Map(leaves.map((group, index) => [group.id, results[index]]));
+  const loadedSignature = results.map((result) => result.dataUpdatedAt).join(',');
+  useEffect(() => {
+    leaves.forEach((group, index) => {
+      if (results[index].data) props.onItems(group.id, results[index].data!.items);
+    });
+  }, [loadedSignature, props.onItems]);
+  const entries: VirtualEntry[] = [];
+  const visit = (groups: ApprovalRegisterGroup[], level: number) => {
+    for (const group of sortRegisterGroups(groups, props.columnSort)) {
+      entries.push({ key: group.id, group, level, kind: 'group' });
+      if (!props.expanded.has(group.id)) continue;
+      if (!(group.type === 'category' && group.can_load_rows)) visit(group.children, level + 1);
+      if (!group.can_load_rows) continue;
+      const data = byGroup.get(group.id)?.data;
+      if (data) {
+        let moduleId = '';
+        for (const item of data.items) {
+          if (group.type === 'category' && moduleId !== item.module_id) {
+            moduleId = item.module_id;
+            const module = group.children.find((child) => child.module_id === moduleId);
+            if (module) entries.push({ key: `${group.id}:module:${moduleId}:${item.id}`, group: module, level: level + 1, kind: 'module', owner: group.id });
+          }
+          entries.push({ key: `${group.id}:${item.id}`, group, level: level + 2, kind: 'item', item, owner: group.id });
+        }
+      } else {
+        const count = Math.min(pageSize, group.aggregates.total_rows);
+        for (let index = 0; index < count; index++) entries.push({ key: `${group.id}:pending:${index}`, group, level: level + 1, kind: 'item', owner: group.id });
+      }
+      entries.push({ key: `${group.id}:page`, group, level, kind: 'page', owner: group.id });
+    }
+  };
+  visit(props.groups, props.level);
+  const pinned = entries.findIndex((entry) => entry.key === focusedKey);
+  const virtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => props.scrollRef.current,
+    estimateSize: (index) => entries[index].kind === 'item' ? 43 : 40,
+    getItemKey: (index) => entries[index].key,
+    overscan: 6,
+    scrollMargin: props.scrollRef.current?.querySelector('thead')?.getBoundingClientRect().height || 0,
+    rangeExtractor: (range) => [...new Set([...defaultRangeExtractor(range), ...(pinned >= 0 ? [pinned] : [])])].sort((a, b) => a - b),
+  });
+  const virtualItems = virtualizer.getVirtualItems();
+  const owners = [...new Set(virtualItems.map((item) => entries[item.index].owner).filter(Boolean))] as string[];
+  const ownersSignature = owners.join(',');
+  useEffect(() => { setVisibleOwners(new Set(owners)); }, [ownersSignature]);
+  const spacer = (height: number, key: string) => height > 0 ? <TableRow key={key} aria-hidden="true"><TableCell colSpan={props.columns.length} sx={{ height, p: 0, border: 0 }} /></TableRow> : null;
+  let previousEnd = virtualizer.options.scrollMargin;
+  return <>
+    {virtualItems.map((virtual) => {
+      const entry = entries[virtual.index];
+      const gap = virtual.start - previousEnd;
+      previousEnd = virtual.end;
+      const result = byGroup.get(entry.owner || '');
+      let content: ReactNode;
+      if (entry.kind === 'group') content = <TreeRows {...props} groups={[entry.group]} level={entry.level} headerOnly />;
+      else if (entry.kind === 'module') content = <ModuleGroupHeaderRow module={entry.group} level={entry.level} columns={props.columns} widths={props.widths} user={props.user} view={props.view} />;
+      else if (entry.item) {
+        const item = entry.item;
+        content = <RegistryRowCells item={item} columns={props.columns} widths={props.widths} selected={props.selectedIds.has(item.id)} active={props.activeId === item.id} user={props.user} approvalMode={props.approvalMode} structureLevel={entry.group.type === 'category' ? entry.level : 0} onSelect={(checked) => props.onToggleSelected(item, checked)} onActive={() => props.onActive(item)} onDecision={props.onDecision} onSaveRowDecision={props.onSaveRowDecision} onOpen={() => props.onOpen(item)} onHistory={() => props.onHistory(item)} />;
+      } else if (entry.kind === 'page' && result?.data) {
+        content = <RegisterPaginationRow columnsCount={props.columns.length} page={result.data.pagination.page} pageSize={pageSize} pagination={result.data.pagination} onPageChange={(page) => { setPages((current) => ({ ...current, [entry.group.id]: page })); }} onPageSizeChange={(size) => { setPageSize(size); setPages({}); sessionStorage.setItem(REQUEST_PAGE_SIZE_KEY, String(size)); }} />;
+      } else {
+        content = <TableRow ref={virtualizer.measureElement} data-index={virtual.index}><TableCell colSpan={props.columns.length} sx={{ height: 43, py: 0 }}>{result?.error ? <Button onClick={() => result.refetch()}>Повторить загрузку строк</Button> : <Typography variant="caption" color="text.secondary">Загрузка строк…</Typography>}</TableCell></TableRow>;
+      }
+      return <Fragment key={entry.key}>
+        {spacer(gap, 'gap')}
+        <VirtualRowContext.Provider value={{ ref: virtualizer.measureElement, 'data-index': virtual.index, tabIndex: 0,
+          onFocusCapture: () => setFocusedKey(entry.key),
+          onKeyDown: (event) => {
+            if (event.target !== event.currentTarget || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+            event.preventDefault();
+            const next = Math.max(0, Math.min(entries.length - 1, virtual.index + (event.key === 'ArrowDown' ? 1 : -1)));
+            setFocusedKey(entries[next].key);
+            virtualizer.scrollToIndex(next);
+            requestAnimationFrame(() => props.scrollRef.current?.querySelector<HTMLElement>(`tr[data-index="${next}"]`)?.focus());
+          },
+        }}>{content}</VirtualRowContext.Provider>
+      </Fragment>;
+    })}
+    {spacer(virtualizer.getTotalSize() + virtualizer.options.scrollMargin - previousEnd, 'end')}
+  </>;
 }
 
 export function ApprovalRegister({
@@ -2843,15 +2975,45 @@ export function ApprovalRegister({
     );
   }, [filters, groupBy, preferences, user.id, view]);
   useEffect(() => { setExpanded(new Set()); setSelected(new Map()); setSelectedGroups(new Map()); setLoadedItems(new Map()); }, [view, groupBy, filters.flow, filters.status, filters.budgetYear, filters.cfoId, filters.articleId, filters.requestStatus, filters.frozen, filters.positionedOnly, deferredSearch, ...ANALYTICS_FIELD_KEYS.map((key) => filters[key])]);
+  const [facetsRequested, setFacetsRequested] = useState(false);
+  const [remoteOptions, setRemoteOptions] = useState<Partial<Record<RegistryColumnId, TableFilterOption[]>>>({});
+  const [coveredStatuses, setCoveredStatuses] = useState<Record<string, string[]>>({});
+  const columnControls = useTableColumnControls({
+    rows: EMPTY_REGISTER_CONTROLS,
+    columns: REGISTRY_TABLE_COLUMN_DEFINITIONS,
+    remoteOptions,
+    adjustFilterSelection: ({ columnId, optionValue, nextValues }) => columnId === 'status' && !nextValues.includes(optionValue)
+      ? nextValues.filter((value) => !(coveredStatuses[optionValue] || []).includes(value)) : undefined,
+  });
+  const serverColumns = useMemo(() => Object.fromEntries(Object.entries(columnControls.selectedFilterValues).filter(([, values]) => values?.length)), [columnControls.selectedFilterValues]);
+  const registerQuery = useMemo(() => ({
+    view, group_by: groupBy,
+    filters: buildRegisterFilterParams(effectiveFilters, { request_id: requestId }),
+    columns: serverColumns,
+    sort: columnControls.sort,
+  }), [view, groupBy, effectiveFilters, requestId, serverColumns, columnControls.sort]);
+  const registerQueryKey = useMemo(() => ['approval-register', requestId, view, groupBy, effectiveFilters, serverColumns, columnControls.sort], [requestId, view, groupBy, effectiveFilters, serverColumns, columnControls.sort]);
   const { data, isLoading, error, isFetching } = useQuery({
-    queryKey: ['approval-register', requestId, view, groupBy, effectiveFilters],
-    queryFn: async ({ signal }) => (await api.get<ApprovalRegisterResponse>('/approval-register', {
-      params: buildRegisterFilterParams(effectiveFilters, { view, request_id: requestId, group_by: groupBy }),
-      signal,
-    })).data,
+    queryKey: registerQueryKey,
+    queryFn: async ({ signal }) => (await api.post<ApprovalRegisterResponse>('/approval-register/query', { ...registerQuery, mode: 'summary', expanded: expanded.size ? [...expanded] : undefined }, { signal })).data,
+  });
+  const { data: facets } = useQuery({
+    queryKey: ['approval-register', 'facets', registerQuery],
+    queryFn: async ({ signal }) => (await api.post<{ options: Partial<Record<RegistryColumnId, TableFilterOption[]>>; covered_statuses?: Record<string, string[]> }>('/approval-register/query', { ...registerQuery, mode: 'facets' }, { signal })).data,
+    enabled: facetsRequested,
   });
   useEffect(() => {
+    if (facets) {
+      setRemoteOptions(facets.options);
+      setCoveredStatuses(facets.covered_statuses || {});
+    }
+  }, [facets]);
+  const initializedExpansion = useRef('');
+  useEffect(() => {
     if (!data?.groups?.length) return;
+    const identity = JSON.stringify(registerQuery);
+    if (initializedExpansion.current === identity) return;
+    initializedExpansion.current = identity;
     setExpanded((current) => (
       current.size > 0 ? current : new Set(collectDefaultExpandedGroupIds(data.groups, view))
     ));
@@ -2982,7 +3144,7 @@ export function ApprovalRegister({
       for (const group of groups) {
         await api.post(
           `/approval-register/groups/${group.type}/${groupEntityId(group)}/cfo-decision`,
-          { decision: 'approved', comment: '' },
+          { decision: 'approved', comment: '', register_query: { ...registerQuery, scope: group.scope || {} } },
           { params: { request_id: requestId } },
         );
       }
@@ -3032,7 +3194,7 @@ export function ApprovalRegister({
       for (const group of groups) {
         await api.post(
           `/approval-register/groups/${group.type}/${groupEntityId(group)}/workflow-action`,
-          { action, comment, ...(targetStepId ? { target_step_id: targetStepId } : {}) },
+          { action, comment, register_query: { ...registerQuery, scope: group.scope || {} }, ...(targetStepId ? { target_step_id: targetStepId } : {}) },
           { params: { request_id: requestId } },
         );
       }
@@ -3073,7 +3235,7 @@ export function ApprovalRegister({
           if (group.request_ids.some((id) => revisionRequests.has(id))) continue;
           await api.post(
             `/approval-register/groups/${group.type}/${groupEntityId(group)}/workflow-action`,
-            { action: 'submit', comment: '' },
+            { action: 'submit', comment: '', register_query: { ...registerQuery, scope: group.scope || {} } },
             { params: { request_id: requestId } },
           );
         }
@@ -3082,7 +3244,7 @@ export function ApprovalRegister({
       for (const group of groups) {
         await api.post(
           `/approval-register/groups/${group.type}/${groupEntityId(group)}/workflow-action`,
-          { action: 'approve', comment: '' },
+          { action: 'approve', comment: '', register_query: { ...registerQuery, scope: group.scope || {} } },
           { params: { request_id: requestId } },
         );
       }
@@ -3115,26 +3277,44 @@ export function ApprovalRegister({
       toast(getApiErrorMessage(error, 'Не удалось передать данные дальше'), 'error');
     },
   });
-  const toggleGroup = useCallback((group: ApprovalRegisterGroup) => {
-    setExpanded((current) => {
-      const next = new Set(current);
-      const cascadeIds = collectExpandableGroupIds(group);
-      if (current.has(group.id)) cascadeIds.forEach((id) => next.delete(id));
-      else cascadeIds.forEach((id) => next.add(id));
-      return next;
+  const loadBranch = useCallback(async (group: ApprovalRegisterGroup): Promise<ApprovalRegisterGroup> => {
+    if (!group.has_children || group.children.length) return group;
+    const response = await queryClient.fetchQuery({
+      queryKey: ['approval-register', 'branch', registerQuery, group.id],
+      queryFn: async ({ signal }) => (await api.post<ApprovalRegisterResponse>('/approval-register/query', { ...registerQuery, mode: 'groups', scope: group.scope || {} }, { signal })).data,
     });
-  }, []);
-  const expandAll = useCallback(() => {
-    const ids: string[] = [];
-    const visit = (groups: ApprovalRegisterGroup[]) => groups.forEach((group) => {
-      if (group.children.length || group.can_load_rows) {
-        ids.push(group.id);
-        visit(group.children);
+    const loaded = { ...group, children: response.groups };
+    queryClient.setQueryData<ApprovalRegisterResponse>(registerQueryKey, (current) => {
+      if (!current) return current;
+      const merge = (groups: ApprovalRegisterGroup[]): ApprovalRegisterGroup[] => groups.map((entry) => entry.id === group.id ? loaded : { ...entry, children: merge(entry.children) });
+      return { ...current, groups: merge(current.groups) };
+    });
+    return loaded;
+  }, [queryClient, registerQuery, registerQueryKey]);
+  const toggleGroup = useCallback(async (group: ApprovalRegisterGroup) => {
+    if (expanded.has(group.id)) {
+      setExpanded((current) => { const next = new Set(current); collectExpandableGroupIds(group).forEach((id) => next.delete(id)); return next; });
+      return;
+    }
+    try {
+      const pending = [group];
+      const ids: string[] = [];
+      while (pending.length) {
+        const branch = await loadBranch(pending.shift()!);
+        if (branch.has_children || branch.children.length || branch.can_load_rows) ids.push(branch.id);
+        pending.push(...branch.children);
       }
-    });
-    visit(data?.groups || []);
-    setExpanded(new Set(ids));
-  }, [data?.groups]);
+      setExpanded((current) => new Set([...current, ...ids]));
+    } catch (error) { toast(getApiErrorMessage(error, 'Не удалось загрузить группу'), 'error'); }
+  }, [expanded, loadBranch, toast]);
+  const expandAll = useCallback(async () => {
+    for (const group of data?.groups || []) {
+      if (!expanded.has(group.id)) await toggleGroup(group);
+      else {
+        for (const child of group.children) if (!expanded.has(child.id)) await toggleGroup(child);
+      }
+    }
+  }, [data?.groups, expanded, toggleGroup]);
   const collapseAll = useCallback(() => setExpanded(new Set()), []);
   const pageChromeActions = useMemo(() => (
     <Stack direction="row" spacing={0.25} flexWrap="wrap" useFlexGap className="approval-register-chrome-actions">
@@ -3185,70 +3365,20 @@ export function ApprovalRegister({
   const controlRows = useMemo(
     () => buildRegisterControlRows(
       data?.groups || [],
-      (data?.summary_items || [...loadedItems.values()].map(({ item, groupId }) => item)).map((item) => ({
+      ([...loadedItems.values()].map(({ item }) => item)).map((item) => ({
         item,
         groupId: '',
       })),
     ),
-    [data?.groups, data?.summary_items, loadedItems],
+    [data?.groups, loadedItems],
   );
-  const columnControls = useTableColumnControls({
-    rows: controlRows,
-    columns: REGISTRY_TABLE_COLUMN_DEFINITIONS,
-    adjustFilterSelection: ({ columnId, optionValue, nextValues, availableValues, rows }) => (
-      columnId === 'status'
-        ? adjustRegisterStatusFilterValues(rows, optionValue, nextValues, availableValues)
-        : undefined
-    ),
-  });
-  const { visibleGroupIds, visibleItemIds } = useMemo(
-    () => computeRegisterVisibility(data?.groups || [], columnControls.rows, columnControls.hasActiveFilters, controlRows),
-    [columnControls.rows, columnControls.hasActiveFilters, controlRows, data?.groups],
-  );
-  const filteredExportItemIds = useMemo(
-    () => (columnControls.hasActiveFilters ? [...(visibleItemIds || [])] : null),
-    [columnControls.hasActiveFilters, visibleItemIds],
-  );
-  const summaryAggregates = useMemo(() => {
-    if (!data) return null;
-    if (!columnControls.hasActiveFilters) return data.aggregates;
-    const rows = controlRows
-      .filter((row): row is Extract<typeof row, { kind: 'item' }> => row.kind === 'item')
-      .filter((row) => visibleItemIds?.has(row.item.id))
-      .map((row) => row.item);
-    return aggregateRegisterRows(data.aggregates, rows);
-  }, [columnControls.hasActiveFilters, controlRows, data, visibleItemIds]);
-  const visibleItemControlRows = useMemo(
-    () => controlRows
-      .filter((row): row is Extract<typeof row, { kind: 'item' }> => row.kind === 'item')
-      .filter((row) => !columnControls.hasActiveFilters || visibleItemIds?.has(row.item.id)),
-    [columnControls.hasActiveFilters, controlRows, visibleItemIds],
-  );
-  const analyticsSummary = useMemo(() => {
-    if (!data) return [];
-    const sourceRows = columnControls.hasActiveFilters
-      ? visibleItemControlRows.map((row) => row.item)
-      : data.summary_items || null;
-    return sourceRows
-      ? buildRegisterAnalyticsSummary(sourceRows, data.aggregates)
-      : (data.analytics_summary || []);
-  }, [columnControls.hasActiveFilters, data, visibleItemControlRows]);
-  const displayRegisterGroups = useMemo(
-    () => (columnControls.hasActiveFilters
-      ? filterRegisterGroups(data?.groups || [], visibleGroupIds, visibleItemControlRows)
-      : data?.groups || []),
-    [columnControls.hasActiveFilters, data?.groups, visibleGroupIds, visibleItemControlRows],
-  );
-  const filteredItemsByGroup = useMemo(() => {
-    if (!columnControls.hasActiveFilters) return null;
-    const result = new Map<string, ApprovalRegisterRow[]>();
-    visibleItemControlRows.forEach((row) => {
-      const bucket = result.get(row.groupId) || [];
-      bucket.push(row.item);
-      result.set(row.groupId, bucket);
-    });
-    return result;
-  }, [columnControls.hasActiveFilters, visibleItemControlRows]);
+  const visibleGroupIds: Set<string> | null = null;
+  const visibleItemIds: Set<string> | null = null;
+  const filteredExportItemIds = data?.matched_item_ids ?? null;
+  const summaryAggregates = data?.aggregates ?? null;
+  const analyticsSummary = data?.analytics_summary || [];
+  const displayRegisterGroups = data?.groups || [];
+  const filteredItemsByGroup = null;
   const autoFitColumn = (id: RegistryColumnId) => {
     const values = getRegisterAutoFitValues(controlRows, id);
     const label = REGISTRY_COLUMNS.find((column) => column.id === id)?.label || '';
@@ -3294,26 +3424,25 @@ export function ApprovalRegister({
   );
   const allApprovalRootsSelected = allApprovalRoots.length > 0
     && allApprovalRoots.every((group) => selectedGroups.has(group.id));
-  const loadGroupActionableRows = useCallback(async (group: ApprovalRegisterGroup) => (
-    await api.get<{ lines: ApprovalRegisterRow[] }>(
-      `/approval-register/groups/${group.type}/${groupEntityId(group)}/actionable-rows`,
-      {
-        params: {
-          request_id: requestId,
-          status: effectiveFilters.status || undefined,
-          budget_year: effectiveFilters.budgetYear || undefined,
-          search: effectiveFilters.search || undefined,
-          is_income: effectiveFilters.flow === 'income' ? true : effectiveFilters.flow === 'expense' ? false : undefined,
-        },
-      },
-    )
-    ).data.lines, [effectiveFilters, requestId]);
-  const loadGroupRevisionLines = useCallback(async (group: ApprovalRegisterGroup, mode: 'cfo' | 'workflow') => (
-    await api.get<{ lines: ApprovalRegisterRow[] }>(
-      `/approval-register/groups/${group.type}/${groupEntityId(group)}/revision-lines`,
-      { params: { mode, request_id: requestId } },
-    )
-  ).data.lines, [requestId]);
+  const scopeSelection = useCallback(async (group: ApprovalRegisterGroup) => new Set(
+    (await api.post<{ item_ids: string[] }>('/approval-register/query', { ...registerQuery, mode: 'selection', scope: group.scope || {} })).data.item_ids,
+  ), [registerQuery]);
+  const loadGroupActionableRows = useCallback(async (group: ApprovalRegisterGroup) => {
+    const [selection, response] = await Promise.all([
+      scopeSelection(group),
+      api.get<{ lines: ApprovalRegisterRow[] }>(`/approval-register/groups/${group.type}/${groupEntityId(group)}/actionable-rows`, {
+        params: buildRegisterFilterParams(effectiveFilters, { request_id: requestId }),
+      }),
+    ]);
+    return response.data.lines.filter((row) => selection.has(row.id));
+  }, [effectiveFilters, requestId, scopeSelection]);
+  const loadGroupRevisionLines = useCallback(async (group: ApprovalRegisterGroup, mode: 'cfo' | 'workflow') => {
+    const [selection, response] = await Promise.all([
+      scopeSelection(group),
+      api.get<{ lines: ApprovalRegisterRow[] }>(`/approval-register/groups/${group.type}/${groupEntityId(group)}/revision-lines`, { params: { mode, request_id: requestId } }),
+    ]);
+    return response.data.lines.filter((row) => selection.has(row.id));
+  }, [requestId, scopeSelection]);
   const openForwardDialog = useCallback(async (groups: ApprovalRegisterGroup[]) => {
     if (!groups.length) return;
     setGroupsToForward(groups);
@@ -3547,24 +3676,18 @@ export function ApprovalRegister({
     setExporting(true);
     try {
       const hasUnitScope = exportSettings.department_ids.length > 0 || exportSettings.module_ids.length > 0;
-      const params = buildRegisterFilterParams(
+      const filters = buildRegisterFilterParams(
         { ...effectiveFilters, requestStatus: '', cfoId: hasUnitScope ? '' : effectiveFilters.cfoId },
-        {
-          view,
-          request_id: requestId,
-          group_by: groupBy,
-          request_status: exportSettings.statuses.join(',') || undefined,
-          include_files: exportSettings.include_files,
-          export_kind: exportSettings.export_kind,
-          fixed_only: exportSettings.fixed_only,
-          department_ids: exportSettings.department_ids.join(',') || undefined,
-          module_ids: exportSettings.module_ids.join(',') || undefined,
-          ...(filteredExportItemIds !== null
-            ? { item_ids: filteredExportItemIds.join(',') }
-            : {}),
-        },
+        { request_id: requestId, request_status: exportSettings.statuses.join(',') || undefined },
       );
-      const response = await api.get('/approval-register/export', { params, responseType: 'blob' });
+      const response = await api.post('/approval-register/export', {
+        query: { ...registerQuery, filters },
+        include_files: exportSettings.include_files,
+        export_kind: exportSettings.export_kind,
+        fixed_only: exportSettings.fixed_only,
+        department_ids: exportSettings.department_ids,
+        module_ids: exportSettings.module_ids,
+      }, { responseType: 'blob' });
       const contentType = String(response.headers['content-type'] || '');
       const disposition = String(response.headers['content-disposition'] || '');
       const isZip = contentType.includes('zip') || disposition.toLowerCase().includes('.zip');
@@ -3578,6 +3701,7 @@ export function ApprovalRegister({
     }
   }, [
     effectiveFilters,
+    registerQuery,
     exportSettings,
     filteredExportItemIds,
     groupBy,
@@ -3593,12 +3717,12 @@ export function ApprovalRegister({
       flow: effectiveFilters.flow,
       requestStatus: effectiveFilters.requestStatus,
       cfoId: effectiveFilters.cfoId,
-      visibleRequestStatuses: (data?.summary_items || []).map((item) => item.request_status),
-      visibleUnitIds: (data?.summary_items || []).flatMap((item) => [item.cfo_id, item.module_id]),
+      visibleRequestStatuses: data?.visible_request_statuses || [],
+      visibleUnitIds: data?.visible_unit_ids || [],
       units,
     }));
     setExportOpen(true);
-  }, [data?.summary_items, effectiveFilters.cfoId, effectiveFilters.requestStatus, units, user]);
+  }, [data?.visible_request_statuses, data?.visible_unit_ids, effectiveFilters.cfoId, effectiveFilters.requestStatus, units, user]);
   const registerGroupItems = useCallback((groupId: string, items: ApprovalRegisterRow[]) => {
     setLoadedItems((current) => {
       const next = new Map(current);
@@ -3865,6 +3989,7 @@ export function ApprovalRegister({
                   ) : (
                     <>
                       <TableColumnHeader
+                        onOpenFilter={() => setFacetsRequested(true)}
                         label={
                           column.id === 'approved' && usesWorkflowStepColumns(user.role)
                             ? 'Согласовано, ₽'
@@ -3913,10 +4038,12 @@ export function ApprovalRegister({
             </TableRow>
           )}
           {data && (
+            <RegisterQueryContext.Provider value={registerQuery}>
             <FilteredRegisterItemsContext.Provider value={filteredItemsByGroup}>
             <PointRevisionContext.Provider value={markPointRevision}>
             <RegisterViewContext.Provider value={view}>
-            <TreeRows
+            <VirtualTreeRows
+              scrollRef={tableContainerRef}
               groups={displayRegisterGroups}
               level={0}
               expanded={expanded}
@@ -3958,6 +4085,7 @@ export function ApprovalRegister({
             </RegisterViewContext.Provider>
             </PointRevisionContext.Provider>
             </FilteredRegisterItemsContext.Provider>
+            </RegisterQueryContext.Provider>
           )}
         </TableBody>
       </Table>

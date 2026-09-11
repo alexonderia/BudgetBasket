@@ -144,3 +144,17 @@ docker compose exec backend alembic current
 ```
 
 Подробные команды для диагностики, миграций и ежедневной работы — в [COMMANDS.md](COMMANDS.md).
+
+## Production-сборка frontend
+
+Отдельная Compose-конфигурация собирает Vite-приложение и раздаёт его через nginx на порту `5174`. Обычный frontend для разработки на порту `5173` при этом сохраняется.
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build frontend-production
+```
+
+nginx проксирует `/api/` в backend, использует SPA fallback, gzip, длительный immutable-кеш для хешированных assets и обязательную перепроверку HTML.
+
+## Профилирование производительности
+
+Воспроизводимый аудит создаёт только отдельные базы `budgetbasket_perf_100`, `budgetbasket_perf_1000` и `budgetbasket_perf_20000`; рабочую базу он не изменяет. Команды, методика и результаты находятся в [отчёте](docs/performance/AUDIT.md).

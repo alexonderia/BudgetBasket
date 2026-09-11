@@ -325,6 +325,64 @@ def test_zgd_approval_is_reversible_until_the_budget_is_locked(tmp_path):
     assert position["current_step_id"] == ROOT_STEP_ID
 
 
+def test_zgd_can_record_multiple_line_decisions_in_one_request(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    approver = auth(client, "approver", "approver")
+    zgd = auth(client, "zgd", "zgd")
+    request, items = create_submitted_request(client, employee, item_count=2)
+    position_id = complete_cfo(
+        client,
+        employee,
+        request["id"],
+        [(item["id"], "approved") for item in items],
+    )["affected_cfo_position_ids"][0]
+    send_and_review_by_economist(
+        client, employee, economist, position_id, [item["id"] for item in items]
+    )
+    assert client.post(
+        f"/cfo-positions/{position_id}/freeze",
+        json={"comment": "Ready for route"},
+        headers=economist,
+    ).status_code == 200
+    assert client.post(
+        f"/steps/{APPROVER_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": "Reviewer approved"},
+        headers=approver,
+    ).status_code == 200
+
+    event_id = "ec4a9350-046f-4677-bd36-6e749b5087a0"
+    approved = client.post(
+        "/approval-position-lines/approve/bulk",
+        json={
+            "positions": [{
+                "step_id": ROOT_STEP_ID,
+                "position_id": position_id,
+                "item_ids": [item["id"] for item in items],
+            }],
+            "comment": "Approved together",
+            "event_id": event_id,
+        },
+        headers=zgd,
+    )
+    assert approved.status_code == 200, approved.text
+    assert len(approved.json()["positions"]) == 1
+    rows = client.get(
+        "/approval-register/rows",
+        params={"request_id": request["id"], "module_id": MODULE_ALPHA_ID},
+        headers=zgd,
+    ).json()["items"]
+    assert all(not row["is_final_approval_actionable"] for row in rows)
+    assert all(row["is_decision_editable"] for row in rows)
+    logs = client.get(f"/steps/{ROOT_STEP_ID}/logs", headers=zgd).json()
+    assert any(
+        (row.get("log") or {}).get("event_id") == event_id
+        and set((row.get("log") or {}).get("item_ids") or []) == {item["id"] for item in items}
+        for row in logs
+    )
+
+
 def test_zgd_can_fix_remaining_lines_after_partial_position_lock(tmp_path):
     client = make_client(tmp_path)
     employee = auth(client, "employee", "employee")

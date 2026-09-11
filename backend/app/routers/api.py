@@ -5,9 +5,13 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
+from starlette.background import BackgroundTask
 
 from app.dependencies import current_user
+from app.repositories.queries import find_rows
 from app.services.common import clean_request_item_name
+from app.services.register_query_service import FilteredGroupDecision, FilteredGroupWorkflowAction, RegisterExport, RegisterQuery, RegisterQueryService
 from app.models import (
     AssignmentCreate,
     CatalogCreate,
@@ -15,6 +19,7 @@ from app.models import (
     ChatMessageCreate,
     ChatReadPatch,
     BulkItemDecisionIn,
+    BulkPositionLineApprovalIn,
     CfoPositionActionIn,
     CfoPositionCommentIn,
     CfoPositionReturnIn,
@@ -46,6 +51,36 @@ from app.models import (
 
 router = APIRouter()
 User = Annotated[dict, Depends(current_user)]
+
+
+@router.post("/approval-register/query")
+def query_register(request: Request, user: User, payload: RegisterQuery):
+    return RegisterQueryService(request.app.state.request_service).query(user, payload)
+
+
+def _filtered_action_scope(request: Request, user: dict, query: RegisterQuery | None):
+    if query is None:
+        return {}
+    selected = RegisterQueryService(request.app.state.request_service).query(user, query.model_copy(update={"mode": "selection"}))
+    return {"item_ids": set(selected["item_ids"])}
+
+
+@router.post("/approval-register/export")
+def export_register_query(request: Request, user: User, payload: RegisterExport):
+    query = payload.query.model_copy(update={"mode": "selection"})
+    if payload.export_kind != "all":
+        query.filters = query.filters.model_copy(update={"is_income": payload.export_kind == "income"})
+    selection = RegisterQueryService(request.app.state.request_service).query(user, query)
+    filters = query.filters.model_dump(exclude_none=True, exclude={"frozen"})
+    path = request.app.state.excel_service.export_approval_register(
+        user, view=query.view, group_by=query.group_by, **filters,
+        item_ids=set(selection["item_ids"]), include_files=payload.include_files,
+        export_kind=payload.export_kind, fixed_only=payload.fixed_only,
+        department_ids=set(payload.department_ids) if payload.department_ids else None,
+        module_ids=set(payload.module_ids) if payload.module_ids else None,
+    )
+    media_type = "application/zip" if path.suffix == ".zip" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return FileResponse(path, filename=path.name, media_type=media_type)
 
 
 async def _broadcast_notifications(request: Request, result: dict, event_type: str) -> dict:
@@ -172,9 +207,7 @@ def step_dashboard(request: Request, step_id: str, user: User):
 
 @router.post("/steps/{step_id}/approve")
 async def approve_step(request: Request, step_id: str, user: User, payload: StepApproveIn | None = None):
-    result = request.app.state.approval_service.approve_step(
-        user, step_id, payload.position_ids if payload else []
-    )
+    result = await run_in_threadpool(request.app.state.approval_service.approve_step, user, step_id, payload.position_ids if payload else [])
     for position in result["positions"]:
         await _broadcast_notifications(request, position, "cfo_position.assigned")
     return result
@@ -185,9 +218,20 @@ async def approve_position_at_step(
     request: Request, step_id: str, position_id: str,
     payload: CfoPositionActionIn, user: User,
 ):
-    result = request.app.state.approval_service.approve_position_at_step(
-        user, step_id, position_id, payload.comment, payload.item_ids,
-        event_id=payload.event_id,
+    result = await run_in_threadpool(request.app.state.approval_service.approve_position_at_step, user, step_id, position_id, payload.comment, payload.item_ids, event_id=payload.event_id)
+    return await _broadcast_notifications(request, result, "cfo_position.updated")
+
+
+@router.post("/approval-position-lines/approve/bulk")
+async def approve_position_lines_bulk(
+    request: Request, payload: BulkPositionLineApprovalIn, user: User,
+):
+    result = await run_in_threadpool(
+        request.app.state.approval_service.approve_position_lines_bulk,
+        user,
+        [item.model_dump() for item in payload.positions],
+        payload.comment,
+        payload.event_id,
     )
     return await _broadcast_notifications(request, result, "cfo_position.updated")
 
@@ -197,9 +241,7 @@ async def return_position_at_step(
     request: Request, step_id: str, position_id: str,
     payload: CfoPositionReturnIn, user: User,
 ):
-    result = request.app.state.approval_service.return_position(
-        user, step_id, position_id, payload.target_step_id or "", payload.comment, payload.item_ids
-    )
+    result = await run_in_threadpool(request.app.state.approval_service.return_position, user, step_id, position_id, payload.target_step_id or "", payload.comment, payload.item_ids)
     return await _broadcast_notifications(request, result, "cfo_position.returned")
 
 
@@ -389,7 +431,7 @@ def catalog_import_template(request: Request, kind: str, user: User):
 
 @router.post("/catalog/{kind}/import")
 async def catalog_import(request: Request, kind: str, user: User, file: UploadFile = File(...), preview: bool = False):
-    collection = request.app.state.catalog_service.collection_name(kind)
+    collection = await run_in_threadpool(request.app.state.catalog_service.collection_name, kind)
     return await request.app.state.excel_service.import_catalog(user, collection, file, preview=preview)
 
 
@@ -402,9 +444,11 @@ def list_requests(
     created_from: str | None = None,
     created_to: str | None = None,
     budget_year: int | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=200),
 ):
     return request.app.state.request_service.list_requests(
-        user, status, unit_id, created_from, created_to, budget_year
+        user, status, unit_id, created_from, created_to, budget_year, page=page, page_size=page_size
     )
 
 
@@ -654,12 +698,12 @@ def decide_approval_register_group_cfo(
     request: Request,
     group_type: str,
     group_id: str,
-    payload: RegisterGroupDecisionIn,
+    payload: FilteredGroupDecision,
     user: User,
     request_id: str | None = None,
 ):
     item_ids = request.app.state.request_service.approval_register_group_item_ids(
-        user, group_type, group_id, request_id=request_id,
+        user, group_type, group_id, request_id=request_id, **_filtered_action_scope(request, user, payload.register_query),
     )
     return request.app.state.budget_item_service.bulk_decide_cfo(
         user,
@@ -749,13 +793,7 @@ async def cfo_revision_approval_register_group(
     user: User,
     request_id: str | None = None,
 ):
-    result = request.app.state.budget_item_service.cfo_revision_from_register(
-        user,
-        group_type,
-        group_id,
-        payload.model_dump(),
-        request_id=request_id,
-    )
+    result = await run_in_threadpool(request.app.state.budget_item_service.cfo_revision_from_register, user, group_type, group_id, payload.model_dump(), request_id=request_id)
     for message in result.get("chat_messages", []):
         await _broadcast_chat_message(request, message["chat_id"], message, user["id"])
     return result
@@ -828,7 +866,7 @@ def patch_request(request: Request, request_id: str, payload: RequestPatch, user
 
 @router.post("/requests/{request_id}/submit")
 async def submit_request(request: Request, request_id: str, user: User):
-    result = request.app.state.request_service.submit(user, request_id)
+    result = await run_in_threadpool(request.app.state.request_service.submit, user, request_id)
     return await _broadcast_notifications(request, result, "request.submitted_to_cfo")
 
 
@@ -844,7 +882,7 @@ def restore_request(request: Request, request_id: str, user: User):
 
 @router.post("/requests/{request_id}/complete-cfo-review")
 async def complete_cfo_review(request: Request, request_id: str, user: User):
-    result = request.app.state.request_service.complete_cfo_review(user, request_id)
+    result = await run_in_threadpool(request.app.state.request_service.complete_cfo_review, user, request_id)
     return await _broadcast_notifications(request, result, "request.cfo_review_completed")
 
 
@@ -861,8 +899,8 @@ def request_summary(request: Request, request_id: str, user: User):
 
 
 @router.get("/requests/{request_id}/items")
-def list_request_items(request: Request, request_id: str, user: User, include_deleted: bool = True):
-    return request.app.state.budget_item_service.list_items(user, request_id, include_deleted=include_deleted)
+def list_request_items(request: Request, request_id: str, user: User, include_deleted: bool = True, page: Annotated[int, Query(ge=1)] = 1, page_size: Annotated[int | None, Query(ge=1, le=200)] = None):
+    return request.app.state.budget_item_service.list_items(user, request_id, include_deleted=include_deleted, page=page, page_size=page_size)
 
 
 @router.post("/requests/{request_id}/items")
@@ -879,9 +917,7 @@ def patch_request_item(request: Request, item_id: str, payload: ItemPatch, user:
 async def decide_request_item_cfo(
     request: Request, item_id: str, payload: ItemDecisionIn, user: User
 ):
-    result = request.app.state.budget_item_service.decide_cfo(
-        user, item_id, payload.model_dump(exclude_unset=True)
-    )
+    result = await run_in_threadpool(request.app.state.budget_item_service.decide_cfo, user, item_id, payload.model_dump(exclude_unset=True))
     for message in result.get("chat_messages", []):
         await _broadcast_chat_message(request, message["chat_id"], message, user["id"])
     return result
@@ -902,40 +938,25 @@ async def act_on_approval_register_group(
     request: Request,
     group_type: str,
     group_id: str,
-    payload: RegisterGroupWorkflowActionIn,
+    payload: FilteredGroupWorkflowAction,
     user: User,
     request_id: str | None = None,
 ):
-    position_ids = request.app.state.request_service.approval_register_group_position_ids(
-        user, group_type, group_id, action=payload.action, request_id=request_id,
-    )
+    scope = await run_in_threadpool(_filtered_action_scope, request, user, payload.register_query)
+    position_ids = await run_in_threadpool(request.app.state.request_service.approval_register_group_position_ids, user, group_type, group_id, action=payload.action, request_id=request_id, **scope)
     if payload.action == "submit":
-        result = request.app.state.approval_service.submit_positions_from_register(
-            user, position_ids, payload.comment,
-        )
+        result = await run_in_threadpool(request.app.state.approval_service.submit_positions_from_register, user, position_ids, payload.comment)
         return await _broadcast_notifications(request, result, "cfo_position.assigned")
     if payload.action == "approve":
-        result = request.app.state.approval_service.approve_positions_from_register(
-            user, position_ids, payload.comment,
-        )
+        result = await run_in_threadpool(request.app.state.approval_service.approve_positions_from_register, user, position_ids, payload.comment)
         return await _broadcast_notifications(request, result, "cfo_position.updated")
     if payload.action == "fix":
-        result = request.app.state.approval_service.fix_positions_from_register(
-            user, position_ids, payload.comment,
-        )
+        result = await run_in_threadpool(request.app.state.approval_service.fix_positions_from_register, user, position_ids, payload.comment)
         return await _broadcast_notifications(request, result, "cfo_position.updated")
     if payload.action == "unfix":
-        result = request.app.state.approval_service.unfix_positions_from_register(
-            user, position_ids, payload.comment,
-        )
+        result = await run_in_threadpool(request.app.state.approval_service.unfix_positions_from_register, user, position_ids, payload.comment)
         return await _broadcast_notifications(request, result, "cfo_position.updated")
-    result = request.app.state.approval_service.return_positions_from_register(
-        user,
-        position_ids,
-        payload.target_step_id or "",
-        payload.comment,
-        [item.model_dump() for item in payload.items] if payload.items else None,
-    )
+    result = await run_in_threadpool(request.app.state.approval_service.return_positions_from_register, user, position_ids, payload.target_step_id or "", payload.comment, [item.model_dump() for item in payload.items] if payload.items else None)
     return await _broadcast_workflow_result(request, result, "cfo_position.returned", user["id"])
 
 
@@ -961,8 +982,8 @@ async def upload_request_item_file(request: Request, item_id: str, user: User, f
 
 
 @router.get("/items/{item_id}/files")
-def request_item_files(request: Request, item_id: str, user: User):
-    return request.app.state.file_service.files_for_item(user, item_id)
+def request_item_files(request: Request, item_id: str, user: User, page: Annotated[int, Query(ge=1)] = 1, page_size: Annotated[int | None, Query(ge=1, le=200)] = None):
+    return request.app.state.file_service.files_for_item(user, item_id, page=page, page_size=page_size)
 
 
 @router.delete("/items/{item_id}/files/{file_id}")
@@ -972,12 +993,14 @@ def delete_request_item_file(request: Request, item_id: str, file_id: str, user:
 
 
 @router.get("/requests/{request_id}/logs")
-def request_logs(request: Request, request_id: str, user: User):
+def request_logs(request: Request, request_id: str, user: User, page_size: Annotated[int | None, Query(ge=1, le=200)] = None, before: str | None = None):
     budget_request = request.app.state.request_service.get_request(user, request_id)
-    logs = request.app.state.approval_service.request_history(user, budget_request["id"])
-    users = {item["id"]: item for item in request.app.state.repo.load_all("users")}
-    profiles = {item["user_id"]: item for item in request.app.state.repo.load_all("profiles")}
-    request_items = {item["id"]: item for item in request.app.state.repo.load_all("req_items") if item.get("request_id") == budget_request["id"]}
+    logs = request.app.state.approval_service.request_history(user, budget_request["id"], page_size=page_size, before=before)
+    paged = logs if page_size else None
+    logs = logs["items"] if paged else logs
+    users = {item["id"]: item for item in find_rows(request.app.state.repo, "users", in_filters={"id": {row.get("user_id") for row in logs}})}
+    profiles = {item["user_id"]: item for item in find_rows(request.app.state.repo, "profiles", in_filters={"user_id": set(users)})}
+    request_items = {item["id"]: item for item in find_rows(request.app.state.repo, "req_items", filters={"request_id": budget_request["id"]}) if item.get("request_id") == budget_request["id"]}
     catalogs = {
         "dds_id": {item["id"]: item for item in request.app.state.repo.load_all("dds_catalog")},
         "invest_id": {item["id"]: item for item in request.app.state.repo.load_all("invests_catalog")},
@@ -1034,18 +1057,29 @@ def request_logs(request: Request, request_id: str, user: User):
                 ),
             }
         )
-    return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return {**paged, "items": result} if paged else sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
 @router.get("/approval-register/history")
-def approval_register_history(request: Request, user: User):
+def approval_register_history(request: Request, user: User, page_size: Annotated[int | None, Query(ge=1, le=200)] = None, before: str | None = None):
     """A combined, permission-scoped audit trail for the register."""
-    logs = request.app.state.approval_service.register_history(user)
-    users = {item["id"]: item for item in request.app.state.repo.load_all("users")}
-    profiles = {item["user_id"]: item for item in request.app.state.repo.load_all("profiles")}
-    requests = {item["id"]: item for item in request.app.state.repo.load_all("requests")}
+    logs = request.app.state.approval_service.register_history(user, page_size=page_size, before=before)
+    paged = logs if page_size else None
+    logs = logs["items"] if paged else logs
+    users = {item["id"]: item for item in find_rows(request.app.state.repo, "users", in_filters={"id": {row.get("user_id") for row in logs}})}
+    profiles = {item["user_id"]: item for item in find_rows(request.app.state.repo, "profiles", in_filters={"user_id": set(users)})}
+    request_ids = {row.get("req_id") for row in logs if row.get("req_id")}
+    position_ids = {row.get("cfo_position_id") for row in logs if row.get("cfo_position_id")}
+    for row in logs:
+        log = row.get("log") or {}
+        if log.get("request_id"):
+            request_ids.add(log["request_id"])
+    related_items = find_rows(request.app.state.repo, "req_items", in_filters={"request_id": request_ids})
+    related_items += find_rows(request.app.state.repo, "req_items", in_filters={"cfo_position_id": position_ids})
+    request_items = {item["id"]: item for item in related_items}
+    request_ids.update(item["request_id"] for item in related_items)
+    requests = {item["id"]: item for item in find_rows(request.app.state.repo, "requests", in_filters={"id": request_ids})}
     units = {item["id"]: item for item in request.app.state.repo.load_all("units")}
-    request_items = {item["id"]: item for item in request.app.state.repo.load_all("req_items")}
     position_items: dict[str, list[dict]] = {}
     for request_item in request_items.values():
         position_id = request_item.get("cfo_position_id")
@@ -1127,7 +1161,7 @@ def approval_register_history(request: Request, user: User):
                 "profile": profiles.get(actor["id"]),
             } if actor else None,
         })
-    return sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return {**paged, "items": result} if paged else sorted(result, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
 @router.get("/cfo-positions")
@@ -1137,9 +1171,11 @@ def list_cfo_positions(
     budget_year: int | None = None,
     cfo_unit_id: str | None = None,
     status: str | None = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int | None, Query(ge=1, le=200)] = None,
 ):
     return request.app.state.approval_service.list_positions(
-        user, budget_year=budget_year, cfo_unit_id=cfo_unit_id, status=status
+        user, budget_year=budget_year, cfo_unit_id=cfo_unit_id, status=status, page=page, page_size=page_size
     )
 
 
@@ -1149,8 +1185,8 @@ def get_cfo_position(request: Request, position_id: str, user: User):
 
 
 @router.get("/cfo-positions/{position_id}/logs")
-def cfo_position_logs(request: Request, position_id: str, user: User):
-    return request.app.state.approval_service.position_logs(user, position_id)
+def cfo_position_logs(request: Request, position_id: str, user: User, page_size: Annotated[int | None, Query(ge=1, le=200)] = None, before: str | None = None):
+    return request.app.state.approval_service.position_logs(user, position_id, page_size=page_size, before=before)
 
 
 @router.get("/cfo-positions/{position_id}/comments")
@@ -1171,9 +1207,7 @@ def add_cfo_position_comment(
 async def submit_position_to_economist(
     request: Request, position_id: str, payload: CfoPositionActionIn, user: User
 ):
-    result = request.app.state.approval_service.submit_to_economist(
-        user, position_id, payload.comment
-    )
+    result = await run_in_threadpool(request.app.state.approval_service.submit_to_economist, user, position_id, payload.comment)
     return await _broadcast_notifications(request, result, "cfo_position.assigned")
 
 
@@ -1209,9 +1243,7 @@ def complete_position_review(
 async def freeze_cfo_position(
     request: Request, position_id: str, payload: CfoPositionActionIn, user: User
 ):
-    result = request.app.state.approval_service.freeze_position(
-        user, position_id, payload.comment, payload.item_ids
-    )
+    result = await run_in_threadpool(request.app.state.approval_service.freeze_position, user, position_id, payload.comment, payload.item_ids)
     return await _broadcast_notifications(request, result, "cfo_position.assigned")
 
 
@@ -1228,7 +1260,7 @@ def unfreeze_cfo_position(
 async def fix_cfo_position(
     request: Request, position_id: str, payload: CfoPositionActionIn, user: User
 ):
-    result = request.app.state.approval_service.fix_position(user, position_id, payload.comment)
+    result = await run_in_threadpool(request.app.state.approval_service.fix_position, user, position_id, payload.comment)
     return await _broadcast_notifications(request, result, "cfo_position.updated")
 
 
@@ -1236,7 +1268,7 @@ async def fix_cfo_position(
 async def unfix_cfo_position(
     request: Request, position_id: str, payload: CfoPositionRevisionIn, user: User
 ):
-    result = request.app.state.approval_service.unfix_position(user, position_id, payload.comment)
+    result = await run_in_threadpool(request.app.state.approval_service.unfix_position, user, position_id, payload.comment)
     return await _broadcast_notifications(request, result, "cfo_position.updated")
 
 
@@ -1244,10 +1276,7 @@ async def unfix_cfo_position(
 async def reopen_fixed_cfo_position_items(
     request: Request, position_id: str, payload: CfoPositionRevisionIn, user: User
 ):
-    result = request.app.state.approval_service.reopen_fixed_items(
-        user, position_id, payload.target_step_id, payload.comment,
-        [item.item_id for item in payload.items],
-    )
+    result = await run_in_threadpool(request.app.state.approval_service.reopen_fixed_items, user, position_id, payload.target_step_id, payload.comment, [item.item_id for item in payload.items])
     return await _broadcast_workflow_result(request, result, "cfo_position.returned", user["id"])
 
 
@@ -1255,16 +1284,14 @@ async def reopen_fixed_cfo_position_items(
 async def return_cfo_position_for_revision(
     request: Request, position_id: str, payload: CfoPositionRevisionIn, user: User
 ):
-    result = request.app.state.approval_service.return_for_revision(
-        user, position_id, payload.model_dump()
-    )
+    result = await run_in_threadpool(request.app.state.approval_service.return_for_revision, user, position_id, payload.model_dump())
     return await _broadcast_workflow_result(request, result, "cfo_position.returned", user["id"])
 
 
 @router.get("/notifications")
-def list_notifications(request: Request, user: User, unread_only: bool = False):
+def list_notifications(request: Request, user: User, unread_only: bool = False, page_size: Annotated[int | None, Query(ge=1, le=200)] = None, before: str | None = None):
     return request.app.state.notification_service.list_for_user(
-        user, unread_only=unread_only
+        user, unread_only=unread_only, page_size=page_size, before=before
     )
 
 
@@ -1283,13 +1310,13 @@ def mark_all_notifications_read(request: Request, user: User):
 
 
 @router.get("/requests/{request_id}/chat")
-def request_chat(request: Request, request_id: str, user: User):
-    return request.app.state.chat_service.get_request_chat(user, request_id)
+def request_chat(request: Request, request_id: str, user: User, page_size: int | None = Query(default=None, ge=1, le=200), before: str | None = None):
+    return request.app.state.chat_service.get_request_chat(user, request_id, page_size=page_size, before=before)
 
 
 @router.get("/cfo-positions/{position_id}/chat")
-def cfo_position_chat(request: Request, position_id: str, user: User):
-    return request.app.state.chat_service.get_position_chat(user, position_id)
+def cfo_position_chat(request: Request, position_id: str, user: User, page_size: int | None = Query(default=None, ge=1, le=200), before: str | None = None):
+    return request.app.state.chat_service.get_position_chat(user, position_id, page_size=page_size, before=before)
 
 
 @router.get("/chats")
@@ -1307,20 +1334,20 @@ async def _broadcast_chat_message(request: Request, chat_id: str, message: dict,
         chat_id,
         {"type": "chat.message.created", "message_id": message["id"]},
     )
-    chat = request.app.state.repo.get_by_id("chats", chat_id)
+    chat = await run_in_threadpool(request.app.state.repo.get_by_id, "chats", chat_id)
     event = {"type": "chat.message.created", "chat_id": chat_id, "message_id": message["id"], "kind": chat["kind"], "text": message["text"]}
-    for user_id in request.app.state.chat_service.notification_recipient_ids(chat_id, sender_id):
+    for user_id in await run_in_threadpool(request.app.state.chat_service.notification_recipient_ids, chat_id, sender_id):
         await request.app.state.chat_connections.broadcast_user(user_id, event)
 
 
 @router.get("/chats/{chat_id}")
-def get_chat(request: Request, chat_id: str, user: User):
-    return request.app.state.chat_service.get_chat(user, chat_id)
+def get_chat(request: Request, chat_id: str, user: User, page_size: int | None = Query(default=None, ge=1, le=200), before: str | None = None):
+    return request.app.state.chat_service.get_chat(user, chat_id, page_size=page_size, before=before)
 
 
 @router.post("/chats/{chat_id}/messages")
 async def send_chat_message(request: Request, chat_id: str, payload: ChatMessageCreate, user: User):
-    message = request.app.state.chat_service.send(user, chat_id, payload.model_dump())
+    message = await run_in_threadpool(request.app.state.chat_service.send, user, chat_id, payload.model_dump())
     await _broadcast_chat_message(request, chat_id, message, user["id"])
     return message
 
@@ -1337,12 +1364,7 @@ async def send_chat_message_with_images(
     if not images:
         raise HTTPException(status_code=400, detail="Добавьте хотя бы одно изображение")
     await request.app.state.file_service.validate_chat_images(images)
-    message = request.app.state.chat_service.send(
-        user,
-        chat_id,
-        {"text": text, "reply_to": reply_to},
-        allow_empty=True,
-    )
+    message = await run_in_threadpool(request.app.state.chat_service.send, user, chat_id, {"text": text, "reply_to": reply_to}, allow_empty=True)
     files = [
         await request.app.state.file_service.upload_for_chat_message(user, chat_id, message["id"], image)
         for image in images
@@ -1361,8 +1383,8 @@ def mark_chat_read(request: Request, chat_id: str, payload: ChatReadPatch, user:
 async def chat_websocket(websocket: WebSocket, chat_id: str):
     token = websocket.query_params.get("token")
     try:
-        user = websocket.app.state.auth_service.me(token)
-        websocket.app.state.chat_service.get_chat(user, chat_id)
+        user = await run_in_threadpool(websocket.app.state.auth_service.me, token)
+        await run_in_threadpool(websocket.app.state.chat_service.get_chat, user, chat_id)
     except HTTPException:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
@@ -1380,7 +1402,7 @@ async def chat_websocket(websocket: WebSocket, chat_id: str):
 async def chat_notifications_websocket(websocket: WebSocket):
     token = websocket.query_params.get("token")
     try:
-        user = websocket.app.state.auth_service.me(token)
+        user = await run_in_threadpool(websocket.app.state.auth_service.me, token)
     except HTTPException:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
@@ -1403,4 +1425,10 @@ def download_file(request: Request, file_id: str, user: User):
     }
     if size is not None:
         headers["Content-Length"] = str(size)
-    return StreamingResponse(body, media_type=content_type or "application/octet-stream", headers=headers)
+    def chunks():
+        try:
+            while chunk := body.read(64 * 1024):
+                yield chunk
+        finally:
+            body.close()
+    return StreamingResponse(chunks(), media_type=content_type or "application/octet-stream", headers=headers, background=BackgroundTask(body.close))

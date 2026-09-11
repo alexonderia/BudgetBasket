@@ -193,6 +193,7 @@ export function TableColumnHeader({
   formatFilterOptionLabel,
   filterOptionSection,
   endAdornment,
+  onOpenFilter,
 }: {
   label: ReactNode;
   sortable?: boolean;
@@ -212,6 +213,7 @@ export function TableColumnHeader({
   formatFilterOptionLabel?: (option: TableFilterOption) => string;
   filterOptionSection?: (option: TableFilterOption) => string | null;
   endAdornment?: ReactNode;
+  onOpenFilter?: () => void;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
@@ -246,6 +248,7 @@ export function TableColumnHeader({
   }, [columnFiltered, filterOptions, formatFilterOptionLabel, selectedValues]);
 
   const openFilterMenu = (event: MouseEvent<HTMLElement>) => {
+    onOpenFilter?.();
     event.stopPropagation();
     setAnchorEl(event.currentTarget);
   };

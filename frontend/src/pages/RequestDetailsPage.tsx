@@ -55,6 +55,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { usePagedChat } from '../api/usePagedChat';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { chatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -2553,11 +2554,10 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     queryFn: async () => (await api.get<CounterpartyContact | null>(`/requests/${id}/counterparty-contact`)).data,
     enabled: !!id && (user.role === 'economist' || user.role === 'employee'),
   });
-  const { data: chat } = useQuery({
+  const { data: chat, hasOlder: hasOlderChatMessages, loadOlder: loadOlderChatMessages, loadingOlder: loadingOlderChatMessages, olderError: olderChatError } = usePagedChat<RequestChat>({
     queryKey: [...detailsKey, 'chat'],
-    queryFn: async () => (await api.get(`/requests/${id}/chat`)).data as RequestChat,
+    url: `/requests/${id}/chat`,
     enabled: !!id && (chatOpen || searchParams.get('chat') === '1'),
-    retry: false,
   });
   const [chatText, setChatText] = useState('');
   const [chatImages, setChatImages] = useState<File[]>([]);
@@ -2566,7 +2566,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   useEffect(() => {
     const container = chatMessagesRef.current;
     if (container) container.scrollTop = container.scrollHeight;
-  }, [chatMessages.length]);
+  }, [chatMessages.at(-1)?.id]);
   const markChatRead = useMutation({
     mutationFn: (messageId: string) => api.patch(`/chats/${chat?.id}/read`, { last_read_message_id: messageId }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [...detailsKey, 'chat'] }),
@@ -3277,6 +3277,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           </Stack>
 
           <Box ref={chatMessagesRef} className="request-chat-messages" aria-live="polite">
+            {hasOlderChatMessages && <Button size="small" disabled={loadingOlderChatMessages} onClick={() => void loadOlderChatMessages(chatMessagesRef.current)}>{olderChatError ? 'Повторить загрузку сообщений' : 'Предыдущие сообщения'}</Button>}
             {!chatMessages.length && (
               <Box className="request-chat-empty">
                 <Avatar className="request-chat-empty-avatar">✦</Avatar>

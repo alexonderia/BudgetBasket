@@ -12,6 +12,9 @@ from fastapi import HTTPException, UploadFile
 from app.config import Settings
 from app.models import RequestStatus
 from app.repositories.base import Repository
+from app.repositories.pagination import numbered_page
+from app.repositories.queries import find_rows, find_one
+from starlette.concurrency import run_in_threadpool
 from app.services.common import get_required
 from app.services.file_guard_client import FileGuardClient, require_processed_file
 from app.services.permission_service import PermissionService
@@ -64,22 +67,43 @@ class FileService:
 
     async def _upload(self, upload: UploadFile, *, prefix: str = "request-items", images_only: bool = False) -> dict:
         processed = await require_processed_file(self.file_guard, upload)
-        original_name = upload.filename or "file"
-        content = processed.content
-        self._validate_content(content)
+        try:
+            return await run_in_threadpool(self._store_processed, processed, upload.filename or "file", prefix, images_only)
+        finally:
+            if getattr(processed, "content_stream", None) is not None:
+                processed.close()
+
+    def _store_processed(self, processed, original_name: str, prefix: str, images_only: bool) -> dict:
+        stream = getattr(processed, "content_stream", None)
+        digest_builder = hashlib.sha256()
+        if stream is not None:
+            stream.seek(0)
+            size = 0
+            while chunk := stream.read(64 * 1024):
+                size += len(chunk)
+                if size > self.settings.max_upload_file_size_mb * 1024 * 1024:
+                    raise HTTPException(status_code=400, detail="Файл превышает допустимый размер")
+                digest_builder.update(chunk)
+            stream.seek(0)
+            if not size:
+                raise HTTPException(status_code=400, detail="Нельзя прикрепить пустой файл")
+            content = stream
+        else:
+            content = processed.content
+            self._validate_content(content)
+            size = len(content)
+            digest_builder.update(content)
         mime_type = self._allowed_mime(processed.output_name, processed.output_mime_type)
         if images_only and mime_type not in CHAT_IMAGE_MIME_TYPES:
             raise HTTPException(status_code=400, detail="В чат можно прикреплять только изображения PNG, JPEG, GIF или WebP")
-        digest = hashlib.sha256(content).hexdigest()
+        digest = digest_builder.hexdigest()
         if digest != processed.output_sha256:
-            # The caller may be a test double, but production must not trust a
-            # guard response without independently verifying its safe bytes.
             raise HTTPException(status_code=503, detail="Проверка файлов вернула некорректный результат. Повторите попытку позже.")
-        storage = next((entry for entry in self.repo.load_all("storage_objects") if entry["content_sha256"] == digest), None)
+        storage = find_one(self.repo, "storage_objects", content_sha256=digest)
         if not storage:
             key = self.storage_key(processed.output_name, prefix=prefix)
             self.object_storage.put_object(key, content, mime_type)
-            storage = self.repo.create("storage_objects", {"storage_bucket": self.settings.s3_bucket if self.settings.use_s3 else "local", "storage_key": key, "content_sha256": digest, "mime_type": mime_type, "size_bytes": len(content)})
+            storage = self.repo.create("storage_objects", {"storage_bucket": self.settings.s3_bucket if self.settings.use_s3 else "local", "storage_key": key, "content_sha256": digest, "mime_type": mime_type, "size_bytes": size})
         return self.repo.create("files", {
             "id_storage_object": storage["id"], "original_name": original_name,
             "stored_name": processed.output_name, "is_sanitized": processed.sanitized,
@@ -106,10 +130,18 @@ class FileService:
             return
         self.permissions.require_employee_upload_file(user, request)
 
-    async def upload_for_item(self, user: dict, item_id: str, upload: UploadFile) -> dict:
+    def _check_item_upload(self, user: dict, item_id: str):
         item, request = self._item_and_request(item_id)
         self._require_item_file_edit(user, item, request)
+        return item, request
+
+    async def upload_for_item(self, user: dict, item_id: str, upload: UploadFile) -> dict:
+        await run_in_threadpool(self._check_item_upload, user, item_id)
         file = await self._upload(upload)
+        return await run_in_threadpool(self._finish_item_upload, user, item_id, file)
+
+    def _finish_item_upload(self, user: dict, item_id: str, file: dict) -> dict:
+        item, request = self._check_item_upload(user, item_id)
         self._link_uploaded_file(user, item_id, file["id"])
         if self.request_service:
             self.request_service.log(
@@ -133,13 +165,17 @@ class FileService:
         """Reject invalid attachments before creating a chat message."""
         for upload in uploads:
             processed = await require_processed_file(self.file_guard, upload)
-            content = processed.content
-            self._validate_content(content)
-            mime_type = self._allowed_mime(processed.output_name, processed.output_mime_type)
-            if mime_type not in CHAT_IMAGE_MIME_TYPES:
-                raise HTTPException(status_code=400, detail="В чат можно прикреплять только изображения PNG, JPEG, GIF или WebP")
+            try:
+                if getattr(processed, "content_stream", None) is None:
+                    self._validate_content(processed.content)
+                mime_type = self._allowed_mime(processed.output_name, processed.output_mime_type)
+                if mime_type not in CHAT_IMAGE_MIME_TYPES:
+                    raise HTTPException(status_code=400, detail="В чат можно прикреплять только изображения PNG, JPEG, GIF или WebP")
+            finally:
+                if getattr(processed, "content_stream", None) is not None:
+                    processed.close()
 
-    async def upload_for_chat_message(self, user: dict, chat_id: str, message_id: str, upload: UploadFile) -> dict:
+    def _check_chat_upload(self, user: dict, chat_id: str, message_id: str):
         message = get_required(self.repo, "chat_messages", message_id)
         chat = get_required(self.repo, "chats", message["chat_id"])
         if chat["id"] != chat_id or message.get("sender_id") != user["id"]:
@@ -148,16 +184,23 @@ class FileService:
             raise HTTPException(status_code=500, detail="Сервис чатов не инициализирован")
         self.chat_service._sync_participants(chat, repo=self.repo)
         self.chat_service._require_access(user, chat, write=True)
+
+    async def upload_for_chat_message(self, user: dict, chat_id: str, message_id: str, upload: UploadFile) -> dict:
+        await run_in_threadpool(self._check_chat_upload, user, chat_id, message_id)
         file = await self._upload(upload, prefix="chat-images", images_only=True)
-        self.repo.insert("message_files", {"file_id": file["id"], "message_id": message_id})
+        await run_in_threadpool(self._finish_chat_upload, user, chat_id, message_id, file)
         return file
+
+    def _finish_chat_upload(self, user: dict, chat_id: str, message_id: str, file: dict):
+        self._check_chat_upload(user, chat_id, message_id)
+        self.repo.insert("message_files", {"file_id": file["id"], "message_id": message_id})
 
     def _link_uploaded_file(self, user: dict, item_id: str, file_id: str | int) -> dict:
         item, request = self._item_and_request(item_id)
         self._require_item_file_edit(user, item, request)
         get_required(self.repo, "files", file_id)
         file_id = int(file_id) if str(file_id).isdigit() else file_id
-        if any(link.get("file_id") == file_id and link.get("req_item_id") == item_id for link in self.repo.load_all("req_item_files")):
+        if any(link.get("file_id") == file_id and link.get("req_item_id") == item_id for link in find_rows(self.repo, "req_item_files", filters={"file_id": file_id})):
             raise HTTPException(status_code=400, detail="Файл уже прикреплён")
         return self.repo.insert("req_item_files", {"file_id": file_id, "req_item_id": item_id})
 
@@ -190,14 +233,14 @@ class FileService:
             self.repo.delete("storage_objects", storage_id)
 
     def _file_has_links(self, file_id: str | int) -> bool:
-        return any(link.get("file_id") == file_id for link in self.repo.load_all("req_item_files")) or any(
-            link.get("file_id") == file_id for link in self.repo.load_all("message_files")
+        return any(link.get("file_id") == file_id for link in find_rows(self.repo, "req_item_files", filters={"file_id": file_id})) or any(
+            link.get("file_id") == file_id for link in find_rows(self.repo, "message_files", filters={"file_id": file_id})
         )
 
     def _requests_for_file(self, file_id: str | int) -> list[dict]:
         file_id = int(file_id) if str(file_id).isdigit() else file_id
         requests = []
-        for link in self.repo.load_all("req_item_files"):
+        for link in find_rows(self.repo, "req_item_files", filters={"file_id": file_id}):
             if link.get("file_id") == file_id:
                 item = self.repo.get_by_id("req_items", link["req_item_id"])
                 if item:
@@ -206,10 +249,11 @@ class FileService:
 
     def _chat_ids_for_file(self, file_id: str | int) -> set[str]:
         file_id = int(file_id) if str(file_id).isdigit() else file_id
-        messages = {message["id"]: message for message in self.repo.load_all("chat_messages")}
+        links = find_rows(self.repo, "message_files", filters={"file_id": file_id})
+        messages = {message["id"]: message for message in find_rows(self.repo, "chat_messages", in_filters={"id": {link["message_id"] for link in links}})}
         return {
             message["chat_id"]
-            for link in self.repo.load_all("message_files")
+            for link in find_rows(self.repo, "message_files", filters={"file_id": file_id})
             if link.get("file_id") == file_id
             for message in [messages.get(link.get("message_id"))]
             if message
@@ -227,11 +271,13 @@ class FileService:
         if not request_allowed and not chat_allowed:
             raise HTTPException(status_code=403, detail="Нет доступа к этому файлу")
 
-    def files_for_item(self, user: dict, item_id: str) -> list[dict]:
+    def files_for_item(self, user: dict, item_id: str, *, page=1, page_size=None) -> list[dict] | dict:
         _item, request = self._item_and_request(item_id)
         self.permissions.require_view_request(user, request)
-        ids = {link["file_id"] for link in self.repo.load_all("req_item_files") if link.get("req_item_id") == item_id}
-        return [file for file in self.repo.load_all("files") if file["id"] in ids]
+        ids = {link["file_id"] for link in find_rows(self.repo, "req_item_files", filters={"req_item_id": item_id})}
+        if page_size:
+            return numbered_page(self.repo, "files", in_filters={"id": ids}, page=page, page_size=page_size)
+        return find_rows(self.repo, "files", in_filters={"id": ids})
 
     def download(self, user: dict, file_id: str | int):
         file = get_required(self.repo, "files", file_id)

@@ -163,6 +163,7 @@ export type RegisterGroupingLevel = 'cfo' | 'category' | 'article' | 'module' | 
   | 'analytics_1' | 'analytics_2' | 'analytics_3' | 'analytics_4' | 'analytics_5';
 
 export interface ApprovalRegisterGroup {
+  has_children?: boolean;
   id: string;
   type: RegisterGroupingLevel;
   name: string;
@@ -195,6 +196,9 @@ export interface RegisterAnalyticsSummary {
 }
 
 export interface ApprovalRegisterResponse {
+  visible_request_statuses?: string[];
+  visible_unit_ids?: string[];
+  matched_item_ids?: string[] | null;
   view: 'cfo' | 'category' | 'article' | 'module' | 'request';
   group_by?: RegisterGroupingLevel[];
   groups: ApprovalRegisterGroup[];

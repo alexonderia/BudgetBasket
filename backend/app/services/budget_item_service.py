@@ -4,6 +4,8 @@ from fastapi import HTTPException
 
 from app.models import CfoPositionStatus, ItemStatus, RequestStatus
 from app.repositories.base import Repository
+from app.repositories.pagination import numbered_page
+from app.repositories.queries import find_rows
 from app.services.common import cfo_position_current_step_id, clean_request_item_name, get_required
 from app.services.permission_service import PermissionService
 from app.services.request_service import ANALYTICS_FIELDS, RequestService
@@ -47,7 +49,7 @@ class BudgetItemService:
 
     def _month_plans_by_item(self, item_ids: set[str] | None = None) -> dict[str, list[dict]]:
         plans: dict[str, dict[int, Decimal]] = {}
-        for row in self.repo.load_all("req_item_month_plans"):
+        for row in find_rows(self.repo, "req_item_month_plans", in_filters={"req_item_id": item_ids} if item_ids is not None else None):
             item_id = row["req_item_id"]
             if item_ids is None or item_id in item_ids:
                 plans.setdefault(item_id, {})[int(row["month"])] = self._decimal(row["sum_plan"])
@@ -135,20 +137,22 @@ class BudgetItemService:
     def catalog_collection(kind: str) -> str:
         return "dds_catalog" if kind == "dds" else "invests_catalog"
 
-    def list_items(self, user: dict, request_id: str, *, include_deleted: bool = True) -> list[dict]:
+    def list_items(self, user: dict, request_id: str, *, include_deleted: bool = True, page: int = 1, page_size: int | None = None) -> list[dict] | dict:
         request = get_required(self.repo, "requests", request_id)
         self.permissions.require_view_request(user, request)
-        items = [row for row in self.repo.load_all("req_items") if row["request_id"] == request_id]
+        paged = numbered_page(self.repo, "req_items", filters={"request_id": request_id}, excluded={"status": "deleted"} if not include_deleted else None, page=page, page_size=page_size) if page_size else None
+        items = paged["items"] if paged else find_rows(self.repo, "req_items", filters={"request_id": request_id})
         if not include_deleted:
             items = [row for row in items if row.get("status") != ItemStatus.deleted]
         plans = self._month_plans_by_item({row["id"] for row in items})
-        return [
+        result = [
             self._public_item(
                 row,
                 plans.get(row["id"], self._even_month_plans(row.get("sum_plan") or 0)),
             )
             for row in items
         ]
+        return {**paged, "items": result} if paged else result
 
     def _kind_for_request(self, request: dict) -> str:
         return "invest" if get_required(self.repo, "units", request["unit_id"]).get("uses_invest_projects") else "dds"
