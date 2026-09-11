@@ -42,8 +42,7 @@ CREATE TABLE requests (
     budget_year bigint NOT NULL CHECK (budget_year BETWEEN 2000 AND 2200),
     status text NOT NULL DEFAULT 'draft',
     created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT requests_status_chk CHECK (status IN ('draft', 'on_review', 'approved', 'rejected', 'cancelled')),
-    CONSTRAINT ux_requests_unit_budget_year UNIQUE (unit_id, budget_year)
+    CONSTRAINT requests_status_chk CHECK (status IN ('draft', 'on_review', 'approved', 'rejected', 'cancelled'))
 );
 CREATE TABLE cfo_positions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -185,6 +184,9 @@ CREATE INDEX idx_invests_catalog_unit_id ON invests_catalog(unit_id);
 CREATE INDEX idx_invests_catalog_active ON invests_catalog(is_active);
 CREATE INDEX idx_requests_unit_id ON requests(unit_id);
 CREATE INDEX idx_requests_status ON requests(status);
+CREATE UNIQUE INDEX ux_requests_active_unit_budget_year
+ON requests(unit_id, budget_year)
+WHERE status <> 'cancelled';
 CREATE INDEX idx_req_items_request_id ON req_items(request_id);
 CREATE INDEX idx_req_items_cfo_position_id ON req_items(cfo_position_id);
 CREATE INDEX idx_req_items_dds_id ON req_items(dds_id);

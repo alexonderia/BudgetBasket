@@ -85,9 +85,12 @@ function groupMetaParts(aggregates: RegisterAggregates, options?: { excludeActio
   const parts: string[] = [];
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const workflowReadyPositions = aggregates.workflow_ready_positions || 0;
+  const workflowRevisionPositions = aggregates.workflow_revision_positions || 0;
   const decisions = aggregates.cfo_review_actionable_requests
-    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
-  const actionable = decisions + submissionPositions + economistCompletionPositions;
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions - workflowRevisionPositions, 0);
+  const packagePositions = Math.max(workflowReadyPositions - economistCompletionPositions, 0);
+  const actionable = decisions + submissionPositions + economistCompletionPositions + packagePositions + workflowRevisionPositions;
 
   if (!options?.excludeActionable && decisions > 0) {
     parts.push(`${decisions} требуют решения`);
@@ -97,6 +100,12 @@ function groupMetaParts(aggregates: RegisterAggregates, options?: { excludeActio
   }
   if (!options?.excludeActionable && economistCompletionPositions > 0) {
     parts.push(`${economistCompletionPositions} готовы к передаче дальше`);
+  }
+  if (!options?.excludeActionable && packagePositions > 0) {
+    parts.push(`${packagePositions} готовы к пакетной отправке`);
+  }
+  if (!options?.excludeActionable && workflowRevisionPositions > 0) {
+    parts.push(`${workflowRevisionPositions} на доработку`);
   }
   if (aggregates.rejected_rows > 0) {
     parts.push(`${aggregates.rejected_rows} отклонено`);
@@ -115,7 +124,6 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
   const hint = status.hint;
   const footnote = lineStatusFootnote(item);
   const tooltipLines = lineStatusTooltipLines(item);
-  const needsDecision = rowNeedsUserDecision(item);
   const withContext = (presentation: StatusVisualPresentation): StatusVisualPresentation => {
     const resolvedFootnote = footnote || presentation.footnote;
     const withDecisionMarkers: StatusVisualPresentation = {
@@ -123,8 +131,8 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
       footnote: resolvedFootnote,
       tooltipLines: tooltipLines.length ? tooltipLines : presentation.tooltipLines,
       meta: resolvedFootnote || presentation.meta,
-      primaryIconOnly: presentation.primaryIconOnly ?? (needsDecision && status.label === 'Ожидает вашего решения'),
-      showActionIndicator: presentation.showActionIndicator ?? (needsDecision && status.label !== 'Ожидает вашего решения'),
+      primaryIconOnly: presentation.primaryIconOnly ?? false,
+      showActionIndicator: false,
     };
     return withDecisionMarkers;
   };
@@ -203,6 +211,12 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
         hint,
         primaryIconOnly: true,
       });
+    case 'На согласовании':
+      return withContext({
+        primary: { icon: AccountTreeOutlinedIcon, text: 'На согласовании', variant: 'info', hint },
+        meta: workflowMeta(item) || 'Ожидается решение другого участника маршрута',
+        hint,
+      });
     case 'Ожидает предыдущих этапов':
       return withContext({
         primary: { icon: AccountTreeOutlinedIcon, text: 'На согласовании', variant: 'info', hint },
@@ -227,11 +241,22 @@ export function rowStatusPresentation(status: RegistryStatusDisplay, item?: Appr
 export function groupStatusPresentation(aggregates: RegisterAggregates, status: RegistryStatusDisplay): StatusVisualPresentation {
   const submissionPositions = aggregates.submission_positions || 0;
   const economistCompletionPositions = aggregates.economist_completion_positions || 0;
+  const workflowReadyPositions = aggregates.workflow_ready_positions || 0;
+  const cfoRevisionRows = aggregates.cfo_revision_rows || 0;
   const decisions = aggregates.cfo_review_actionable_requests
-    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions, 0);
+    + Math.max(aggregates.actionable_positions - submissionPositions - economistCompletionPositions - workflowReadyPositions, 0);
+  const packagePositions = Math.max(workflowReadyPositions - economistCompletionPositions, 0);
   const hint = status.hint;
   const metaParts = groupMetaParts(aggregates, { excludeActionable: true });
   const meta = metaParts.length ? metaParts.join(' · ') : undefined;
+
+  if (cfoRevisionRows > 0) {
+    return {
+      primary: { icon: RestartAltOutlinedIcon, text: 'На доработке', variant: 'revision', hint },
+      meta: `${cfoRevisionRows} ${pluralRows(cfoRevisionRows)} возвращено экономистом ответственному ЦФО`,
+      hint,
+    };
+  }
 
   if (decisions > 0) {
     return {
@@ -242,6 +267,32 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
         hint,
       },
       meta,
+      hint,
+    };
+  }
+
+  if (economistCompletionPositions > 0) {
+    return {
+      primary: {
+        icon: AccountTreeOutlinedIcon,
+        text: economistCompletionPositions === 1 ? 'Согласуйте и передайте' : `Согласуйте и передайте · ${economistCompletionPositions}`,
+        variant: 'action',
+        hint,
+      },
+      meta: meta || 'Все строки рассмотрены экономистом',
+      hint,
+    };
+  }
+
+  if (packagePositions > 0) {
+    return {
+      primary: {
+        icon: AccountTreeOutlinedIcon,
+        text: packagePositions === 1 ? 'Согласуйте и передайте' : `Согласуйте и передайте · ${packagePositions}`,
+        variant: 'action',
+        hint,
+      },
+      meta: meta || 'Все решения по строкам вынесены; позиция готова к пакетной отправке',
       hint,
     };
   }
@@ -264,19 +315,6 @@ export function groupStatusPresentation(aggregates: RegisterAggregates, status: 
         hint,
       },
       meta: meta || 'Строки уже рассмотрены; редактирование не требуется',
-      hint,
-    };
-  }
-
-  if (economistCompletionPositions > 0) {
-    return {
-      primary: {
-        icon: AccountTreeOutlinedIcon,
-        text: economistCompletionPositions === 1 ? 'Согласуйте и передайте' : `Согласуйте и передайте · ${economistCompletionPositions}`,
-        variant: 'action',
-        hint,
-      },
-      meta: meta || 'Все строки рассмотрены экономистом',
       hint,
     };
   }
@@ -471,31 +509,73 @@ function StatusTooltip({ presentation }: { presentation: StatusVisualPresentatio
   );
 }
 
-export function StatusVisualCell({ presentation }: { presentation: StatusVisualPresentation }) {
+export function StatusVisualCell({
+  presentation,
+  disableTooltip = false,
+  primaryAction,
+}: {
+  presentation: StatusVisualPresentation;
+  disableTooltip?: boolean;
+  primaryAction?: { onClick: () => void; ariaLabel: string; disabled?: boolean };
+}) {
   const showActionIndicator = presentation.showActionIndicator && !presentation.primaryIconOnly;
-
-  return (
-    <Tooltip title={<StatusTooltip presentation={presentation} />} arrow placement="top">
-      <Box sx={{ minWidth: 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 0.25, py: 0.15 }}>
-        <Box sx={{ height: BADGE_HEIGHT, display: 'flex', alignItems: 'center', gap: 0.35, minWidth: 0 }}>
-          <Box sx={{ minWidth: 0, flex: presentation.primaryIconOnly ? '0 0 auto' : 1, height: BADGE_HEIGHT, display: 'flex', alignItems: 'center' }}>
-            <StatusVisualBadge spec={presentation.primary} iconOnly={presentation.primaryIconOnly} />
-          </Box>
-          {showActionIndicator ? <ActionIndicatorIcon /> : null}
-        </Box>
-        {presentation.footnote ? (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            noWrap
-            sx={{ display: 'block', fontSize: 10, lineHeight: 1.2, maxWidth: '100%' }}
-          >
-            {presentation.footnote}
-          </Typography>
-        ) : null}
-      </Box>
-    </Tooltip>
+  const hasTooltip = Boolean(
+    presentation.hint
+    || presentation.meta
+    || presentation.tooltipLines?.some(Boolean),
   );
+
+  const badge = <StatusVisualBadge spec={presentation.primary} iconOnly={presentation.primaryIconOnly} />;
+  const interactiveBadge = primaryAction ? (
+    <Box
+      component="button"
+      type="button"
+      aria-label={primaryAction.ariaLabel}
+      title={primaryAction.ariaLabel}
+      disabled={primaryAction.disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        primaryAction.onClick();
+      }}
+      sx={{
+        display: 'inline-flex',
+        p: 0,
+        m: 0,
+        border: 0,
+        borderRadius: '4px',
+        bgcolor: 'transparent',
+        cursor: primaryAction.disabled ? 'default' : 'pointer',
+        '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 1 },
+      }}
+    >
+      {badge}
+    </Box>
+  ) : badge;
+
+  const content = (
+    <Box sx={{ minWidth: 0, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 0.25, py: 0.15 }}>
+      <Box sx={{ height: BADGE_HEIGHT, display: 'flex', alignItems: 'center', gap: 0.35, minWidth: 0 }}>
+        <Box sx={{ minWidth: 0, flex: presentation.primaryIconOnly ? '0 0 auto' : 1, height: BADGE_HEIGHT, display: 'flex', alignItems: 'center' }}>
+          {interactiveBadge}
+        </Box>
+        {showActionIndicator ? <ActionIndicatorIcon /> : null}
+      </Box>
+      {presentation.footnote ? (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          noWrap
+          sx={{ display: 'block', fontSize: 10, lineHeight: 1.2, maxWidth: '100%' }}
+        >
+          {presentation.footnote}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+
+  return hasTooltip && !disableTooltip ? (
+    <Tooltip title={<StatusTooltip presentation={presentation} />} arrow placement="top">{content}</Tooltip>
+  ) : content;
 }
 
 export function rowStatusVisual(status: RegistryStatusDisplay, item?: ApprovalRegisterRow): StatusVisualSpec {

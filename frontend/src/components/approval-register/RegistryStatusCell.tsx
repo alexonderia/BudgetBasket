@@ -13,19 +13,22 @@ import {
 } from './registryStatusVisual';
 import { WorkflowStepCell } from './registryWorkflowStepVisual';
 
-export type RegistryRowDecision = 'approved' | 'approved_with_changes' | 'rejected';
+export type RegistryRowDecision = 'approved' | 'approved_with_changes' | 'rejected' | 'on_revision';
 type RegistryStatusAction = '' | RegistryRowDecision;
 
 const STATUS_EDIT_OPTIONS: Array<{ value: RegistryStatusAction; label: string }> = [
   { value: '', label: 'Выберите действие' },
   { value: 'approved', label: 'Согласовать' },
   { value: 'rejected', label: 'Отклонить' },
+  { value: 'on_revision', label: 'На доработку' },
 ];
 
 function statusActionHint(item: ApprovalRegisterRow, active: boolean) {
   if (item.fixed) return 'Действия недоступны';
   if (item.is_revision_actionable) return 'Действие: исправить и повторно отправить';
+  if (item.is_module_revision) return null;
   if (item.is_position_submission_actionable) return 'Действие: передать экономисту';
+  if (item.is_decision_editable) return 'Действие: изменить решение до передачи строки на следующий этап';
   if (active) return 'Действие: согласовать или отклонить';
   return null;
 }
@@ -53,8 +56,27 @@ function StatusWithLifecycle({
   );
 }
 
-export function RegistryStatusCell({ status, item }: { status: RegistryStatusDisplay; item?: ApprovalRegisterRow }) {
-  return <StatusVisualCell presentation={rowStatusPresentation(status, item)} />;
+export function RegistryStatusCell({
+  status,
+  item,
+  onPrimaryAction,
+  primaryActionLabel,
+  primaryActionDisabled,
+}: {
+  status: RegistryStatusDisplay;
+  item?: ApprovalRegisterRow;
+  onPrimaryAction?: () => void;
+  primaryActionLabel?: string;
+  primaryActionDisabled?: boolean;
+}) {
+  return (
+    <StatusVisualCell
+      presentation={rowStatusPresentation(status, item)}
+      primaryAction={onPrimaryAction && primaryActionLabel
+        ? { onClick: onPrimaryAction, ariaLabel: primaryActionLabel, disabled: primaryActionDisabled }
+        : undefined}
+    />
+  );
 }
 
 export function RegistryGroupStatusCell({ status, aggregates }: { status: RegistryStatusDisplay; aggregates: RegisterAggregates }) {
@@ -101,10 +123,12 @@ export function EditableRegistryStatusCell({
       <InlineEditSelectCell
         value=""
         editable
-        options={STATUS_EDIT_OPTIONS}
-        display={<StatusVisualCell presentation={presentation} />}
+        options={item.is_final_approval_actionable || item.decision_editable_stage === 'approver'
+          ? STATUS_EDIT_OPTIONS.filter((option) => option.value !== 'rejected' && option.value !== 'on_revision')
+          : STATUS_EDIT_OPTIONS}
+        display={<StatusVisualCell presentation={presentation} disableTooltip />}
         ariaLabel="Статус и действие по строке"
-        title="Выберите доступное действие по строке"
+        tooltip="Выберите доступное действие по строке"
         onCommit={(decision) => {
           if (!decision) return;
           if (decision === 'rejected') {

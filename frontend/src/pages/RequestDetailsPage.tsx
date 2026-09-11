@@ -55,12 +55,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
+import { usePagedChat } from '../api/usePagedChat';
 import { chatDayKey, chatDayLabel } from '../utils/chat';
 import { chatWebSocketUrl } from '../api/websocket';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { RequestHistoryDrawer } from '../components/request-history/RequestHistoryDrawer';
 import { FilePreviewDialog } from '../components/FilePreviewDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { ChatMessageImages } from '../components/ChatMessageImages';
+import { ChatMessageText } from '../components/ChatMessageText';
 import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { RequestStatusBadge } from '../components/StatusBadge';
@@ -161,6 +164,13 @@ const ITEM_TABLE_COLUMN_MIN_WIDTHS: Record<ItemTableColumn, number> = {
   files: 72,
   actions: 72,
   ...ANALYTICS_COLUMN_WIDTHS,
+};
+
+type FilteredRequestSummary = {
+  active: boolean;
+  requested: number;
+  approved: number;
+  count: number;
 };
 
 const PENDING_TABLE_CHANGE_SX = {
@@ -657,16 +667,18 @@ function ItemFilesCell({
           </Tooltip>
           {editing && (
             <Tooltip title="Удалить файл при сохранении">
-              <IconButton
-                size="small"
-                color="default"
-                onClick={() => onStageDelete(file)}
-                disabled={disabled}
-                aria-label="Удалить файл"
-                sx={{ color: 'text.secondary', flexShrink: 0 }}
-              >
-              <CloseIcon fontSize="small" />
-              </IconButton>
+              <span>
+                <IconButton
+                  size="small"
+                  color="default"
+                  onClick={() => onStageDelete(file)}
+                  disabled={disabled}
+                  aria-label="Удалить файл"
+                  sx={{ color: 'text.secondary', flexShrink: 0 }}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              </span>
             </Tooltip>
           )}
         </Stack>
@@ -709,19 +721,21 @@ function FileAttachAction({
 }) {
   return (
     <Tooltip title="Прикрепить файл">
-      <IconButton component="label" size="small" color="primary" disabled={disabled} aria-label="Прикрепить файл">
-        <AttachFileIcon fontSize="small" />
-        <input
-          hidden
-          type="file"
-          accept={UPLOAD_ACCEPT}
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = '';
-            if (file) onUpload(file);
-          }}
-        />
-      </IconButton>
+      <span>
+        <IconButton component="label" size="small" color="primary" disabled={disabled} aria-label="Прикрепить файл">
+          <AttachFileIcon fontSize="small" />
+          <input
+            hidden
+            type="file"
+            accept={UPLOAD_ACCEPT}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (file) onUpload(file);
+            }}
+          />
+        </IconButton>
+      </span>
     </Tooltip>
   );
 }
@@ -910,20 +924,22 @@ function AddItemForm({
                   }}
                 />
                 <Tooltip title={lockedMonths.has(index + 1) ? 'Месяц зафиксирован: не менять при распределении' : 'Зафиксировать месяц при распределении'}>
-                  <IconButton
-                    size="small"
-                    aria-label={lockedMonths.has(index + 1) ? `Снять фиксацию: ${month}` : `Зафиксировать: ${month}`}
-                    disabled={disabled}
-                    onClick={() => setLockedMonths((current) => {
-                      const next = new Set(current);
-                      if (next.has(index + 1)) next.delete(index + 1);
-                      else next.add(index + 1);
-                      return next;
-                    })}
-                    sx={{ mt: 0.5 }}
-                  >
-                    {lockedMonths.has(index + 1) ? <LockOutlinedIcon fontSize="small" color="primary" /> : <LockOpenOutlinedIcon fontSize="small" />}
-                  </IconButton>
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label={lockedMonths.has(index + 1) ? `Снять фиксацию: ${month}` : `Зафиксировать: ${month}`}
+                      disabled={disabled}
+                      onClick={() => setLockedMonths((current) => {
+                        const next = new Set(current);
+                        if (next.has(index + 1)) next.delete(index + 1);
+                        else next.add(index + 1);
+                        return next;
+                      })}
+                      sx={{ mt: 0.5 }}
+                    >
+                      {lockedMonths.has(index + 1) ? <LockOutlinedIcon fontSize="small" color="primary" /> : <LockOpenOutlinedIcon fontSize="small" />}
+                    </IconButton>
+                  </span>
                 </Tooltip>
               </Box>
             ))}
@@ -1136,6 +1152,7 @@ function ItemsTable({
   cfoRevisionItemIds,
   focusArticleId,
   focusCategoryId,
+  onFilteredSummaryChange,
 }: {
   title: string;
   kind: 'dds' | 'invest';
@@ -1149,6 +1166,7 @@ function ItemsTable({
   cfoRevisionItemIds: Set<string>;
   focusArticleId?: string | null;
   focusCategoryId?: string | null;
+  onFilteredSummaryChange: (summary: FilteredRequestSummary) => void;
 }) {
   const queryClient = useQueryClient();
   const toast = useAppToast();
@@ -1177,7 +1195,7 @@ function ItemsTable({
     && !item.frozen
     && !item.fixed
     && request.status === 'on_review'
-    && request.available_actions?.includes('complete_cfo_review') === true
+    && request?.available_actions?.includes('complete_cfo_review') === true
     && !!request.cfo_unit_id
     && (user.unit_ids || []).includes(request.cfo_unit_id)
     && !revisionItemIds.has(item.id)
@@ -1190,7 +1208,10 @@ function ItemsTable({
   const disabledForEmployee = !canEmployeeCreateItems;
   // Downstream decisions are made from the CFO-position workspace.
   const canEconomist = false;
-  const canDeleteItem = user.role === 'employee' && request.status === 'draft' && !request.frozen;
+  const canDeleteItem = (item: BudgetItem) => user.role === 'employee'
+    && !request.frozen
+    && !request.fixed
+    && (request.status === 'draft' || revisionItemIds.has(item.id));
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['request-details', request.id] });
   const updateEconomistMonthPlans = useCallback((itemId: string, month_plans: BudgetItem['month_plans']) => {
     const total = monthPlansTotal(month_plans.map((plan) => String(plan.sum_plan)));
@@ -1259,6 +1280,24 @@ function ItemsTable({
     visibility: itemVisibility,
     visibleColumns: visibleItemColumns,
   } = useTableColumnControls({ rows: items, columns: itemTableDefinitions });
+  const filteredTotals = useMemo(() => groupFinancialTotals(visibleItems), [visibleItems]);
+  const hasAnalyticsFilter = ANALYTICS_FIELD_KEYS.some(
+    (key) => selectedItemFilterValues[key] !== null,
+  );
+  useEffect(() => {
+    onFilteredSummaryChange({
+      active: hasAnalyticsFilter,
+      requested: filteredTotals.requested,
+      approved: filteredTotals.approved,
+      count: filteredTotals.total,
+    });
+  }, [
+    filteredTotals.approved,
+    filteredTotals.requested,
+    filteredTotals.total,
+    hasAnalyticsFilter,
+    onFilteredSummaryChange,
+  ]);
   const groupedVisibleItems = useMemo<RequestItemArticleGroup[]>(() => {
     const articles = new Map<string, { name: string; items: BudgetItem[]; categories: Map<string, RequestItemCategoryGroup> }>();
     visibleItems.forEach((item) => {
@@ -1430,16 +1469,18 @@ function ItemsTable({
                   value={local.name ?? item.name}
                   editable
                   ariaLabel="Название строки"
-                  title="Нажмите, чтобы изменить название строки"
+                  tooltip="Нажмите, чтобы изменить название строки"
                   onCommit={(name) => setDrafts((current) => ({
                     ...current,
                     [item.id]: { ...current[item.id], name },
                   }))}
                 />
               ) : (
-                <Typography variant="body2" title={item.name || '—'} sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {item.name || '—'}
-                </Typography>
+                <Tooltip title={item.name || '—'}>
+                  <Typography variant="body2" sx={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {item.name || '—'}
+                  </Typography>
+                </Tooltip>
               )}
               {inactiveCatalogSelection && <Chip label="НСИ неактивна" size="small" color="warning" variant="outlined" sx={{ mt: 0.25, height: 20, fontSize: 10 }} />}
             </Box>
@@ -1473,7 +1514,7 @@ function ItemsTable({
                 editable
                 multiline
                 ariaLabel="Обоснование"
-                title="Нажмите, чтобы изменить обоснование"
+                tooltip="Нажмите, чтобы изменить обоснование"
                 onCommit={(justification) => setDrafts((current) => ({
                   ...current,
                   [item.id]: { ...current[item.id], justification },
@@ -1496,7 +1537,7 @@ function ItemsTable({
                 }}
                 validate={(amount) => amount >= 0}
                 ariaLabel="Запрошенная сумма"
-                title="Нажмите, чтобы изменить запрошенную сумму"
+                tooltip="Нажмите, чтобы изменить запрошенную сумму"
                 onCommit={(sum_plan) => {
                   const month_plans = evenlyDistributeMonthPlans(monthAmountToCents(String(sum_plan)));
                   setDrafts((current) => ({
@@ -1559,7 +1600,7 @@ function ItemsTable({
                 }}
                 validate={(amount) => amount >= 0}
                 ariaLabel="Фактическая сумма"
-                title="Нажмите, чтобы изменить фактическую сумму"
+                tooltip="Нажмите, чтобы изменить фактическую сумму"
                 onDraftChange={(sum_fact) => setDrafts((current) => ({
                   ...current,
                   [item.id]: { ...current[item.id], sum_fact },
@@ -1631,7 +1672,7 @@ function ItemsTable({
                 value={value}
                 editable
                 ariaLabel={ANALYTICS_FIELD_LABELS[columnId]}
-                title={`Нажмите, чтобы изменить «${ANALYTICS_FIELD_LABELS[columnId]}»`}
+                tooltip={`Нажмите, чтобы изменить «${ANALYTICS_FIELD_LABELS[columnId]}»`}
                 onCommit={(analyticsValue) => setDrafts((current) => ({
                   ...current,
                   [item.id]: { ...current[item.id], [columnId]: analyticsValue },
@@ -1683,30 +1724,49 @@ function ItemsTable({
                     onUpload={(file) => stageFile(item.id, file)}
                   />
                   <Tooltip title="Перераспределить в другую статью или категорию">
-                    <IconButton
-                      size="small"
-                      color="primary"
-                      onClick={() => setRedistributionTarget(item)}
-                      disabled={saveTableChanges.isPending}
-                      aria-label="Перераспределить строку"
-                    >
-                      <SwapHorizIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                  {canDeleteItem && (
-                    <Tooltip title="Удалить строку">
+                    <span>
                       <IconButton
                         size="small"
-                        color="error"
-                        onClick={() => setDeleteTarget(item)}
+                        color="primary"
+                        onClick={() => setRedistributionTarget(item)}
                         disabled={saveTableChanges.isPending}
-                        aria-label="Удалить строку"
+                        aria-label="Перераспределить строку"
                       >
-                        <DeleteOutlineIcon fontSize="small" />
+                        <SwapHorizIcon fontSize="small" />
                       </IconButton>
+                    </span>
+                  </Tooltip>
+                  {canDeleteItem(item) && (
+                    <Tooltip title="Удалить строку">
+                      <span>
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => setDeleteTarget(item)}
+                          disabled={saveTableChanges.isPending}
+                          aria-label="Удалить строку"
+                        >
+                          <DeleteOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </span>
                     </Tooltip>
                   )}
                 </>
+              )}
+              {canDeleteItem(item) && !canEmployeeCreateItems && !isDeleted && (
+                <Tooltip title="Отменить строку">
+                  <span>
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={() => setDeleteTarget(item)}
+                      disabled={saveTableChanges.isPending}
+                      aria-label="Отменить строку"
+                    >
+                      <CancelOutlinedIcon fontSize="small" />
+                    </IconButton>
+                  </span>
+                </Tooltip>
               )}
             </Stack>
           </TableCell>
@@ -1791,7 +1851,7 @@ function ItemsTable({
     mutationFn: (itemId: string) => api.delete(`/items/${itemId}`),
     onSuccess: () => {
       refresh();
-      toast('Строка удалена', 'success');
+      toast('Строка исключена из заявки', 'success');
       setDeleteTarget(null);
     },
     onError: (error) => {
@@ -1938,9 +1998,11 @@ function ItemsTable({
                   {expanded ? <ExpandMoreIcon sx={{ fontSize: 18 }} /> : <ChevronRightIcon sx={{ fontSize: 18 }} />}
                 </IconButton>
                 <Box minWidth={0}>
-                  <Typography variant="body2" fontWeight={level === 'article' ? 700 : 600} noWrap title={label} sx={{ fontSize: 13, lineHeight: 1.25 }}>
-                    {level === 'article' ? 'Статья' : 'Категория'}: {label}
-                  </Typography>
+                  <Tooltip title={label || '—'}>
+                    <Typography variant="body2" fontWeight={level === 'article' ? 700 : 600} noWrap sx={{ fontSize: 13, lineHeight: 1.25 }}>
+                      {level === 'article' ? 'Статья' : 'Категория'}: {label}
+                    </Typography>
+                  </Tooltip>
                   <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, lineHeight: 1.2 }}>
                     {totals.total} {totals.total === 1 ? 'строка' : totals.total < 5 ? 'строки' : 'строк'}
                   </Typography>
@@ -2255,7 +2317,7 @@ function ItemsTable({
                                     align="right"
                                     displayValue={displayAmount}
                                     ariaLabel={`План ${month}`}
-                                    title={`Нажмите, чтобы изменить план на ${month}`}
+                                    tooltip={`Нажмите, чтобы изменить план на ${month}`}
                                     onCommit={(next) => {
                                       const nextPlans = completeMonthPlans(visibleMonthPlans).map((entry) => (
                                         entry.month === index + 1
@@ -2415,9 +2477,9 @@ function ItemsTable({
 
       <ConfirmDialog
         open={!!deleteTarget}
-        title="Удалить строку?"
-        description={`Строка «${deleteTarget ? catalog.find((entry) => entry.id === (kind === 'dds' ? deleteTarget.dds_id : deleteTarget.invest_id))?.name || '' : ''}» будет удалена вместе со связями файлов.`}
-        confirmLabel="Удалить"
+        title={deleteTarget && revisionItemIds.has(deleteTarget.id) ? 'Отменить строку?' : 'Удалить строку?'}
+        description={`Строка «${deleteTarget ? catalog.find((entry) => entry.id === (kind === 'dds' ? deleteTarget.dds_id : deleteTarget.invest_id))?.name || '' : ''}» ${deleteTarget && revisionItemIds.has(deleteTarget.id) ? 'будет отменена и исключена из заявки' : 'будет удалена вместе со связями файлов'}.`}
+        confirmLabel={deleteTarget && revisionItemIds.has(deleteTarget.id) ? 'Отменить строку' : 'Удалить'}
         confirmColor="error"
         pending={deleteItem.isPending}
         onClose={() => setDeleteTarget(null)}
@@ -2435,13 +2497,26 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const toast = useAppToast();
   const detailsKey = ['request-details', id];
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [cancelOpen, setCancelOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyTab, setHistoryTab] = useState<'content' | 'approval'>('content');
   const [confirmAction, setConfirmAction] = useState<'approve-all-items' | null>(null);
   const [returnDialogOpen, setReturnDialogOpen] = useState(false);
   const [returnComment, setReturnComment] = useState('');
+  const [expenseFilteredSummary, setExpenseFilteredSummary] = useState<FilteredRequestSummary>({ active: false, requested: 0, approved: 0, count: 0 });
+  const [incomeFilteredSummary, setIncomeFilteredSummary] = useState<FilteredRequestSummary>({ active: false, requested: 0, approved: 0, count: 0 });
+  const updateExpenseFilteredSummary = useCallback((summary: FilteredRequestSummary) => setExpenseFilteredSummary((current) => (
+    current.active === summary.active
+    && current.requested === summary.requested
+    && current.approved === summary.approved
+    && current.count === summary.count ? current : summary
+  )), []);
+  const updateIncomeFilteredSummary = useCallback((summary: FilteredRequestSummary) => setIncomeFilteredSummary((current) => (
+    current.active === summary.active
+    && current.requested === summary.requested
+    && current.approved === summary.approved
+    && current.count === summary.count ? current : summary
+  )), []);
   const focusArticleId = searchParams.get('article_id');
   const focusCategoryId = searchParams.get('category_id');
 
@@ -2479,11 +2554,10 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     queryFn: async () => (await api.get<CounterpartyContact | null>(`/requests/${id}/counterparty-contact`)).data,
     enabled: !!id && (user.role === 'economist' || user.role === 'employee'),
   });
-  const { data: chat } = useQuery({
+  const { data: chat, hasOlder: hasOlderChatMessages, loadOlder: loadOlderChatMessages, loadingOlder: loadingOlderChatMessages, olderError: olderChatError } = usePagedChat<RequestChat>({
     queryKey: [...detailsKey, 'chat'],
-    queryFn: async () => (await api.get(`/requests/${id}/chat`)).data as RequestChat,
-    enabled: !!id,
-    retry: false,
+    url: `/requests/${id}/chat`,
+    enabled: !!id && (chatOpen || searchParams.get('chat') === '1'),
   });
   const [chatText, setChatText] = useState('');
   const [chatImages, setChatImages] = useState<File[]>([]);
@@ -2492,7 +2566,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   useEffect(() => {
     const container = chatMessagesRef.current;
     if (container) container.scrollTop = container.scrollHeight;
-  }, [chatMessages.length]);
+  }, [chatMessages.at(-1)?.id]);
   const markChatRead = useMutation({
     mutationFn: (messageId: string) => api.patch(`/chats/${chat?.id}/read`, { last_read_message_id: messageId }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [...detailsKey, 'chat'] }),
@@ -2630,14 +2704,32 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       queryClient.invalidateQueries({ queryKey: ['step-requests'] });
       queryClient.invalidateQueries({ queryKey: ['step-dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['requests'] });
-      if (action === 'cancel') {
-        setCancelOpen(false);
-        toast('Заявка отменена', 'success');
-      } else if (action === 'restore') {
+      if (action === 'restore') {
         toast('Заявка восстановлена в черновик', 'success');
       }
     },
     onError: (error) => toast(getErrorMessage(error, 'Не удалось изменить статус заявки'), 'error'),
+  });
+  const sendCfoRevision = useMutation({
+    mutationFn: () => api.post<{ revision_item_ids?: string[] }>(`/requests/${id}/complete-cfo-review`),
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: detailsKey });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'items'] });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'logs'] });
+      queryClient.invalidateQueries({ queryKey: ['request-logs', id] });
+      queryClient.invalidateQueries({ queryKey: [...detailsKey, 'approval-route'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register'] });
+      queryClient.invalidateQueries({ queryKey: ['approval-register-rows'] });
+      queryClient.invalidateQueries({ queryKey: ['cfo-incoming-requests'] });
+      const count = response.data.revision_item_ids?.length || 0;
+      toast(
+        count
+          ? `На доработку ответственному модулю передано строк: ${count}.`
+          : 'Проверка ЦФО завершена. Данные переданы на следующий этап.',
+        'success',
+      );
+    },
+    onError: (error) => toast(getErrorMessage(error, 'Не удалось передать пакет дальше'), 'error'),
   });
   const approveRequestAtStep = useMutation({
     mutationFn: () => api.post(`/steps/${approvalAction?.step.id}/requests/${id}/approve`),
@@ -2766,6 +2858,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       .map((item) => item.id)),
     [approvalRegisterRows],
   );
+  const canSendCfoRevision = user.role === 'employee'
+    && request?.status === 'on_review'
+    && request.available_actions?.includes('complete_cfo_review') === true
+    && (approvalRegisterRows?.items || []).some((item) => item.is_cfo_revision_pending && item.is_cfo_review_item_allowed !== false)
+    && (approvalRegisterRows?.items || []).every((item) => item.is_cfo_review_completable);
   const requestDeletePreviewDefinitions = useMemo<TableColumnDefinition<RequestDeletePreviewRow, RequestDeletePreviewColumn>[]>(() => [
     {
       id: 'kind',
@@ -2842,10 +2939,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     && !request.frozen
     && !itemsPending
     && allItems.length > 0;
-  const canCancel = user.role === 'employee'
-    && request?.status === 'draft'
-    && request.available_actions?.includes('cancel')
-    && !request.frozen;
   const canRestore = user.role === 'employee'
     && request?.status === 'cancelled'
     && request.available_actions?.includes('restore');
@@ -2853,7 +2946,11 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const canApproveAllItems = false;
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
   const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
-  const canDelete = !!request && request.status === 'draft' && user.role === 'employee' && !request.frozen;
+  const canDelete = !!request
+    && request.status === 'draft'
+    && user.role === 'employee'
+    && request.available_actions?.includes('delete')
+    && !request.frozen;
   const canApproveRequest = !!request && !approvalActionPending && !!approvalAction?.can_approve;
   const canForwardApprovalPackage = !!request && !approvalActionPending && !!approvalAction?.can_forward;
   const canReturnForRevision = !!request
@@ -2875,18 +2972,20 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   };
 
   if (!id || requestPending || !request) {
-    return <Typography>Загрузка заявки...</Typography>;
+    return <PageSkeleton variant="details" label="Загрузка заявки" />;
   }
 
   // Keep summary visible while a background refetch runs, but avoid mixing ids.
   if (request.id !== id) {
-    return <Typography>Загрузка заявки...</Typography>;
+    return <PageSkeleton variant="details" label="Загрузка заявки" />;
   }
 
   const activeRouteStep = resolvedApprovalRoute.length
     ? resolvedApprovalRoute[approvalRouteActiveIndex(resolvedApprovalRoute)]?.step
     : null;
-  const requestRequirement = request.status === 'draft' && user.role !== 'employee'
+  const requestRequirement = canSendCfoRevision
+    ? 'Все строки текущего цикла проверены. Нажмите «Отправить на доработку», чтобы передать выбранные строки ответственному за модуль.'
+    : request.status === 'draft' && user.role !== 'employee'
     ? 'Заявка находится в черновике сотрудника и ещё не отправлена на проверку.'
     : request.available_actions?.includes('edit_revision') && user.role !== 'employee'
       ? 'Заявка возвращена на доработку. Ожидаются исправления и повторная отправка сотрудником.'
@@ -2904,8 +3003,18 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       request.available_actions?.includes('submit')
       || request.available_actions?.includes('edit_revision')
     ))
+    || canSendCfoRevision
     || (activeRouteOwner?.id && activeRouteOwner.id === user.id && ['on_approval', 'on_revision'].includes(activeRouteStep?.request_status || activeRouteStep?.status || '')),
   );
+  const filteredRequestSummary = {
+    active: expenseFilteredSummary.active || incomeFilteredSummary.active,
+    requested: (expenseFilteredSummary.active ? expenseFilteredSummary.requested : 0)
+      + (incomeFilteredSummary.active ? incomeFilteredSummary.requested : 0),
+    approved: (expenseFilteredSummary.active ? expenseFilteredSummary.approved : 0)
+      + (incomeFilteredSummary.active ? incomeFilteredSummary.approved : 0),
+    count: (expenseFilteredSummary.active ? expenseFilteredSummary.count : 0)
+      + (incomeFilteredSummary.active ? incomeFilteredSummary.count : 0),
+  };
 
   return (
     <Stack spacing={3}>
@@ -2930,17 +3039,6 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                     {canApproveAllItems && (
                       <Button startIcon={<DoneAllIcon />} variant="contained" onClick={() => setConfirmAction('approve-all-items')}>
                         Зафиксировать все строки
-                      </Button>
-                    )}
-                    {canCancel && (
-                      <Button
-                        startIcon={<CancelOutlinedIcon />}
-                        variant="outlined"
-                        color="error"
-                        onClick={() => setCancelOpen(true)}
-                        disabled={lifecycle.isPending}
-                      >
-                        Отменить заявку
                       </Button>
                     )}
                     {canRestore && (
@@ -2968,12 +3066,23 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                           },
                         }}
                       >
-                        Удалить заявку
+                        Удалить черновик
                       </Button>
                     )}
                     {canSubmit && (
                       <Button startIcon={<SendIcon />} variant="contained" onClick={() => lifecycle.mutate('submit')}>
                         Отправить заявку
+                      </Button>
+                    )}
+                    {canSendCfoRevision && (
+                      <Button
+                        startIcon={<SendIcon />}
+                        variant="contained"
+                        color="warning"
+                        onClick={() => sendCfoRevision.mutate()}
+                        disabled={sendCfoRevision.isPending}
+                      >
+                        {sendCfoRevision.isPending ? 'Передаём…' : 'Отправить на доработку'}
                       </Button>
                     )}
                     {canFinalize && (
@@ -3058,17 +3167,23 @@ export default function RequestDetailsPage({ user }: { user: User }) {
               </Box>
               <Box className="request-summary-metrics">
                 <Box className="request-summary-metric request-summary-metric-primary">
-                  <Typography variant="caption" color="text.secondary">План</Typography>
-                  <Typography variant="h6">{money(request.summary?.planned_sum)}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {filteredRequestSummary.active ? 'По выбранным строкам' : 'Сумма заявки'}
+                  </Typography>
+                  <Typography variant="h6">{money(filteredRequestSummary.active ? filteredRequestSummary.requested : request.summary?.planned_sum)}</Typography>
                 </Box>
                 <Box className="request-summary-metric request-summary-metric-approved">
-                  <Typography variant="caption" color="text.secondary">Утверждено</Typography>
-                  <Typography variant="h6">{money(request.summary?.approved_sum)}</Typography>
+                  <Typography variant="caption" color="text.secondary">{filteredRequestSummary.active ? 'Утверждено по выбранным' : 'Утверждено'}</Typography>
+                  <Typography variant="h6">{money(filteredRequestSummary.active ? filteredRequestSummary.approved : request.summary?.approved_sum)}</Typography>
                 </Box>
                 <Box className="request-summary-metric">
-                  <Typography variant="caption" color="text.secondary">Строк</Typography>
-                  <Typography variant="h6">{request.summary?.items_count || 0}</Typography>
+                  <Typography variant="caption" color="text.secondary">{filteredRequestSummary.active ? 'Выбрано строк' : 'Строк'}</Typography>
+                  <Typography variant="h6">{filteredRequestSummary.active ? filteredRequestSummary.count : request.summary?.items_count || 0}</Typography>
                 </Box>
+                {filteredRequestSummary.active && <Box className="request-summary-metric">
+                  <Typography variant="caption" color="text.secondary">Всего в заявке</Typography>
+                  <Typography variant="h6">{money(request.summary?.planned_sum)}</Typography>
+                </Box>}
                 <Box className="request-summary-metric">
                   <Typography variant="caption" color="text.secondary">Принято</Typography>
                   <Typography variant="h6" color="success.main">{request.summary?.accepted_count || 0}</Typography>
@@ -3162,6 +3277,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           </Stack>
 
           <Box ref={chatMessagesRef} className="request-chat-messages" aria-live="polite">
+            {hasOlderChatMessages && <Button size="small" disabled={loadingOlderChatMessages} onClick={() => void loadOlderChatMessages(chatMessagesRef.current)}>{olderChatError ? 'Повторить загрузку сообщений' : 'Предыдущие сообщения'}</Button>}
             {!chatMessages.length && (
               <Box className="request-chat-empty">
                 <Avatar className="request-chat-empty-avatar">✦</Avatar>
@@ -3183,7 +3299,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                     {!isOwn && !isSystem && <Typography className="request-chat-sender" variant="caption">{chatSenderName(message.sender)}</Typography>}
                     {isSystem && <Typography className="request-chat-system-label" variant="caption">Системное сообщение</Typography>}
                     <ChatMessageImages files={message.files || []} />
-                    <Typography className="request-chat-text">{message.text}</Typography>
+                    <ChatMessageText text={message.text} />
                     <Typography className="request-chat-time" variant="caption">{chatTime(message.created_at)}</Typography>
                   </Box>
                   </Box>
@@ -3279,14 +3395,14 @@ export default function RequestDetailsPage({ user }: { user: User }) {
           {itemsPending ? (
             <Typography color="text.secondary">Загрузка строк заявки…</Typography>
           ) : (
-            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} cfoRevisionItemIds={cfoRevisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
+            <ItemsTable title="Резервирование бюджета" kind={activeKind} isIncome={false} request={request} user={user} items={expenseItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} cfoRevisionItemIds={cfoRevisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} onFilteredSummaryChange={updateExpenseFilteredSummary} />
           )}
         </Paper>
         <Paper className={`surface-pad ${request.frozen ? 'budget-frozen-surface' : ''}`} elevation={0}>
           {itemsPending ? (
             <Typography color="text.secondary">Загрузка строк заявки…</Typography>
           ) : (
-            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} cfoRevisionItemIds={cfoRevisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} />
+            <ItemsTable title="Доходы объединения" kind={activeKind} isIncome request={request} user={user} items={incomeItems} catalog={activeCatalog} actionableItemIds={actionableRequestItemIds} revisionItemIds={revisionRequestItemIds} cfoRevisionItemIds={cfoRevisionRequestItemIds} focusArticleId={focusArticleId} focusCategoryId={focusCategoryId} onFilteredSummaryChange={updateIncomeFilteredSummary} />
           )}
         </Paper>
       </Stack>
@@ -3305,19 +3421,8 @@ export default function RequestDetailsPage({ user }: { user: User }) {
       />
 
       <ConfirmDialog
-        open={cancelOpen}
-        title="Отменить заявку?"
-        description="Заявка будет переведена в статус «Отменена». Её можно будет восстановить, только пока для этого модуля не создана другая активная заявка текущего года."
-        confirmLabel="Отменить заявку"
-        confirmColor="error"
-        pending={lifecycle.isPending}
-        onClose={() => setCancelOpen(false)}
-        onConfirm={() => lifecycle.mutate('cancel')}
-      />
-
-      <ConfirmDialog
         open={deleteOpen}
-        title="Удалить заявку?"
+        title="Удалить черновик?"
         maxWidth="md"
         description={
           <Stack spacing={1.5}>
@@ -3378,7 +3483,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
             </Table>
           </Stack>
         }
-        confirmLabel="Удалить"
+        confirmLabel="Удалить черновик"
         confirmColor="error"
         pending={deleteRequest.isPending}
         onClose={() => setDeleteOpen(false)}

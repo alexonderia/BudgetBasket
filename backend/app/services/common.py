@@ -72,6 +72,7 @@ def request_cfo_review_completed(repo: Repository, request_id: str) -> bool:
             "cfo_request_review_completed",
             "cfo_items_returned_for_revision",
             "request_revision_resubmitted_to_cfo",
+            "request_restored",
         }:
             relevant.append(row)
     if not relevant:
@@ -90,7 +91,11 @@ def request_returned_item_ids(repo: Repository, request_id: str) -> set[str]:
         if row.get("req_id") != request_id:
             continue
         action = (row.get("log") or {}).get("action")
-        if action in {"cfo_items_returned_for_revision", "request_revision_resubmitted_to_cfo"}:
+        if action in {
+            "cfo_items_returned_for_revision",
+            "request_revision_resubmitted_to_cfo",
+            "request_restored",
+        }:
             relevant.append(row)
     if not relevant:
         return set()

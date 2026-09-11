@@ -39,12 +39,15 @@ export function canEditItemAnalytics(item: {
 
 export function buildRegisterFilterParams(
   filters: {
-    search: string;
-    status: string;
+  search: string;
+  flow?: '' | 'expense' | 'income';
+  status: string;
     budgetYear: string;
     cfoId?: string;
     articleId?: string;
     requestStatus?: string;
+    frozen?: '' | 'frozen' | 'fixed';
+    positionedOnly?: boolean;
   } & Record<AnalyticsFieldKey, string>,
   extras?: Record<string, unknown>,
 ) {
@@ -55,6 +58,9 @@ export function buildRegisterFilterParams(
     cfo_id: filters.cfoId || undefined,
     article_id: filters.articleId || undefined,
     request_status: filters.requestStatus || undefined,
+    frozen: filters.frozen || undefined,
+    positioned_only: filters.positionedOnly || undefined,
+    is_income: filters.flow === 'income' ? true : filters.flow === 'expense' ? false : undefined,
     ...extras,
   };
   ANALYTICS_FIELD_KEYS.forEach((key) => {

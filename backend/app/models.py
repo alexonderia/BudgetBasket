@@ -309,8 +309,23 @@ class StepApproveIn(StrictModel):
     position_ids: list[str] = Field(default_factory=list)
 
 
+class PositionLineApprovalIn(StrictModel):
+    step_id: str
+    position_id: str
+    item_ids: list[str] = Field(min_length=1)
+
+
+class BulkPositionLineApprovalIn(StrictModel):
+    positions: list[PositionLineApprovalIn] = Field(min_length=1)
+    comment: str = ""
+    event_id: str | None = None
+
+
 class ItemDecisionIn(StrictModel):
-    decision: ItemStatus
+    # ``on_revision`` is a saved workflow choice.  Unlike an item status it
+    # leaves the budget line in ``on_review`` until the reviewer explicitly
+    # sends the selected position back to the preceding route step.
+    decision: ItemStatus | Literal["on_revision"]
     comment: str = ""
     sum_plan: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     sum_fact: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
@@ -321,7 +336,7 @@ class ItemDecisionIn(StrictModel):
 
 class BulkItemDecisionIn(StrictModel):
     item_ids: list[str] = Field(min_length=1)
-    decision: ItemStatus
+    decision: ItemStatus | Literal["on_revision"]
     comment: str = ""
 
 
@@ -333,7 +348,7 @@ class RegisterGroupDecisionIn(StrictModel):
 class RegisterGroupWorkflowActionIn(StrictModel):
     """Action over all actionable CFO positions in an article or CFO group."""
 
-    action: Literal["submit", "approve", "return_for_revision"]
+    action: Literal["submit", "approve", "return_for_revision", "fix", "unfix"]
     comment: str = ""
     target_step_id: str | None = None
     items: list["RevisionItemIn"] | None = None
@@ -342,8 +357,14 @@ class RegisterGroupWorkflowActionIn(StrictModel):
 class RegisterGroupCfoRevisionIn(StrictModel):
     """Partial CFO review return for a register article/CFO group."""
 
-    comment: str = Field(min_length=1)
+    comment: str = ""
     items: list["RevisionItemIn"] = Field(min_length=1)
+
+
+class CfoRevisionSelectionIn(StrictModel):
+    """Save a CFO revision choice without handing the package to the module."""
+
+    comment: str = ""
 
 
 class AnalyticsFieldsPatch(StrictModel):
@@ -357,6 +378,7 @@ class AnalyticsFieldsPatch(StrictModel):
 class CfoPositionActionIn(StrictModel):
     comment: str = ""
     item_ids: list[str] = Field(default_factory=list)
+    event_id: str | None = None
 
 
 class CfoPositionCommentIn(StrictModel):
@@ -364,7 +386,7 @@ class CfoPositionCommentIn(StrictModel):
 
 
 class CfoPositionReturnIn(StrictModel):
-    target_step_id: str
+    target_step_id: str | None = None
     comment: str = Field(min_length=1)
     item_ids: list[str] = Field(default_factory=list)
 
@@ -377,7 +399,7 @@ class RevisionItemIn(StrictModel):
 
 class CfoPositionRevisionIn(StrictModel):
     target_step_id: str | None = None
-    comment: str = Field(min_length=1)
+    comment: str = ""
     items: list[RevisionItemIn] = Field(min_length=1)
 
 

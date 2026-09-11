@@ -85,7 +85,13 @@ requests = Table(
     CheckConstraint("status IN ('draft', 'on_review', 'approved', 'rejected', 'cancelled')", name="requests_status_chk"),
     Index("idx_requests_unit_id", "unit_id"),
     Index("idx_requests_status", "status"),
-    Index("ux_requests_unit_budget_year", "unit_id", "budget_year", unique=True),
+    Index(
+        "ux_requests_active_unit_budget_year",
+        "unit_id",
+        "budget_year",
+        unique=True,
+        postgresql_where=text("status <> 'cancelled'"),
+    ),
 )
 
 dds_catalog = Table(

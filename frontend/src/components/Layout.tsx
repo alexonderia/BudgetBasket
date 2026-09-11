@@ -52,6 +52,7 @@ import { canAccessApproval } from '../utils/roles';
 import { AUTH_TOKEN_KEY } from '../utils/session';
 import { EMAIL_RE, PHONE_RE, formatPhone, lettersOnly } from '../utils/validation';
 import { AppBreadcrumbs, breadcrumblessPaths } from './AppBreadcrumbs';
+import { AppFooter } from './AppFooter';
 import { ChatInboxDrawer } from './ChatInboxDrawer';
 import { RequiredFieldLabel } from './RequiredFieldLabel';
 import { UserGuideDialog } from './UserGuideDialog';
@@ -219,14 +220,16 @@ export function Layout({
         throw error;
       }
     },
+    initialData: user.profile,
+    staleTime: 5 * 60 * 1000,
     retry: false,
   });
-  const { data: chats = [] } = useQuery<{ unread_count: number }[]>({
-    queryKey: ['chats'],
-    queryFn: async () => (await api.get('/chats')).data,
+  const { data: unreadChats = { unread_count: 0 } } = useQuery<{ unread_count: number }>({
+    queryKey: ['chats', 'unread-count'],
+    queryFn: async () => (await api.get('/chats/unread-count')).data,
     enabled: canUseChat,
   });
-  const unreadChatsCount = useMemo(() => chats.reduce((total, chat) => total + chat.unread_count, 0), [chats]);
+  const unreadChatsCount = unreadChats.unread_count;
 
   useEffect(() => {
     if (!profile) return;
@@ -361,7 +364,7 @@ export function Layout({
         <List>
           {user.role !== 'employee' && (
             <>
-              <Tooltip title="Сводка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+              <Tooltip title="Сводка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed} arrow={false}>
                 <ListItemButton
                   className="drawer-nav-item"
                   selected={location.pathname === '/'}
@@ -385,7 +388,7 @@ export function Layout({
                   {summaryItems.map((summaryItem) => {
                     const selected = location.pathname === '/' && (summaryItem.view === 'table' ? new URLSearchParams(location.search).get('view') === 'table' : new URLSearchParams(location.search).get('view') !== 'table');
                     return (
-                      <Tooltip key={summaryItem.view} title={summaryItem.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+                      <Tooltip key={summaryItem.view} title={summaryItem.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed} arrow={false}>
                         <ListItemButton
                           className="drawer-nav-item"
                           selected={selected}
@@ -435,7 +438,7 @@ export function Layout({
           {items.map((item) => {
             const selected = item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to);
             return (
-              <Tooltip key={item.to} title={item.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+              <Tooltip key={item.to} title={item.label} placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed} arrow={false}>
                 <ListItemButton
                   className="drawer-nav-item"
                   selected={selected}
@@ -454,7 +457,7 @@ export function Layout({
         <Box className="drawer-footer">
         <Divider />
         <List sx={{ py: 0.5 }}>
-          <Tooltip title="Памятка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed}>
+          <Tooltip title="Памятка" placement="right" enterDelay={150} disableHoverListener={!drawerCollapsed} arrow={false}>
             <ListItemButton
               dense
               onClick={() => {
@@ -620,7 +623,8 @@ export function Layout({
       </Dialog>
 
       <ToastContext.Provider value={toastCtx}>
-        <Box component="main" className="app-main">
+        <Box className="app-content">
+          <Box component="main" className="app-main">
           {showPageChrome ? (
             <Stack
               className="page-chrome"
@@ -651,6 +655,8 @@ export function Layout({
           <PageActionsContext.Provider value={chrome}>
             <Outlet />
           </PageActionsContext.Provider>
+          </Box>
+          <AppFooter />
         </Box>
         <Snackbar
           key={toast?.key}

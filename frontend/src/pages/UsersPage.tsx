@@ -10,6 +10,7 @@ import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
+import InputAdornment from '@mui/material/InputAdornment';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import Table from '@mui/material/Table';
@@ -22,11 +23,13 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
+import SearchIcon from '@mui/icons-material/Search';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { useAppToast } from '../components/Layout';
 import { RequiredFieldLabel } from '../components/RequiredFieldLabel';
 import type { Role, Unit, User } from '../types';
@@ -310,19 +313,40 @@ function EditUserDialog({
 export default function UsersPage() {
   const queryClient = useQueryClient();
   const toast = useAppToast();
-  const { data = [] } = useQuery({ queryKey: ['users'], queryFn: async () => (await api.get<User[]>('/users')).data });
-  const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
+  const { data = [], isLoading: usersLoading } = useQuery({ queryKey: ['users'], queryFn: async () => (await api.get<User[]>('/users')).data });
+  const { data: units = [], isLoading: unitsLoading } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
+  const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<Role | ''>('');
   const [unitFilter, setUnitFilter] = useState('');
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['users'] });
   const unitNames = useMemo(() => new Map(units.map((unit) => [unit.id, unit.name])), [units]);
   const filteredUsers = useMemo(
-    () => data.filter((user) => (!roleFilter || user.role === roleFilter) && (!unitFilter || user.unit_ids?.includes(unitFilter))),
-    [data, roleFilter, unitFilter],
+    () => {
+      const searchTerms = search.trim().toLocaleLowerCase('ru-RU').split(/\s+/).filter(Boolean);
+      return data.filter((user) => {
+        if (roleFilter && user.role !== roleFilter) return false;
+        if (unitFilter && !user.unit_ids?.includes(unitFilter)) return false;
+        if (!searchTerms.length) return true;
+
+        const searchableText = [
+          user.login,
+          roleLabels[user.role],
+          user.profile?.last_name,
+          user.profile?.name,
+          user.profile?.second_name,
+          user.profile?.phone,
+          user.profile?.email,
+          user.profile?.max_link,
+          ...(user.unit_ids || []).map((unitId) => unitNames.get(unitId)),
+        ].filter(Boolean).join(' ').toLocaleLowerCase('ru-RU');
+        return searchTerms.every((term) => searchableText.includes(term));
+      });
+    },
+    [data, roleFilter, search, unitFilter, unitNames],
   );
 
   const tableColumns = useMemo<TableColumnDefinition<User, UserTableColumn>[]>(() => [
@@ -419,11 +443,25 @@ export default function UsersPage() {
     },
   });
 
+  if (usersLoading || unitsLoading) {
+    return <PageSkeleton variant="table" label="Загрузка пользователей" />;
+  }
+
   return (
     <Stack spacing={3}>
       <Paper className="table-surface" sx={{ p: 2 }}>
         <Stack direction={{ xs: 'column', lg: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ lg: 'center' }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} className="page-filters">
+            <TextField
+              size="small"
+              label="Поиск"
+              placeholder="Логин, ФИО, телефон или email"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              inputProps={{ 'aria-label': 'Поиск пользователей' }}
+              sx={filterFieldSx(280)}
+              InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon sx={{ fontSize: 18 }} color="action" /></InputAdornment> }}
+            />
             <TextField select label="Роль" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value as Role | '')} sx={filterFieldSx(220)}>
               <MenuItem value="">Все роли</MenuItem>
               {Object.entries(roleLabels).map(([value, label]) => (

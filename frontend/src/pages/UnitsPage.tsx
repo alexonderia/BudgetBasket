@@ -33,10 +33,11 @@ import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useTheme } from '@mui/material/styles';
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react';
 import { api } from '../api/client';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { usePageChromeActions, usePageChromeLeading } from '../components/Layout';
 import { useAppToast } from '../components/Layout';
 import type { Unit, User } from '../types';
@@ -72,6 +73,18 @@ function unitLevel(unitId: string, units: Unit[]): number {
     current = byId.get(current.parent_id);
   }
   return level;
+}
+
+function buildUnitTree(units: Unit[]): Unit[] {
+  const nodes = units.map((unit) => ({ ...unit, children: [] as Unit[] }));
+  const byId = new Map(nodes.map((unit) => [unit.id, unit]));
+  const roots: Unit[] = [];
+  nodes.forEach((unit) => {
+    const parent = unit.parent_id ? byId.get(unit.parent_id) : null;
+    if (parent) parent.children?.push(unit);
+    else roots.push(unit);
+  });
+  return roots;
 }
 
 function fullName(user?: User): string {
@@ -223,15 +236,17 @@ function UnitFormDialog({
         {title}
         {isEdit && onDelete && (
           <Tooltip title="Удалить объединение">
-            <IconButton
-              color="error"
-              onClick={onDelete}
-              disabled={pending || deletePending}
-              sx={{ position: 'absolute', top: 18, right: 18 }}
-              aria-label="Удалить объединение"
-            >
-              <DeleteOutlineIcon />
-            </IconButton>
+            <span>
+              <IconButton
+                color="error"
+                onClick={onDelete}
+                disabled={pending || deletePending}
+                sx={{ position: 'absolute', top: 18, right: 18 }}
+                aria-label="Удалить объединение"
+              >
+                <DeleteOutlineIcon />
+              </IconButton>
+            </span>
           </Tooltip>
         )}
       </DialogTitle>
@@ -300,32 +315,36 @@ function UnitFormDialog({
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}>
                   <UserAutocomplete users={employees} value={employeeId} label="Ответственный сотрудник" size="small" onChange={setEmployeeId} />
                   <Tooltip title={employeeId ? 'Сохранить назначение' : 'Снять ответственного'}>
-                    <Button
-                      variant="outlined"
-                      disabled={assignPending || (!employeeId && !responsibleUserId)}
-                      onClick={() => employeeId ? onAssignResponsible(employeeId) : onUnassignResponsible()}
-                      aria-label={employeeId ? 'Сохранить назначение' : 'Снять ответственного'}
-                      sx={{ minWidth: 44, width: 44, px: 0 }}
-                    >
-                      {employeeId ? <SaveOutlinedIcon fontSize="small" /> : <PersonRemoveOutlinedIcon fontSize="small" />}
-                    </Button>
+                    <span>
+                      <Button
+                        variant="outlined"
+                        disabled={assignPending || (!employeeId && !responsibleUserId)}
+                        onClick={() => employeeId ? onAssignResponsible(employeeId) : onUnassignResponsible()}
+                        aria-label={employeeId ? 'Сохранить назначение' : 'Снять ответственного'}
+                        sx={{ minWidth: 44, width: 44, px: 0 }}
+                      >
+                        {employeeId ? <SaveOutlinedIcon fontSize="small" /> : <PersonRemoveOutlinedIcon fontSize="small" />}
+                      </Button>
+                    </span>
                   </Tooltip>
                 </Stack>
 
               {canAssignEconomist && <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} alignItems={{ sm: 'center' }}>
                 <UserAutocomplete users={economists} value={economistId} label="Экономист" size="small" onChange={setEconomistId} />
                 <Tooltip title={economistId ? 'Сохранить назначение' : 'Снять экономиста'}>
-                  <Button
-                    variant="outlined"
-                    disabled={assignPending || (!economistId && linkedEconomists.length === 0)}
-                    onClick={() => economistId
-                      ? onAssignEconomist(economistId, mode.kind === 'edit' ? mode.unit.id : '')
-                      : onUnassignEconomist(linkedEconomists[0].id)}
-                    aria-label={economistId ? 'Сохранить назначение' : 'Снять экономиста'}
-                    sx={{ minWidth: 44, width: 44, px: 0 }}
-                  >
-                    {economistId ? <SaveOutlinedIcon fontSize="small" /> : <PersonRemoveOutlinedIcon fontSize="small" />}
-                  </Button>
+                  <span>
+                    <Button
+                      variant="outlined"
+                      disabled={assignPending || (!economistId && linkedEconomists.length === 0)}
+                      onClick={() => economistId
+                        ? onAssignEconomist(economistId, mode.kind === 'edit' ? mode.unit.id : '')
+                        : onUnassignEconomist(linkedEconomists[0].id)}
+                      aria-label={economistId ? 'Сохранить назначение' : 'Снять экономиста'}
+                      sx={{ minWidth: 44, width: 44, px: 0 }}
+                    >
+                      {economistId ? <SaveOutlinedIcon fontSize="small" /> : <PersonRemoveOutlinedIcon fontSize="small" />}
+                    </Button>
+                  </span>
                 </Tooltip>
               </Stack>}
 
@@ -452,15 +471,16 @@ function OrgUnitCard({
 export default function UnitsPage() {
   const queryClient = useQueryClient();
   const toast = useAppToast();
-  const { data: tree = [] } = useQuery({
-    queryKey: ['units-tree'],
-    queryFn: async () => (await api.get<Unit[]>('/units/tree')).data,
-  });
-  const { data: units = [] } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
-  const { data: users = [] } = useQuery({ queryKey: ['users'], queryFn: async () => (await api.get<User[]>('/users')).data });
-  const { data: assignments = [] } = useQuery({
+  const { data: units = [], isLoading: unitsLoading } = useQuery({ queryKey: ['units'], queryFn: async () => (await api.get<Unit[]>('/units')).data });
+  const tree = useMemo(() => buildUnitTree(units), [units]);
+  const { data: users = [], isLoading: usersLoading } = useQuery({ queryKey: ['users'], queryFn: async () => (await api.get<User[]>('/users')).data });
+  const { data: assignments = [], isLoading: assignmentsLoading } = useQuery({
     queryKey: ['assignments'],
     queryFn: async () => (await api.get<Assignment[]>('/economist-assignments')).data,
+  });
+  const { data: responsibles = [], isLoading: responsiblesLoading } = useQuery({
+    queryKey: ['responsible'],
+    queryFn: async () => (await api.get<Responsible[]>('/unit-responsibles')).data,
   });
 
   const [dialog, setDialog] = useState<UnitDialogMode | null>(null);
@@ -471,24 +491,21 @@ export default function UnitsPage() {
   const [orgPan, setOrgPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef({ pointerX: 0, pointerY: 0, x: 0, y: 0 });
+  const orgViewportRef = useRef<HTMLDivElement>(null);
+  const orgForestRef = useRef<HTMLDivElement>(null);
 
   const unitLevels = useMemo(() => new Map(units.map((unit) => [unit.id, unitLevel(unit.id, units)])), [units]);
   const assignableUnits = units.filter((unit) => [2, 3].includes(unitLevels.get(unit.id) || 0));
   const employees = users.filter((user) => user.role === 'employee');
   const economists = users.filter((user) => user.role === 'economist');
 
-  const responsibleQueries = useQueries({
-    queries: assignableUnits.map((unit) => ({
-      queryKey: ['responsible', unit.id],
-      queryFn: async () => (await api.get<Responsible | null>(`/units/${unit.id}/responsible`)).data,
-    })),
-  });
-
   const responsiblesByUnit = useMemo(() => {
     const result = new Map<string, Responsible | null>();
-    assignableUnits.forEach((unit, index) => result.set(unit.id, responsibleQueries[index]?.data ?? null));
+    assignableUnits.forEach((unit) => {
+      result.set(unit.id, responsibles.find((item) => item.unit_id === unit.id) || null);
+    });
     return result;
-  }, [assignableUnits, responsibleQueries]);
+  }, [assignableUnits, responsibles]);
 
   const economistsByUnit = useMemo(() => {
     const result = new Map<string, User[]>();
@@ -518,9 +535,40 @@ export default function UnitsPage() {
     return filterNodes(scopedTree);
   }, [tree, orgSearch, rootUnitId]);
 
+  const clampOrgPan = (nextPan: { x: number; y: number }, nextZoom = orgZoom) => {
+    const viewport = orgViewportRef.current;
+    const forest = orgForestRef.current;
+    if (!viewport || !forest) return nextPan;
+    const padding = 28;
+    const clampAxis = (translation: number, start: number, length: number, viewportLength: number) => {
+      const scaledLength = length * nextZoom;
+      if (scaledLength <= viewportLength - padding * 2) {
+        return (viewportLength - scaledLength) / 2 - start * nextZoom;
+      }
+      const minimum = viewportLength - padding - (start + length) * nextZoom;
+      const maximum = padding - start * nextZoom;
+      return Math.min(maximum, Math.max(minimum, translation));
+    };
+    return {
+      x: clampAxis(nextPan.x, forest.offsetLeft, forest.offsetWidth, viewport.clientWidth),
+      y: clampAxis(nextPan.y, forest.offsetTop, forest.offsetHeight, viewport.clientHeight),
+    };
+  };
+
+  useEffect(() => {
+    const viewport = orgViewportRef.current;
+    if (!viewport || !visibleTree.length) return;
+    const frame = requestAnimationFrame(() => setOrgPan((current) => clampOrgPan(current)));
+    const observer = new ResizeObserver(() => setOrgPan((current) => clampOrgPan(current)));
+    observer.observe(viewport);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [visibleTree, orgZoom]);
+
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['units'] });
-    queryClient.invalidateQueries({ queryKey: ['units-tree'] });
     queryClient.invalidateQueries({ queryKey: ['assignments'] });
     queryClient.invalidateQueries({ queryKey: ['responsible'] });
   };
@@ -712,12 +760,15 @@ export default function UnitsPage() {
   };
 
   const changeOrgZoom = (delta: number) => {
-    setOrgZoom((current) => Math.min(1.8, Math.max(0.6, Number((current + delta).toFixed(2)))));
+    const nextZoom = Math.min(1.8, Math.max(0.6, Number((orgZoom + delta).toFixed(2))));
+    setOrgZoom(nextZoom);
+    setOrgPan((current) => clampOrgPan(current, nextZoom));
   };
 
   const resetOrgViewport = () => {
-    setOrgZoom(0.6);
-    setOrgPan({ x: 0, y: 0 });
+    const nextZoom = 0.6;
+    setOrgZoom(nextZoom);
+    setOrgPan(clampOrgPan({ x: 0, y: 0 }, nextZoom));
   };
 
   const handleOrgPointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -729,16 +780,20 @@ export default function UnitsPage() {
 
   const handleOrgPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     if (!isPanning) return;
-    setOrgPan({
+    setOrgPan(clampOrgPan({
       x: panStart.current.x + event.clientX - panStart.current.pointerX,
       y: panStart.current.y + event.clientY - panStart.current.pointerY,
-    });
+    }));
   };
 
   const stopOrgPanning = (event: PointerEvent<HTMLDivElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     setIsPanning(false);
   };
+
+  if (unitsLoading || usersLoading || assignmentsLoading || responsiblesLoading) {
+    return <PageSkeleton variant="table" label="Загрузка оргструктуры" />;
+  }
 
   return (
     <Stack spacing={3}>
@@ -758,6 +813,7 @@ export default function UnitsPage() {
               </Tooltip>
             </Stack>
             <Box
+              ref={orgViewportRef}
               className={`org-chart-viewport ${isPanning ? 'is-panning' : ''}`}
               onPointerDown={handleOrgPointerDown}
               onPointerMove={handleOrgPointerMove}
@@ -765,7 +821,7 @@ export default function UnitsPage() {
               onPointerCancel={stopOrgPanning}
             >
               <Box className="org-chart-stage" style={{ transform: `translate3d(${orgPan.x}px, ${orgPan.y}px, 0) scale(${orgZoom})` }}>
-                <Box className="org-forest">
+                <Box ref={orgForestRef} className="org-forest">
                   {visibleTree.map((root) => (
                     <Box key={root.id} className="org-chart">
                       {renderNode(root, 0)}

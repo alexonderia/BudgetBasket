@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ApprovalStep, CfoPosition, User } from '../types';
-import { positionWorkflowPresentation, stepViewerRequirement } from './workflowPresentation';
+import { positionWorkflowPresentation, stepReadinessLabels, stepViewerRequirement } from './workflowPresentation';
 
 const user = { id: 'u1', login: 'user', role: 'economist' } as User;
 const economistStep = {
@@ -38,5 +38,28 @@ describe('workflow presentation', () => {
   it('explains the viewer step state', () => {
     expect(stepViewerRequirement(economistStep, 'u1')).toBe('Требуется ваше решение сейчас');
     expect(stepViewerRequirement(economistStep, 'other')).toBeNull();
+  });
+
+  it('keeps route state separate from position readiness', () => {
+    expect(stepReadinessLabels({
+      ...economistStep,
+      readiness: {
+        needs_line_decisions: 0,
+        awaiting_return_confirmation: 0,
+        needs_revision: 0,
+        ready_for_next_action: 6,
+      },
+    })).toEqual(['Готовы к следующему действию: 6']);
+    expect(stepReadinessLabels({
+      ...economistStep,
+      status: 'on_revision',
+      request_status: 'on_revision',
+      readiness: {
+        needs_line_decisions: 0,
+        awaiting_return_confirmation: 0,
+        needs_revision: 1,
+        ready_for_next_action: 0,
+      },
+    })).toEqual([]);
   });
 });

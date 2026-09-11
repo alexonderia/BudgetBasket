@@ -58,11 +58,11 @@ export function WorkflowStepCell({ display }: { display?: RegisterStepDecisionDi
   };
   const iconOnly = display.ready && display.tone === 'action';
 
-  return (
-    <Tooltip title={display.hint || display.label} arrow placement="top">
-      <Box sx={{ minWidth: 0, maxWidth: '100%', py: 0.15 }}>
-        <StatusVisualBadge spec={spec} iconOnly={iconOnly} />
-      </Box>
-    </Tooltip>
+  const content = (
+    <Box sx={{ minWidth: 0, maxWidth: '100%', py: 0.15 }}>
+      <StatusVisualBadge spec={spec} iconOnly={iconOnly} />
+    </Box>
   );
+  const tooltip = display.hint || display.label;
+  return tooltip ? <Tooltip title={tooltip} arrow placement="top">{content}</Tooltip> : content;
 }

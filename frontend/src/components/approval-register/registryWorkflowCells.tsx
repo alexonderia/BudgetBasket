@@ -13,7 +13,7 @@ import {
 import { parseMoneyInput, type RegistryStatusDisplay } from './registryConfig';
 import { WorkflowStepStatusIcon } from './registryWorkflowStepVisual';
 
-function compactStatus(status: ItemStatus | null | undefined, waiting: boolean): RegistryStatusDisplay {
+function compactStatus(status: ItemStatus | 'on_revision' | null | undefined, waiting: boolean): RegistryStatusDisplay {
   if (waiting) {
     return {
       label: 'Ожидает вашего решения',
@@ -29,6 +29,9 @@ function compactStatus(status: ItemStatus | null | undefined, waiting: boolean):
   }
   if (status === 'rejected') {
     return { label: 'Отклонено', tone: 'error', hint: 'Бюджет не выделен' };
+  }
+  if (status === 'on_revision') {
+    return { label: 'На доработке', tone: 'warning', hint: 'Строка отмечена для возврата на доработку' };
   }
   return { label: 'Ожидает вашего решения', tone: 'warning', hint: 'Ожидает решения' };
 }
@@ -95,7 +98,7 @@ export function RegistryYourDecisionCell({
   };
 
   const commitStatus = (decision: RegistryRowDecision) => {
-    if (decision === 'rejected' || decision === 'approved_with_changes') {
+    if (decision === 'rejected' || decision === 'approved_with_changes' || decision === 'on_revision') {
       onDecision(decision, amount);
       return;
     }
@@ -104,31 +107,30 @@ export function RegistryYourDecisionCell({
   };
 
   if (!active) {
-    return (
-      <Tooltip title={display?.hint || display?.label || ''} arrow placement="top">
-        <Stack
-          direction="row"
-          alignItems="center"
-          justifyContent="flex-end"
-          spacing={0.35}
-          sx={{ minWidth: 0, maxWidth: '100%' }}
-        >
-          <Typography variant="body2" sx={{ fontSize: 13, lineHeight: 1.25, fontVariantNumeric: 'tabular-nums' }}>
-            {stepAmountLabel(display)}
-          </Typography>
-          <Box sx={{ flex: '0 0 auto' }}>
+    const content = (
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="flex-end"
+        spacing={0.35}
+        sx={{ minWidth: 0, maxWidth: '100%' }}
+      >
+        <Typography variant="body2" sx={{ fontSize: 13, lineHeight: 1.25, fontVariantNumeric: 'tabular-nums' }}>
+          {stepAmountLabel(display)}
+        </Typography>
+        <Box sx={{ flex: '0 0 auto' }}>
             <EditableRegistryStatusCell
-              status={statusDisplay}
-              item={item}
-              active={false}
-              compact
-              onCommit={commitStatus}
+            status={statusDisplay}
+            item={item}
+            active={false}
+            compact
+            onCommit={commitStatus}
               onDecision={(decision) => onDecision(decision, amount)}
-            />
-          </Box>
-        </Stack>
-      </Tooltip>
+          />
+        </Box>
+      </Stack>
     );
+    return content;
   }
 
   return (
@@ -147,7 +149,7 @@ export function RegistryYourDecisionCell({
         parseValue={parseMoneyInput}
         validate={(next) => next >= 0}
         ariaLabel="Сумма вашего решения"
-        title="Изменить сумму согласования"
+        tooltip="Изменить сумму согласования"
         onCommit={commitAmount}
       />
       <Box sx={{ flex: '0 0 auto' }}>

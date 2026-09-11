@@ -8,7 +8,7 @@ const baseStatus = {
 };
 
 describe('registry status visuals', () => {
-  it('highlights actionable row with icon-only action badge', () => {
+  it('shows the full status text for an actionable row', () => {
     const presentation = rowStatusPresentation({ ...baseStatus, label: 'Ожидает вашего решения' }, {
       is_cfo_review: true,
       status_context: {
@@ -24,11 +24,11 @@ describe('registry status visuals', () => {
     } as never);
     expect(presentation.primary.text).toBe('Ваше решение');
     expect(presentation.primary.variant).toBe('action');
-    expect(presentation.primaryIconOnly).toBe(true);
+    expect(presentation.primaryIconOnly).toBe(false);
     expect(presentation.meta).toContain('Ваше действие');
   });
 
-  it('shows action indicator for editable approved lines', () => {
+  it('does not add a second status indicator to an editable approved line', () => {
     const presentation = rowStatusPresentation({ ...baseStatus, label: 'Утверждено' }, {
       status: 'approved',
       status_context: {
@@ -43,7 +43,7 @@ describe('registry status visuals', () => {
       },
     } as never);
     expect(presentation.primary.text).toBe('Согласовано');
-    expect(presentation.showActionIndicator).toBe(true);
+    expect(presentation.showActionIndicator).toBe(false);
     expect(presentation.footnote).toBe('Требуется ваше решение');
   });
 
@@ -112,6 +112,21 @@ describe('registry status visuals', () => {
     expect(presentation.primary.text).toBe('Согласуйте и передайте');
   });
 
+  it('labels a fully decided higher-step position as a package handoff', () => {
+    const presentation = groupStatusPresentation({
+      requested_sum: 100, approved_sum: 100, rejected_sum: 0, pending_sum: 0,
+      difference: 0, total_rows: 2, approved_rows: 2, rejected_rows: 0,
+      pending_rows: 0, requests_count: 1, modules_count: 1,
+      aggregate_status: 'approved', collecting_requests: 0, cfo_review_requests: 0,
+      cfo_review_actionable_requests: 0, cfo_review_completable_requests: 0,
+      in_approval_positions: 1, actionable_positions: 1, workflow_ready_positions: 1,
+    }, { ...baseStatus, label: 'Согласуйте и передайте' });
+
+    expect(presentation.primary.text).toBe('Согласуйте и передайте');
+    expect(presentation.primary.variant).toBe('action');
+    expect(presentation.meta).toContain('пакетной отправке');
+  });
+
   it('shows revision ahead of a stored final line status', () => {
     const presentation = groupStatusPresentation({
       requested_sum: 100, approved_sum: 100, rejected_sum: 0, pending_sum: 0,
@@ -120,6 +135,19 @@ describe('registry status visuals', () => {
       aggregate_status: 'approved', collecting_requests: 0, cfo_review_requests: 0,
       cfo_review_actionable_requests: 0, cfo_review_completable_requests: 0,
       in_approval_positions: 1, actionable_positions: 0,
+    }, { ...baseStatus, label: 'На доработке' });
+    expect(presentation.primary.text).toBe('На доработке');
+    expect(presentation.primary.variant).toBe('revision');
+  });
+
+  it('shows CFO revision status before the repeated decision action', () => {
+    const presentation = groupStatusPresentation({
+      requested_sum: 100, approved_sum: 100, rejected_sum: 0, pending_sum: 0,
+      difference: 0, total_rows: 1, approved_rows: 1, rejected_rows: 0,
+      revision_rows: 1, cfo_revision_rows: 1, pending_rows: 0, requests_count: 1, modules_count: 1,
+      aggregate_status: 'approved', collecting_requests: 0, cfo_review_requests: 0,
+      cfo_review_actionable_requests: 1, cfo_review_completable_requests: 0,
+      in_approval_positions: 1, actionable_positions: 1,
     }, { ...baseStatus, label: 'На доработке' });
     expect(presentation.primary.text).toBe('На доработке');
     expect(presentation.primary.variant).toBe('revision');

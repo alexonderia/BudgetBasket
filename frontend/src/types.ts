@@ -8,7 +8,7 @@ export interface User {
   id: string;
   login: string;
   role: Role;
-  profile?: Profile;
+  profile?: Profile | null;
   unit_ids?: string[];
 }
 
@@ -119,20 +119,34 @@ export interface RegisterAggregates {
   approved_rows: number;
   rejected_rows: number;
   revision_rows?: number;
+  /** Lines returned from the economist to the responsible CFO. */
+  cfo_revision_rows?: number;
   pending_rows: number;
   requests_count: number;
   modules_count: number;
   aggregate_status: RegisterAggregateStatus;
   collecting_requests: number;
+  /** Draft requests belonging to the same CFO, including modules without visible register rows. */
+  cfo_unsubmitted_requests?: number;
   cfo_review_requests: number;
   cfo_review_actionable_requests: number;
   cfo_review_completable_requests: number;
+  cfo_decision_editable_rows?: number;
   in_approval_positions: number;
   actionable_positions: number;
   /** Positions where the only current action is to submit them to the economist. */
   submission_positions?: number;
   /** Positions where the economist has reviewed every line and can pass the position on. */
   economist_completion_positions?: number;
+  /** Positions whose current reviewer has decided every required line and can send the package. */
+  workflow_ready_positions?: number;
+  /** Positions where the economist has marked one or more lines for revision. */
+  workflow_revision_positions?: number;
+  /** Positions a reviewer may return to the immediately preceding route step. */
+  workflow_return_positions?: number;
+  /** Lines locked by ZGD; used to expose the reversible final lock control. */
+  fixed_rows?: number;
+  zgd_lock_positions?: number;
 }
 
 export interface RegisterGroupAnalyticsField {
@@ -149,6 +163,7 @@ export type RegisterGroupingLevel = 'cfo' | 'category' | 'article' | 'module' | 
   | 'analytics_1' | 'analytics_2' | 'analytics_3' | 'analytics_4' | 'analytics_5';
 
 export interface ApprovalRegisterGroup {
+  has_children?: boolean;
   id: string;
   type: RegisterGroupingLevel;
   name: string;
@@ -181,6 +196,9 @@ export interface RegisterAnalyticsSummary {
 }
 
 export interface ApprovalRegisterResponse {
+  visible_request_statuses?: string[];
+  visible_unit_ids?: string[];
+  matched_item_ids?: string[] | null;
   view: 'cfo' | 'category' | 'article' | 'module' | 'request';
   group_by?: RegisterGroupingLevel[];
   groups: ApprovalRegisterGroup[];
@@ -196,6 +214,7 @@ export interface RegisterLineStatusDecision {
   action: string;
   action_label: string;
   stage?: string | null;
+  item_status?: ItemStatus | 'on_revision' | null;
 }
 
 export interface RegisterLineStatusOwner {
@@ -221,13 +240,23 @@ export interface RegisterLineStatusContext {
   your_step?: RegisterStepDecisionDisplay | null;
 }
 
+export interface RegisterItemComment {
+  id: string;
+  comment: string;
+  author_name?: string | null;
+  author_role?: User['role'] | string | null;
+  created_at?: string | null;
+  action?: string;
+  event_id?: string | null;
+}
+
 export interface RegisterStepDecisionDisplay {
   label: string;
   tone: 'success' | 'error' | 'warning' | 'info' | 'action' | 'default';
   hint: string;
   ready?: boolean;
   amount?: number | null;
-  item_status?: ItemStatus | null;
+  item_status?: ItemStatus | 'on_revision' | null;
 }
 
 export interface ApprovalRegisterRow {
@@ -247,6 +276,7 @@ export interface ApprovalRegisterRow {
   name: string;
   justification: string;
   comment: string;
+  comment_history?: RegisterItemComment[];
   files_count: number;
   requested_sum: number;
   approved_sum: number;
@@ -254,20 +284,32 @@ export interface ApprovalRegisterRow {
   updated_at: string;
   is_collecting: boolean;
   is_cfo_review: boolean;
+  is_cfo_review_item_allowed?: boolean;
   is_cfo_review_actionable: boolean;
+  is_decision_editable?: boolean;
+  decision_editable_stage?: 'cfo_review' | 'economist' | 'approver' | null;
   is_cfo_review_completable?: boolean;
   is_revision?: boolean;
   is_module_revision?: boolean;
+  is_cfo_revision_pending?: boolean;
+  /** Line returned from the economist to the responsible CFO. */
+  is_cfo_revision?: boolean;
   is_revision_actionable?: boolean;
   is_cfo_module_revision_actionable?: boolean;
   position_id: string | null;
   current_step_id?: string | null;
   is_in_approval: boolean;
+  is_current_step_owner?: boolean;
   is_approval_actionable: boolean;
   is_final_approval_actionable?: boolean;
   is_position_actionable?: boolean;
   is_position_submission_actionable?: boolean;
+  is_workflow_submission_actionable?: boolean;
+  is_workflow_revision_actionable?: boolean;
+  is_workflow_return_actionable?: boolean;
+  is_workflow_revision_marked?: boolean;
   is_economist_completion_actionable?: boolean;
+  is_zgd_lock_actionable?: boolean;
   approval_stage: string | null;
   frozen?: boolean;
   fixed?: boolean;
@@ -332,6 +374,12 @@ export interface ApprovalStep {
   active_positions_count?: number;
   revision_positions_count?: number;
   active_requests_count?: number;
+  readiness?: {
+    needs_line_decisions: number;
+    awaiting_return_confirmation: number;
+    needs_revision: number;
+    ready_for_next_action: number;
+  };
 }
 
 export interface CfoPosition {
@@ -414,6 +462,7 @@ export interface RequestLog {
     entity_id?: string;
     event_id?: string;
     cfo_position_id?: string;
+    step_id?: string;
     req_item_id?: string;
     item_ids?: string[];
     request_ids?: string[];

@@ -12,7 +12,6 @@ export function canUseRegisterApprovalMode(role: Role): boolean {
 }
 
 export function defaultRouteForRole(role: Role): string {
-  if (role === 'employee') return '/register';
-  if (role === 'economist' || role === 'approver' || role === 'zgd') return '/approval';
+  if (role === 'employee' || role === 'economist') return '/requests';
   return '/';
 }

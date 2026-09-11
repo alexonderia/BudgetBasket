@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 
 from app.repositories.base import Repository
+from app.repositories.queries import find_rows
+from app.repositories.pagination import cursor_page
 
 
 class NotificationService:
@@ -29,10 +31,12 @@ class NotificationService:
             },
         )
 
-    def list_for_user(self, user: dict, *, unread_only: bool = False) -> list[dict]:
+    def list_for_user(self, user: dict, *, unread_only: bool = False, page_size: int | None = None, before: str | None = None) -> list[dict] | dict:
+        if page_size is not None:
+            return cursor_page(self.repo, "notifications", filters={"user_id": user["id"], **({"read_at": None} if unread_only else {})}, page_size=page_size, before=before)
         items = [
             item
-            for item in self.repo.load_all("notifications")
+            for item in find_rows(self.repo, "notifications", filters={"user_id": user["id"], **({"read_at": None} if unread_only else {})})
             if item.get("user_id") == user["id"]
             and (not unread_only or not item.get("read_at"))
         ]
@@ -51,9 +55,6 @@ class NotificationService:
         )
 
     def mark_all_read(self, user: dict) -> dict:
-        count = 0
         now = datetime.now(timezone.utc).isoformat()
-        for item in self.list_for_user(user, unread_only=True):
-            self.repo.update("notifications", item["id"], {"read_at": now})
-            count += 1
+        count = self.repo.update_where("notifications", {"user_id": user["id"], "read_at": None}, {"read_at": now})
         return {"updated": count}

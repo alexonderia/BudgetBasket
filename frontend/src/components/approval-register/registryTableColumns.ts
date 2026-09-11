@@ -14,6 +14,50 @@ export type RegisterControlRow =
   | { kind: 'group'; group: ApprovalRegisterGroup }
   | { kind: 'item'; item: ApprovalRegisterRow; groupId: string; groupPath: ApprovalRegisterGroup[] };
 
+/**
+ * Group and line statuses are exposed as separate filter values.  A group
+ * value also matches every line in its branch, so leaving the corresponding
+ * line value selected would make a closed group status appear to have no
+ * effect. Remove the line value when the group value is removed and it covers
+ * every line carrying that line status.
+ */
+export function adjustRegisterStatusFilterValues(
+  rows: RegisterControlRow[],
+  optionValue: string,
+  nextValues: string[],
+  availableValues: string[],
+) {
+  if (!optionValue.startsWith('group:')) return nextValues;
+
+  const coveredItemIds = new Set(
+    rows
+      .filter((row): row is Extract<RegisterControlRow, { kind: 'item' }> => row.kind === 'item')
+      .filter((row) => row.groupPath.some((group) => `group:${groupRegistryStatus(group.aggregates).label}` === optionValue))
+      .map((row) => row.item.id),
+  );
+  if (!coveredItemIds.size) return nextValues;
+
+  const itemIdsByStatus = new Map<string, Set<string>>();
+  rows.forEach((row) => {
+    if (row.kind !== 'item') return;
+    const statusValue = `row:${rowRegistryStatus(row.item).label}`;
+    const itemIds = itemIdsByStatus.get(statusValue) || new Set<string>();
+    itemIds.add(row.item.id);
+    itemIdsByStatus.set(statusValue, itemIds);
+  });
+
+  const resultingValues = new Set(nextValues);
+  // Re-selecting a group must not silently undo an independently selected
+  // line-status filter; the required coupling is removal of covered lines.
+  if (resultingValues.has(optionValue)) return nextValues;
+  itemIdsByStatus.forEach((itemIds, rowStatusValue) => {
+    if (!itemIds.size || ![...itemIds].every((itemId) => coveredItemIds.has(itemId))) return;
+    if (!availableValues.includes(rowStatusValue)) return;
+    resultingValues.delete(rowStatusValue);
+  });
+  return [...resultingValues];
+}
+
 export const REGISTRY_COLUMN_MIN_WIDTHS: Record<RegistryColumnId, number> = {
   select: 40,
   structure: 220,
@@ -22,7 +66,7 @@ export const REGISTRY_COLUMN_MIN_WIDTHS: Record<RegistryColumnId, number> = {
   rejected: 100,
   previous_step: 150,
   your_step: 190,
-  status: 120,
+  status: 180,
   actions: 72,
   justification: 160,
   comment: 130,
@@ -403,6 +447,7 @@ export function aggregateRegisterRows(base: ApprovalRegisterGroup['aggregates'],
     approved_rows: approvedRows.length,
     rejected_rows: rejectedRows.length,
     revision_rows: rows.filter((row) => row.is_revision).length,
+    cfo_revision_rows: rows.filter((row) => row.is_cfo_revision).length,
     pending_rows: pendingRows.length,
     requests_count: countDistinct(rows.map((row) => row.request_id)),
     modules_count: countDistinct(rows.map((row) => row.module_id)),
@@ -415,6 +460,9 @@ export function aggregateRegisterRows(base: ApprovalRegisterGroup['aggregates'],
     actionable_positions: countDistinct(rows.filter((row) => row.is_position_actionable).map((row) => row.position_id)),
     submission_positions: countDistinct(rows.filter((row) => row.is_position_submission_actionable).map((row) => row.position_id)),
     economist_completion_positions: countDistinct(rows.filter((row) => row.is_economist_completion_actionable).map((row) => row.position_id)),
+    workflow_ready_positions: countDistinct(rows.filter((row) => row.is_workflow_submission_actionable).map((row) => row.position_id)),
+    fixed_rows: rows.filter((row) => row.fixed).length,
+    zgd_lock_positions: countDistinct(rows.filter((row) => row.is_zgd_lock_actionable).map((row) => row.position_id)),
   };
 }
 

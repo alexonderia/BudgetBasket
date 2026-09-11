@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from io import BytesIO
+from tempfile import SpooledTemporaryFile
+from typing import Any
 from urllib.parse import unquote
 
 import httpx
 from fastapi import HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.config import Settings
 
@@ -26,7 +30,8 @@ class FileValidationResult(BaseModel):
 
 
 class ProcessedFile(BaseModel):
-    content: bytes
+    content: bytes = b""
+    content_stream: Any = Field(default=None, exclude=True)
     original_name: str
     output_name: str
     source_mime_type: str
@@ -38,6 +43,15 @@ class ProcessedFile(BaseModel):
     sanitized: bool
     removed_components: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+
+    def open_content(self):
+        stream = self.content_stream if self.content_stream is not None else BytesIO(self.content)
+        stream.seek(0)
+        return stream
+
+    def close(self):
+        if self.content_stream is not None:
+            self.content_stream.close()
 
 
 class FileGuardUnavailableError(RuntimeError):
@@ -77,28 +91,34 @@ class FileGuardClient:
                 pass
             raise FileGuardRejectedError(message)
         headers = response.headers
+        stream = response.extensions.get("processed_stream")
         try:
             output_name = _header_filename(_required_header(headers, "X-File-Guard-Output-Name"))
             output_sha256 = _required_header(headers, "X-File-Guard-Output-Sha256").lower()
             source_sha256 = _required_header(headers, "X-File-Guard-Source-Sha256").lower()
             output_mime = headers.get("content-type", "").split(";", 1)[0].lower()
             action = _required_header(headers, "X-File-Guard-Action")
-            content = response.content
-            if action not in {"accepted", "sanitized"} or not content or output_mime not in self.allowed_mime_types:
+            content = b"" if stream is not None else response.content
+            size = response.extensions.get("processed_size", len(content))
+            digest = response.extensions.get("processed_sha256") if stream is not None else hashlib.sha256(content).hexdigest()
+            if action not in {"accepted", "sanitized"} or not size or output_mime not in self.allowed_mime_types:
                 raise ValueError("unexpected response")
-            if len(output_sha256) != 64 or len(source_sha256) != 64 or hashlib.sha256(content).hexdigest() != output_sha256:
+            if len(output_sha256) != 64 or len(source_sha256) != 64 or digest != output_sha256:
                 raise ValueError("invalid output digest")
-            if len(content) > self.max_size_bytes:
+            if size > self.max_size_bytes:
                 raise ValueError("output too large")
             return ProcessedFile(
                 content=content,
+                content_stream=stream,
                 original_name=_header_filename(headers.get("X-File-Guard-Original-Name", upload.filename or "file")),
                 output_name=output_name,
                 source_mime_type=headers.get("X-File-Guard-Source-Mime", upload.content_type or "application/octet-stream"), output_mime_type=output_mime,
-                source_size_bytes=0, output_size_bytes=len(content), source_sha256=source_sha256, output_sha256=output_sha256,
+                source_size_bytes=0, output_size_bytes=size, source_sha256=source_sha256, output_sha256=output_sha256,
                 sanitized=action == "sanitized", removed_components=_csv_header(headers, "X-File-Guard-Removed"), warnings=_csv_header(headers, "X-File-Guard-Warnings"),
             )
         except (ValueError, ValidationError) as exc:
+            if stream is not None:
+                stream.close()
             logger.error("file_guard вернул некорректный результат обработки")
             raise FileGuardUnavailableError from exc
 
@@ -106,8 +126,30 @@ class FileGuardClient:
         await upload.seek(0)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
+                if url == self.process_url:
+                    spool = SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b")
+                    try:
+                        async with client.stream("POST", url, files={"file": (upload.filename or "file", upload.file, upload.content_type or "application/octet-stream")}) as response:
+                            digest = hashlib.sha256()
+                            size = 0
+                            async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                                size += len(chunk)
+                                if size > (self.max_size_bytes if response.status_code == 200 else 64 * 1024):
+                                    raise FileGuardUnavailableError("file_guard response exceeds limit")
+                                digest.update(chunk)
+                                await run_in_threadpool(spool.write, chunk)
+                            spool.seek(0)
+                            if response.status_code != 200:
+                                body = spool.read()
+                                spool.close()
+                                return httpx.Response(response.status_code, headers=response.headers, content=body)
+                            response.extensions.update(processed_stream=spool, processed_size=size, processed_sha256=digest.hexdigest())
+                            return response
+                    except BaseException:
+                        spool.close()
+                        raise
                 return await client.post(url, files={"file": (upload.filename or "file", upload.file, upload.content_type or "application/octet-stream")})
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        except httpx.TransportError as exc:
             logger.warning("file_guard недоступен: error_type=%s", type(exc).__name__)
             raise FileGuardUnavailableError from exc
         finally:

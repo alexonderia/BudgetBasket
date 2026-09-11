@@ -3,6 +3,13 @@ import { ANALYTICS_FIELD_LABELS } from '../../utils/analyticsFields';
 import { itemStatusLabels, requestStatusLabels, stepStatusLabels } from '../../utils/labels';
 import { money } from '../../utils/labels';
 
+export function historyStatusLabel(status: string): string {
+  return itemStatusLabels[status as ItemStatus]
+    || stepStatusLabels[status as StepStatus]
+    || requestStatusLabels[status as RequestStatus]
+    || status;
+}
+
 const historyActionLabels: Record<string, string> = {
   created: 'Заявка создана',
   submitted: 'Заявка отправлена на рассмотрение',
@@ -36,6 +43,7 @@ const historyActionLabels: Record<string, string> = {
   economist_review_completed: 'Экономист завершил проверку позиции',
   position_frozen_and_forwarded: 'Позиция зафиксирована и передана дальше',
   position_items_frozen: 'Строки позиции зафиксированы',
+  position_items_approved_at_step: 'Согласующий согласовал строку',
   position_unfrozen: 'Фиксация позиции снята',
   position_returned: 'Позиция возвращена на доработку',
   fixed_items_reopened: 'Зафиксированные строки открыты повторно',
@@ -71,6 +79,7 @@ const historyFieldLabels: Record<string, string> = {
   sum_plan: 'Плановая сумма',
   sum_fact: 'Утверждённая сумма',
   status: 'Статус',
+  reviewer_decision: 'Решение согласующего',
   comment: 'Комментарий',
   frozen: 'Фиксация бюджета',
   fixed: 'Финальная фиксация ЗГД',
@@ -82,10 +91,11 @@ const historyFieldLabels: Record<string, string> = {
   ...ANALYTICS_FIELD_LABELS,
 };
 
-const technicalHistoryFields = new Set([
-  'id', 'item_id', 'request_id', 'req_id', 'unit_id', 'economist_id', 'created_at', 'updated_at',
-  'step_id', 'current_step_id', 'target_step_id', 'cfo_position_id', 'event_id', 'item_ids',
-]);
+// Logs deliberately retain the full entity snapshot for audit purposes.  The
+// history shown to a person is a separate, public projection: only fields that
+// have a business label may be rendered.  This prevents a newly added storage
+// field (including identifiers) from leaking into UI or exports by default.
+const publicHistoryFields = new Set(Object.keys(historyFieldLabels));
 
 const approvalOnlyActions = new Set([
   'request_submitted_to_cfo',
@@ -120,12 +130,12 @@ function historyValue(value: unknown, field: string, entity: string, action: str
   }
   if (field === 'sum_plan' || field === 'sum_fact') return money(Number(value));
   if (field === 'status' && typeof value === 'string') {
-    if (action.startsWith('approval_')) {
-      return stepStatusLabels[value as StepStatus] || requestStatusLabels[value as RequestStatus] || value;
-    }
-    return entity === 'req_item'
-      ? itemStatusLabels[value as ItemStatus] || value
-      : requestStatusLabels[value as RequestStatus] || stepStatusLabels[value as StepStatus] || value;
+    return historyStatusLabel(value);
+  }
+  if (field === 'reviewer_decision' && typeof value === 'string') {
+    if (value === 'pending') return 'Ожидает решения';
+    if (value === 'approved') return 'Согласовано';
+    return historyStatusLabel(value);
   }
   if (field === 'frozen') return value ? 'Зафиксирован' : 'Разморожен';
   if (Array.isArray(value)) {
@@ -151,10 +161,17 @@ function historyValue(value: unknown, field: string, entity: string, action: str
 export type HistoryChange = { field: string; from: string; to: string };
 
 export function historyChanges(entry: RequestLog): HistoryChange[] {
-  return Object.entries(entry.log.changes || {})
-    .filter(([field]) => !technicalHistoryFields.has(field))
+  const changes = entry.log.action === 'position_items_approved_at_step'
+    && !entry.log.changes?.reviewer_decision
+    ? {
+      ...(entry.log.changes || {}),
+      reviewer_decision: { from: 'pending', to: 'approved' },
+    }
+    : (entry.log.changes || {});
+  return Object.entries(changes)
+    .filter(([field]) => publicHistoryFields.has(field))
     .map(([field, change]) => ({
-      field: historyFieldLabels[field] || 'Параметр заявки',
+      field: historyFieldLabels[field],
       from: historyValue(change.from, field, entry.log.entity, entry.log.action),
       to: historyValue(change.to, field, entry.log.entity, entry.log.action),
     }));
@@ -193,13 +210,25 @@ export function groupHistoryEntries(logs: RequestLog[]): HistoryEventGroup[] {
 
   logs.forEach((entry) => {
     const eventId = entry.source === 'cfo_position' ? entry.log.event_id : undefined;
+    // Line-by-line reviewer calls may be persisted as separate events even
+    // when one bulk action selected all lines. Group calls made by the same
+    // reviewer for the same position in the same second, preserving the
+    // operation's comment and step as part of the grouping key.
+    const reviewerLineGroup = entry.source === 'cfo_position'
+      && entry.log.action === 'position_items_approved_at_step'
+      // Before bulk event ids were sent by the register, legacy records have
+      // no req_item_id. Their timestamps are the only available batch marker;
+      // use the minute and reviewer/step/comment to keep that history intact.
+      && !entry.log.req_item_id
+      ? `legacy-reviewer:${entry.user?.id || 'unknown'}:${entry.log.step_id || ''}:${entry.log.comment || ''}:${entry.created_at.slice(0, 16)}`
+      : undefined;
     // Older group operations were written before event_id was introduced.
     // Their position logs are created by the same actor, action and comment
     // within one second, so retain the group presentation for those records.
     const legacyGroup = entry.source === 'cfo_position' && entry.log.entity === 'cfo_position'
       ? `legacy:${entry.user?.id || 'unknown'}:${entry.log.action}:${entry.log.comment || ''}:${entry.created_at.slice(0, 19)}`
       : undefined;
-    const key = eventId ? `event:${eventId}` : legacyGroup || `entry:${entry.id}`;
+    const key = reviewerLineGroup || (eventId ? `event:${eventId}` : legacyGroup || `entry:${entry.id}`);
     if (!groups.has(key)) order.push(key);
     groups.set(key, [...(groups.get(key) || []), entry]);
   });

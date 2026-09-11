@@ -1,11 +1,11 @@
 import CloseIcon from '@mui/icons-material/Close';
 import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
 import Drawer from '@mui/material/Drawer';
 import IconButton from '@mui/material/IconButton';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import { useQuery } from '@tanstack/react-query';
-import { api } from '../../api/client';
+import { usePagedCursor } from '../../api/usePagedCursor';
 import type { RequestLog } from '../../types';
 import { RequestHistoryPanel } from './RequestHistoryPanel';
 
@@ -27,11 +27,9 @@ export function RequestHistoryDrawer({
   defaultTab?: 'content' | 'approval';
 }) {
   const requestId = target?.requestId;
-  const { data: logs = [], isPending } = useQuery({
-    queryKey: ['request-logs', requestId],
-    queryFn: async () => (await api.get<RequestLog[]>(`/requests/${requestId}/logs`)).data,
-    enabled: !!requestId,
-  });
+  const { items: logs, isPending, hasNextPage, fetchNextPage, isFetchingNextPage, isError } = usePagedCursor<RequestLog>(
+    ['request-logs', requestId], `/requests/${requestId}/logs`, !!requestId,
+  );
 
   return (
     <Drawer anchor="right" open={!!target} onClose={onClose} PaperProps={{ className: 'request-history-drawer' }}>
@@ -52,6 +50,11 @@ export function RequestHistoryDrawer({
         lineName={target?.lineName}
         defaultTab={defaultTab}
       />
+      {hasNextPage && (
+        <Button sx={{ m: 2, mt: 0 }} disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>
+          {isError ? 'Повторить загрузку истории' : 'Показать более ранние события'}
+        </Button>
+      )}
     </Drawer>
   );
 }

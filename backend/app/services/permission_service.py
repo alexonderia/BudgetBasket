@@ -145,6 +145,8 @@ class PermissionService:
         self.require_step_assignee(user, step)
 
     def visible_position_ids(self, user: dict) -> set[str] | None:
+        if hasattr(self.repo, "visible_position_ids"):
+            return self.repo.visible_position_ids(user, self)
         positions = self.repo.load_all("cfo_positions")
         if user.get("role") == "admin":
             return None
@@ -191,6 +193,8 @@ class PermissionService:
             raise HTTPException(status_code=403, detail="Нет доступа к позиции ЦФО")
 
     def visible_request_ids(self, user: dict) -> set[str] | None:
+        if hasattr(self.repo, "visible_request_ids"):
+            return self.repo.visible_request_ids(user, self)
         requests = self.repo.load_all("requests")
         if user.get("role") == "admin":
             return None
@@ -242,7 +246,12 @@ class PermissionService:
         self.require_employee_edit_request(user, request)
 
     def require_employee_cancel_request(self, user: dict, request: dict) -> None:
-        self.require_employee_edit_request(user, request)
+        self.require_employee_unit_access(user, request["unit_id"])
+        if request.get("status") != RequestStatus.on_review:
+            raise HTTPException(
+                status_code=409,
+                detail="Отменить можно только уже отправленную заявку",
+            )
 
     def require_employee_upload_file(self, user: dict, request: dict) -> None:
         self.require_employee_edit_request(user, request)

@@ -193,6 +193,7 @@ export function TableColumnHeader({
   formatFilterOptionLabel,
   filterOptionSection,
   endAdornment,
+  onOpenFilter,
 }: {
   label: ReactNode;
   sortable?: boolean;
@@ -212,6 +213,7 @@ export function TableColumnHeader({
   formatFilterOptionLabel?: (option: TableFilterOption) => string;
   filterOptionSection?: (option: TableFilterOption) => string | null;
   endAdornment?: ReactNode;
+  onOpenFilter?: () => void;
 }) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
@@ -222,6 +224,18 @@ export function TableColumnHeader({
   const menuActive = columnFiltered;
   const hasColumnControls = sortable || filterable;
   const optionLabel = (option: TableFilterOption) => formatFilterOptionLabel?.(option) || option.label;
+  const displayedFilterOptions = useMemo(() => {
+    if (!filterOptionSection) return filterOptions;
+    const withSections = filterOptions.map((option, index) => ({
+      option,
+      index,
+      section: filterOptionSection(option) || '',
+    }));
+    if (!withSections.some(({ section }) => section)) return filterOptions;
+    return withSections
+      .sort((left, right) => left.section.localeCompare(right.section, 'ru') || left.index - right.index)
+      .map(({ option }) => option);
+  }, [filterOptionSection, filterOptions]);
 
   const filterSummary = useMemo(() => {
     if (!columnFiltered) return 'Все значения';
@@ -234,6 +248,7 @@ export function TableColumnHeader({
   }, [columnFiltered, filterOptions, formatFilterOptionLabel, selectedValues]);
 
   const openFilterMenu = (event: MouseEvent<HTMLElement>) => {
+    onOpenFilter?.();
     event.stopPropagation();
     setAnchorEl(event.currentTarget);
   };
@@ -286,6 +301,7 @@ export function TableColumnHeader({
                   size="small"
                   color={columnSorted ? 'primary' : 'default'}
                   onClick={toggleSort}
+                  aria-label={columnSorted ? 'Изменить направление сортировки' : 'Сортировать'}
                   sx={{ opacity: columnSorted ? 1 : 0.72, p: 0.35 }}
                 >
                   <ArrowDownwardIcon
@@ -300,7 +316,7 @@ export function TableColumnHeader({
             )}
             {filterable && (
               <Tooltip title={menuActive ? filterSummary : 'Фильтр'}>
-                <IconButton size="small" color={menuActive ? 'primary' : 'default'} onClick={openFilterMenu} sx={{ p: 0.35 }}>
+                <IconButton size="small" color={menuActive ? 'primary' : 'default'} onClick={openFilterMenu} aria-label={menuActive ? filterSummary : 'Фильтр'} sx={{ p: 0.35 }}>
                   {columnFiltered ? <FilterAltOutlinedIcon fontSize="inherit" /> : <ArrowDropDownIcon fontSize="inherit" />}
                 </IconButton>
               </Tooltip>
@@ -340,17 +356,31 @@ export function TableColumnHeader({
                 </Button>
               </Stack>
               <Stack spacing={0} sx={{ maxHeight: 280, overflowY: 'auto', border: '1px solid rgba(15, 23, 42, 0.08)', borderRadius: 1 }}>
-                {filterOptions.length > 0 ? (
-                  filterOptions.map((option, index) => {
+                {displayedFilterOptions.length > 0 ? (
+                  displayedFilterOptions.map((option, index) => {
                     const checked = selectedValues.includes(option.value);
                     const labelText = optionLabel(option);
                     const lineCount = filterOptionLineCount(labelText);
                     const section = filterOptionSection?.(option);
-                    const previousSection = index > 0 ? filterOptionSection?.(filterOptions[index - 1]) : null;
+                    const previousSection = index > 0 ? filterOptionSection?.(displayedFilterOptions[index - 1]) : null;
                     return (
                       <Fragment key={option.value}>
                         {section && section !== previousSection && (
-                          <Typography variant="overline" color="text.secondary" sx={{ display: 'block', px: 1.5, pt: index ? 1.25 : 0.75, pb: 0.25, fontSize: 10, fontWeight: 700, lineHeight: 1.2 }}>
+                          <Typography variant="overline" sx={{
+                            display: 'block',
+                            px: 1.5,
+                            pt: index ? 1.5 : 0.9,
+                            pb: 0.7,
+                            mt: index ? 0.5 : 0,
+                            color: 'primary.dark',
+                            bgcolor: 'rgba(47, 105, 230, 0.07)',
+                            borderTop: index ? '1px solid rgba(47, 105, 230, 0.18)' : undefined,
+                            borderBottom: '1px solid rgba(15, 23, 42, 0.06)',
+                            fontSize: 10,
+                            fontWeight: 800,
+                            letterSpacing: 0.45,
+                            lineHeight: 1.2,
+                          }}>
                             {section}
                           </Typography>
                         )}

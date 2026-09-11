@@ -67,8 +67,14 @@ def test_annual_budget_is_formed_only_after_position_is_fixed(tmp_path):
         json={"comment": ""},
         headers=approver,
     )
-    fixed = client.post(
+    approved = client.post(
         f"/steps/{ROOT_STEP_ID}/positions/{position_id}/approve",
+        json={"comment": ""},
+        headers=zgd,
+    )
+    assert approved.status_code == 200
+    fixed = client.post(
+        f"/cfo-positions/{position_id}/fix",
         json={"comment": ""},
         headers=zgd,
     )

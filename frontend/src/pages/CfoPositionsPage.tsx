@@ -9,7 +9,6 @@ import {
   Button,
   Checkbox,
   Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -36,6 +35,7 @@ import { type ReactNode, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { CfoRequestReviewDialog } from '../components/CfoRequestReviewDialog';
+import { PageSkeleton } from '../components/PageSkeleton';
 import { ArticleRevisionDialog } from '../components/ArticleRevisionDialog';
 import type {
   ApprovalStep,
@@ -190,9 +190,7 @@ function PositionDetails({
       if (kind === 'approve') {
         return api.post(`/steps/${position.current_step_id}/positions/${position.id}/approve`, { comment });
       }
-      const target = currentStep?.child_step_ids?.[0];
       return api.post(`/steps/${position.current_step_id}/positions/${position.id}/return`, {
-        target_step_id: target,
         comment,
       });
     },
@@ -420,6 +418,7 @@ function PositionDetails({
             is_in_approval: true,
             is_approval_actionable: true,
             approval_stage: null,
+            current_step_id: position.current_step_id,
             frozen: item.frozen,
             fixed: item.fixed,
           }))}
@@ -443,8 +442,9 @@ export default function CfoPositionsPage({ user, renderRouteGraph }: { user: Use
   const { data: positions = [], isLoading: positionsLoading } = useQuery({
     queryKey: ['cfo-positions'],
     queryFn: async () => (await api.get<CfoPosition[]>('/cfo-positions')).data,
+    enabled: user.role !== 'zgd',
   });
-  const { data: routeSteps = [] } = useQuery({
+  const { data: routeSteps = [], isLoading: routeLoading } = useQuery({
     queryKey: ['cfo-approval-route'],
     queryFn: async () => (await api.get<ApprovalStep[]>('/approval-route')).data,
     enabled: true,
@@ -452,7 +452,7 @@ export default function CfoPositionsPage({ user, renderRouteGraph }: { user: Use
   const { data: steps = [] } = useQuery({
     queryKey: ['my-approval-steps'],
     queryFn: async () => (await api.get<ApprovalStep[]>('/steps/my')).data,
-    enabled: ['economist', 'approver', 'zgd'].includes(user.role),
+    enabled: ['economist', 'approver'].includes(user.role),
   });
   const visiblePositions = useMemo(() => {
     if (user.role === 'approver' || user.role === 'zgd') {
@@ -470,7 +470,31 @@ export default function CfoPositionsPage({ user, renderRouteGraph }: { user: Use
     [user, visiblePositions],
   );
   const myTasksCount = [...positionPresentations.values()].filter((item) => item.isCurrentUserAction).length;
-  if (requestsLoading || positionsLoading) return <CircularProgress />;
+  if (user.role === 'zgd') {
+    if (routeLoading) return <PageSkeleton variant="details" label="Р—Р°РіСЂСѓР·РєР° РіСЂР°С„Р° РјР°СЂС€СЂСѓС‚Р°" />;
+    return (
+      <Stack className="zgd-route-only" spacing={3}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between">
+          <Box>
+            <Typography variant="h5">Маршрут обработки заявок и позиций ЦФО</Typography>
+            <Typography color="text.secondary">
+              На схеме: модуль → ответственный ЦФО → экономист → следующие этапы. После проверки заявки объединяются в позиции ЦФО и далее проходят по этому маршруту.
+            </Typography>
+          </Box>
+          <Button
+            startIcon={<RefreshIcon />}
+            onClick={() => queryClient.invalidateQueries({ queryKey: ['cfo-approval-route'] })}
+          >
+            Обновить
+          </Button>
+        </Stack>
+        {renderRouteGraph(routeSteps)}
+      </Stack>
+    );
+  }
+  if (requestsLoading || positionsLoading) {
+    return <PageSkeleton variant="table" label="Загрузка позиций ЦФО" />;
+  }
   return (
     <Stack spacing={3}>
       <Stack direction="row" alignItems="center" justifyContent="space-between">
