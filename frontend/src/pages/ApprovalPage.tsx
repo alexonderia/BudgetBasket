@@ -590,24 +590,6 @@ function ApprovalGraph({
       return value;
     };
     graphSteps.forEach((step) => resolveDepth(step.id));
-    const routeDepth = new Map<string, number>();
-    const routeVisiting = new Set<string>();
-    const resolveRouteDepth = (stepId: string): number => {
-      if (routeDepth.has(stepId)) return routeDepth.get(stepId)!;
-      if (routeVisiting.has(stepId)) return 0;
-      routeVisiting.add(stepId);
-      const step = byId.get(stepId);
-      const parentDepths = step && stepsOnZgdRoute.has(stepId)
-        ? step.parent_step_ids
-          .filter((parentId) => byId.has(parentId) && stepsOnZgdRoute.has(parentId))
-          .map(resolveRouteDepth)
-        : [];
-      routeVisiting.delete(stepId);
-      const value = parentDepths.length ? Math.max(...parentDepths) + 1 : 0;
-      routeDepth.set(stepId, value);
-      return value;
-    };
-    graphSteps.forEach((step) => resolveRouteDepth(step.id));
     const columns = new Map<number, ApprovalStep[]>();
     graphSteps.forEach((step) => {
       const column = depth.get(step.id) || 0;
@@ -663,7 +645,6 @@ function ApprovalGraph({
     const nodeHeights = new Map(graphSteps.map((step) => [step.id, nodeHeightFor(step)]));
     const horizontalGap = 112;
     const verticalGap = 28;
-    const rowSize = minCardHeight + verticalGap;
     const poolWidth = 72;
     const poolGap = 8;
     const poolLeft = 24;
@@ -695,148 +676,143 @@ function ApprovalGraph({
       return key;
     };
     leafColumn.forEach((step) => resolveTerminalZgdKey(step.id));
-    type LeafTreeGroup = {
-      cfoKey: string;
-      department: string;
-      terminalKey: string;
-      leaves: ApprovalStep[];
-      maxDepth: number;
-    };
-    const leafTreeGroups = new Map<string, LeafTreeGroup>();
+    const leafBlocks = new Map<string, { height: number; moduleHeights: number[]; modulesHeight: number }>();
     leafColumn.forEach((step) => {
-      const department = step.department?.name || step.unit_path[0] || '';
-      const terminalKey = terminalZgdKey.get(step.id) || '';
-      const key = [cfoKey(step), terminalKey].join('\u0001');
-      const group = leafTreeGroups.get(key) || {
-        cfoKey: cfoKey(step),
-        department,
-        terminalKey,
-        leaves: [],
-        maxDepth: 0,
-      };
-      group.leaves.push(step);
-      group.maxDepth = Math.max(group.maxDepth, routeDepth.get(step.id) || 0);
-      leafTreeGroups.set(key, group);
-    });
-    const placeDeepestTreesAtEdges = (groups: LeafTreeGroup[]) => {
-      const byDepth = [...groups].sort((left, right) => (
-        right.maxDepth - left.maxDepth
-        || (cfoRank.get(left.cfoKey) ?? Number.MAX_SAFE_INTEGER) - (cfoRank.get(right.cfoKey) ?? Number.MAX_SAFE_INTEGER)
-        || left.cfoKey.localeCompare(right.cfoKey, 'ru')
-      ));
-      const slots: Array<LeafTreeGroup | undefined> = Array.from({ length: byDepth.length });
-      let top = 0;
-      let bottom = byDepth.length - 1;
-      byDepth.forEach((group, index) => {
-        if (index % 2 === 0) slots[top++] = group;
-        else slots[bottom--] = group;
+      const moduleHeights = (step.modules || []).map(moduleCardHeightFor);
+      const modulesHeight = moduleHeights.length
+        ? moduleHeights.reduce((total, height) => total + height, 0) + Math.max(0, moduleHeights.length - 1) * verticalGap
+        : minCardHeight;
+      leafBlocks.set(step.id, {
+        height: Math.max(nodeHeights.get(step.id) || minCardHeight, modulesHeight),
+        moduleHeights,
+        modulesHeight,
       });
-      return slots.filter((group): group is LeafTreeGroup => Boolean(group));
-    };
-    const orderedLeafGroups: LeafTreeGroup[] = [];
-    const terminalKeys = [...new Set([...leafTreeGroups.values()].map((group) => group.terminalKey))]
-      .sort((left, right) => left.localeCompare(right, 'ru'));
-    terminalKeys.forEach((terminalKey) => {
-      orderedLeafGroups.push(...placeDeepestTreesAtEdges(
-        [...leafTreeGroups.values()].filter((group) => group.terminalKey === terminalKey),
-      ));
-    });
-    const orderedLeafColumn = orderedLeafGroups.flatMap((group) => group.leaves);
-    const leafTreeKey = new Map(orderedLeafGroups.flatMap((group) => (
-      group.leaves.map((step) => [step.id, [group.cfoKey, group.terminalKey].join('\u0001')] as const)
-    )));
-    let leafY = 96;
-    let previousTerminalKey: string | null = null;
-    orderedLeafGroups.forEach((group) => {
-      if (previousTerminalKey !== null && previousTerminalKey !== group.terminalKey) leafY += verticalGap * 3;
-      group.leaves.sort((left, right) => (
-        (left.unit?.name || left.user?.login || '').localeCompare(right.unit?.name || right.user?.login || '', 'ru')
-      ));
-      group.leaves.forEach((step, index) => {
-        if (index > 0) leafY += verticalGap;
-        const modules = step.modules || [];
-        const leafNodeHeight = nodeHeights.get(step.id) || minCardHeight;
-        const moduleHeights = modules.map(moduleCardHeightFor);
-        const modulesHeight = modules.length
-          ? moduleHeights.reduce((total, height) => total + height, 0) + Math.max(0, modules.length - 1) * verticalGap
-          : minCardHeight;
-        const groupHeight = Math.max(leafNodeHeight, modulesHeight);
-        positions.set(step.id, {
-          x: graphLeft + nodeWidth + horizontalGap,
-          y: leafY + (groupHeight - leafNodeHeight) / 2,
-        });
-        let moduleY = leafY;
-        modules.forEach((module, moduleIndex) => {
-          const height = moduleHeights[moduleIndex];
-          moduleCards.push({
-            module,
-            stepId: step.id,
-            x: graphLeft,
-            y: moduleY,
-            height,
-          });
-          moduleY += height + verticalGap;
-        });
-        leafY += groupHeight + verticalGap;
-      });
-      previousTerminalKey = group.terminalKey;
     });
 
-    const reviewerSteps = graphSteps.filter((step) => !step.unit_id && step.user?.role !== 'zgd');
-    const reviewerColumns = new Map<number, ApprovalStep[]>();
-    reviewerSteps.forEach((step) => {
-      const column = Math.max(1, depth.get(step.id) || 1);
-      reviewerColumns.set(column, [...(reviewerColumns.get(column) || []), step]);
-    });
-    // Размещаем проверяющих по глубине маршрута: следующий этап всегда правее предыдущего.
-    [...reviewerColumns.keys()].sort((left, right) => left - right).forEach((column) => {
-      const reviewersInColumn = reviewerColumns.get(column)!;
-      const positioned = reviewersInColumn.map((step, index) => {
-        const childCenters = childIdsFor(step)
-          .map((childId) => {
-            const position = positions.get(childId);
-            if (!position) return undefined;
-            return position.y + (nodeHeights.get(childId) || minCardHeight) / 2;
-          })
-          .filter((value): value is number => value !== undefined);
-        const stepHeight = nodeHeights.get(step.id) || minCardHeight;
-        return {
-          step,
-          preferredY: childCenters.length
-            ? childCenters.reduce((total, value) => total + value, 0) / childCenters.length - stepHeight / 2
-            : 96 + index * rowSize,
-        };
-      }).sort((left, right) => left.preferredY - right.preferredY);
-      let columnY = 96;
-      positioned.forEach(({ step, preferredY }) => {
-        const y = Math.max(preferredY, columnY);
-        positions.set(step.id, {
-          x: graphLeft + (column + 1) * (nodeWidth + horizontalGap),
-          y,
-        });
-        columnY = y + (nodeHeights.get(step.id) || minCardHeight) + verticalGap;
+    const visibleParents = new Map<string, string[]>();
+    graphSteps.forEach((step) => {
+      childIdsFor(step).forEach((childId) => {
+        visibleParents.set(childId, [...(visibleParents.get(childId) || []), step.id]);
       });
     });
-    const lastReviewerColumn = Math.max(0, ...reviewerColumns.keys());
+
+    type BranchOrder = { rank: number; key: string };
+    const branchOrderCache = new Map<string, BranchOrder>();
+    const branchOrderFor = (stepId: string, visiting = new Set<string>()): BranchOrder => {
+      const cached = branchOrderCache.get(stepId);
+      if (cached) return cached;
+      if (visiting.has(stepId)) return { rank: Number.MAX_SAFE_INTEGER, key: '' };
+      visiting.add(stepId);
+      const step = byId.get(stepId);
+      const ownOrder = step?.unit_id
+        ? { rank: cfoRank.get(cfoKey(step)) ?? Number.MAX_SAFE_INTEGER, key: cfoKey(step) }
+        : undefined;
+      const childOrders = step
+        ? childIdsFor(step).map((childId) => branchOrderFor(childId, visiting))
+        : [];
+      visiting.delete(stepId);
+      const result = [...(ownOrder ? [ownOrder] : []), ...childOrders].sort(
+        (left, right) => left.rank - right.rank || left.key.localeCompare(right.key, 'ru'),
+      )[0] || { rank: Number.MAX_SAFE_INTEGER, key: '' };
+      branchOrderCache.set(stepId, result);
+      return result;
+    };
+    const compareBranchIds = (leftId: string, rightId: string) => {
+      const leftOrder = branchOrderFor(leftId);
+      const rightOrder = branchOrderFor(rightId);
+      return leftOrder.rank - rightOrder.rank
+        || leftOrder.key.localeCompare(rightOrder.key, 'ru')
+        || (byId.get(leftId)?.unit?.name || byId.get(leftId)?.user?.login || '').localeCompare(
+          byId.get(rightId)?.unit?.name || byId.get(rightId)?.user?.login || '',
+          'ru',
+        );
+    };
+
+    const blockHeights = new Map<string, number>();
+    const blockVisiting = new Set<string>();
+    const blockHeightFor = (stepId: string): number => {
+      const cached = blockHeights.get(stepId);
+      if (cached !== undefined) return cached;
+      const step = byId.get(stepId);
+      if (!step || blockVisiting.has(stepId)) return nodeHeights.get(stepId) || minCardHeight;
+      blockVisiting.add(stepId);
+      const children = childIdsFor(step).sort(compareBranchIds);
+      const childrenHeight = children.length
+        ? children.reduce((total, childId) => total + blockHeightFor(childId), 0) + (children.length - 1) * verticalGap
+        : 0;
+      const ownHeight = step.unit_id
+        ? leafBlocks.get(step.id)?.height || nodeHeights.get(step.id) || minCardHeight
+        : nodeHeights.get(step.id) || minCardHeight;
+      const height = Math.max(ownHeight, childrenHeight);
+      blockVisiting.delete(stepId);
+      blockHeights.set(stepId, height);
+      return height;
+    };
+    graphSteps.forEach((step) => blockHeightFor(step.id));
+
+    // Размещаем проверяющих по глубине маршрута: следующий этап всегда правее предыдущего.
+    const lastReviewerColumn = Math.max(0, ...graphSteps
+      .filter((step) => !step.unit_id && step.user?.role !== 'zgd')
+      .map((step) => Math.max(1, depth.get(step.id) || 1)));
     const zgdColumn = lastReviewerColumn + 2;
     const zgdX = graphLeft + zgdColumn * (nodeWidth + horizontalGap);
-    const zgdSteps = graphSteps.filter((step) => !step.unit_id && step.user?.role === 'zgd');
-    zgdSteps.forEach((step, index) => {
-      const childCenters = childIdsFor(step)
-        .map((childId) => {
-          const position = positions.get(childId);
-          if (!position) return undefined;
-          return position.y + (nodeHeights.get(childId) || minCardHeight) / 2;
-        })
-        .filter((value): value is number => value !== undefined);
-      const stepHeight = nodeHeights.get(step.id) || minCardHeight;
-      positions.set(step.id, {
-        x: zgdX,
-        y: childCenters.length
-          ? childCenters.reduce((total, value) => total + value, 0) / childCenters.length - stepHeight / 2
-          : 96 + index * rowSize,
+    const nodeXFor = (step: ApprovalStep) => step.user?.role === 'zgd'
+      ? zgdX
+      : graphLeft + ((depth.get(step.id) || 0) + 1) * (nodeWidth + horizontalGap);
+    const placed = new Set<string>();
+    const placeSubtree = (stepId: string, top: number) => {
+      const step = byId.get(stepId);
+      if (!step || placed.has(stepId)) return;
+      const children = childIdsFor(step).sort(compareBranchIds);
+      const blockHeight = blockHeightFor(stepId);
+      const ownHeight = step.unit_id
+        ? leafBlocks.get(step.id)?.height || nodeHeights.get(step.id) || minCardHeight
+        : nodeHeights.get(step.id) || minCardHeight;
+      const childrenHeight = children.length
+        ? children.reduce((total, childId) => total + blockHeightFor(childId), 0) + (children.length - 1) * verticalGap
+        : 0;
+      const childrenTop = top + Math.max(0, (blockHeight - childrenHeight) / 2);
+      let childTop = childrenTop;
+      children.forEach((childId) => {
+        placeSubtree(childId, childTop);
+        childTop += blockHeightFor(childId) + verticalGap;
       });
+      const nodeHeight = nodeHeights.get(step.id) || minCardHeight;
+      positions.set(step.id, {
+        x: nodeXFor(step),
+        y: top + (blockHeight - nodeHeight) / 2,
+      });
+      placed.add(stepId);
+      if (step.unit_id) {
+        const leafBlock = leafBlocks.get(step.id);
+        let moduleY = top + Math.max(0, (blockHeight - (leafBlock?.modulesHeight || minCardHeight)) / 2);
+        (step.modules || []).forEach((module, moduleIndex) => {
+          const height = leafBlock?.moduleHeights[moduleIndex] || minCardHeight;
+          moduleCards.push({ module, stepId: step.id, x: graphLeft, y: moduleY, height });
+          moduleY += height + verticalGap;
+        });
+      }
+    };
+    const rootSteps = graphSteps
+      .filter((step) => !(visibleParents.get(step.id) || []).length)
+      .sort((left, right) => Number(right.user?.role === 'zgd') - Number(left.user?.role === 'zgd') || compareBranchIds(left.id, right.id));
+    let nextRootY = 96;
+    rootSteps.forEach((step) => {
+      placeSubtree(step.id, nextRootY);
+      nextRootY += blockHeightFor(step.id) + verticalGap;
     });
+    graphSteps.forEach((step) => {
+      if (placed.has(step.id)) return;
+      placeSubtree(step.id, nextRootY);
+      nextRootY += blockHeightFor(step.id) + verticalGap;
+    });
+    const orderedLeafColumn = [...leafColumn].sort((left, right) => (
+      (positions.get(left.id)?.y || 0) - (positions.get(right.id)?.y || 0)
+    ));
+    const leafTreeKey = new Map(leafColumn.map((step) => [
+      step.id,
+      [cfoKey(step), terminalZgdKey.get(step.id) || ''].join('\u0001'),
+    ]));
     const maxY = Math.max(
       96,
       ...graphSteps.map((step) => {
