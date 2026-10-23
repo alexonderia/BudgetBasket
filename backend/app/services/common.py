@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.models import APPROVED_ITEM_STATUSES, ItemStatus, RequestStatus
+from app.models import APPROVED_ITEM_STATUSES, CfoPositionStatus, ItemStatus, RequestStatus
 from app.repositories.base import Repository
 
 
@@ -128,3 +128,23 @@ def derived_request_status(items: list[dict[str, Any]]) -> RequestStatus:
     ):
         return RequestStatus.approved
     return RequestStatus.on_review
+
+
+def derived_request_status_with_positions(
+    items: list[dict[str, Any]],
+    positions: list[dict[str, Any]],
+) -> RequestStatus:
+    """Keep a request in review while any CFO position is still on revision.
+
+    Line statuses alone are not enough: every line may already be approved
+    while the position still waits for the CFO to hand the revision back to
+    the module.  Treating that request as approved hides the controls and
+    makes the backend reject the very action the register still shows.
+    """
+    status = derived_request_status(items)
+    if status == RequestStatus.approved and any(
+        position.get("status") == CfoPositionStatus.on_revision
+        for position in positions
+    ):
+        return RequestStatus.on_review
+    return status

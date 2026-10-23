@@ -14,7 +14,7 @@ from app.services.budget_item_service import BudgetItemService
 from app.services.budget_totals import sync_annual_budgets
 from app.services.common import (
     cfo_position_current_step_id,
-    derived_request_status,
+    derived_request_status_with_positions,
     get_required,
     now_iso,
     public_user,
@@ -702,6 +702,10 @@ class ApprovalService:
         event_id: str,
         action: str,
     ) -> None:
+        positions_by_id = {
+            position["id"]: position
+            for position in repo.load_all("cfo_positions")
+        }
         for request_id in sorted(request_ids):
             request = get_required(repo, "requests", request_id)
             if request.get("status") in {RequestStatus.draft, RequestStatus.cancelled}:
@@ -710,7 +714,15 @@ class ApprovalService:
                 row for row in repo.load_all("req_items")
                 if row.get("request_id") == request_id
             ]
-            status = derived_request_status(items)
+            positions = [
+                positions_by_id[position_id]
+                for position_id in {
+                    row.get("cfo_position_id") for row in items
+                    if row.get("cfo_position_id")
+                }
+                if position_id in positions_by_id
+            ]
+            status = derived_request_status_with_positions(items, positions)
             if request.get("status") == status:
                 continue
             updated = repo.update("requests", request_id, {"status": status})

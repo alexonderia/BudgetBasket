@@ -3135,6 +3135,16 @@ export function ApprovalRegister({
   const markPointRevision = useCallback((row: ApprovalRegisterRow) => {
     markRowForRevision.mutate(row);
   }, [markRowForRevision]);
+  // The row-level return belongs to the responsible CFO.  Open the same
+  // confirmation dialog as the group action instead of only saving a draft
+  // selection: a lone row otherwise looks like a dead button.
+  const requestPointRevision = useCallback((row: ApprovalRegisterRow) => {
+    if (user.role === 'employee') {
+      openPointRevision(row);
+      return;
+    }
+    markPointRevision(row);
+  }, [markPointRevision, openPointRevision, user.role]);
   const handleSaveRowDecision = useCallback((
     row: ApprovalRegisterRow,
     decision: RowDecision,
@@ -4060,7 +4070,7 @@ export function ApprovalRegister({
           {data && (
             <RegisterQueryContext.Provider value={registerQuery}>
             <FilteredRegisterItemsContext.Provider value={filteredItemsByGroup}>
-            <PointRevisionContext.Provider value={markPointRevision}>
+            <PointRevisionContext.Provider value={requestPointRevision}>
             <RegisterViewContext.Provider value={view}>
             <VirtualTreeRows
               scrollRef={tableContainerRef}
