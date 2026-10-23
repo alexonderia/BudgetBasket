@@ -34,8 +34,9 @@ function StatusChip({ status, label }: { status: string; label: string }) {
   );
 }
 
-export function RequestStatusBadge({ status }: { status: RequestStatus }) {
-  return <StatusChip status={status} label={requestStatusLabels[status]} />;
+export function RequestStatusBadge({ status, label }: { status: RequestStatus | 'on_revision'; label?: string }) {
+  const resolvedLabel = label ?? (status === 'on_revision' ? 'На доработке' : requestStatusLabels[status]);
+  return <StatusChip status={status} label={resolvedLabel} />;
 }
 
 export function ItemStatusBadge({ status }: { status: ItemStatus }) {
