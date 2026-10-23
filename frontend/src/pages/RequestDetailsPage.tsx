@@ -2629,7 +2629,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     };
   }, [chat, id, queryClient, request?.status]);
   const sendChatMessage = useMutation({
-    mutationFn: () => {
+    mutationFn: async (): Promise<unknown> => {
       if (!chatImages.length) return api.post(`/chats/${chat!.id}/messages`, { text: chatText.trim() });
       const form = new FormData();
       form.append('text', chatText.trim());
