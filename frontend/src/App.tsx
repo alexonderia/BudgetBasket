@@ -100,7 +100,7 @@ export default function App() {
     <Routes>
       <Route path="/file-preview/:fileId" element={<PageLoadBoundary variant="details" label="Загрузка файла"><FilePreviewRoute /></PageLoadBoundary>} />
       <Route element={<Layout user={user} onLogout={logout} onUserChange={persistUser} />}>
-        <Route path="/" element={user.role === 'employee' || user.role === 'economist' ? <Navigate to="/requests" replace /> : <PageLoadBoundary variant="dashboard" label="Загрузка сводки бюджета"><DashboardPage user={user} /></PageLoadBoundary>} />
+        <Route path="/" element={user.role === 'employee' ? <Navigate to="/requests" replace /> : <PageLoadBoundary variant="dashboard" label="Загрузка сводки бюджета"><DashboardPage user={user} /></PageLoadBoundary>} />
         <Route path="/income-dashboard" element={<Navigate to="/" replace />} />
         <Route path="/requests" element={<PageLoadBoundary label="Загрузка заявок"><RequestsPage user={user} /></PageLoadBoundary>} />
         <Route path="/register" element={<Navigate to="/requests" replace />} />

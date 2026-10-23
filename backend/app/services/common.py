@@ -85,7 +85,7 @@ def request_cfo_review_completed(repo: Repository, request_id: str) -> bool:
 
 
 def request_returned_item_ids(repo: Repository, request_id: str) -> set[str]:
-    """Return lines currently handed back by the CFO to the module author."""
+    """Return lines currently handed back for revision to the module author."""
     relevant = []
     for row in repo.load_all("req_logs"):
         if row.get("req_id") != request_id:
@@ -93,6 +93,7 @@ def request_returned_item_ids(repo: Repository, request_id: str) -> set[str]:
         action = (row.get("log") or {}).get("action")
         if action in {
             "cfo_items_returned_for_revision",
+            "position_returned",
             "request_revision_resubmitted_to_cfo",
             "request_restored",
         }:
@@ -104,7 +105,7 @@ def request_returned_item_ids(repo: Repository, request_id: str) -> set[str]:
         key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
     )
     log = latest.get("log") or {}
-    if log.get("action") != "cfo_items_returned_for_revision":
+    if log.get("action") not in {"cfo_items_returned_for_revision", "position_returned"}:
         return set()
     return {str(item_id) for item_id in log.get("item_ids") or []}
 

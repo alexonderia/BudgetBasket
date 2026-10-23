@@ -1250,24 +1250,28 @@ function GroupActions({
     && group.aggregates.fixed_rows === group.aggregates.total_rows;
   const hasWorkflowDecision = hasWorkflowActions && !hasWorkflowPackage && !hasWorkflowRevisionPackage;
   const actualWorkflowReject = user.role === 'economist' && hasWorkflowActions && !hasWorkflowRevisionPackage;
-  if (!hasCfo && !hasCfoDecision && !hasComplete && !hasWorkflowActions && !hasZgdUnlock) return null;
+  if (!hasCfo && !hasCfoDecision && !hasComplete && !hasWorkflowActions && !hasZgdLock && !hasZgdUnlock) return null;
 
   const scopeLabel = group.type === 'article' ? 'статью' : group.type === 'cfo' ? 'ЦФО' : 'группу';
-  const primaryApprove = hasCfoReview
-    ? () => onApproveCfo(group)
-    : hasWorkflowPackage
-      ? () => onWorkflowApprove(group)
-      : () => onWorkflowDecision(group);
+  const primaryApprove = user.role === 'zgd' && hasZgdLock
+    ? () => onWorkflowFix(group, false)
+    : hasCfoReview
+      ? () => onApproveCfo(group)
+      : hasWorkflowPackage
+        ? () => onWorkflowApprove(group)
+        : () => onWorkflowDecision(group);
   const primaryReject = hasCfoDecision
     ? () => onRejectCfo(group)
     : actualWorkflowReject
       ? () => onWorkflowReject(group)
       : () => onWorkflowReturn(group);
-  const approveTitle = hasCfoReview
-    ? `Согласовать все доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`
-    : hasWorkflowPackage
-      ? `${workflowApproveLabel(user.role)} (${scopeLabel})`
-      : `Согласовать доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`;
+  const approveTitle = user.role === 'zgd' && hasZgdLock
+    ? 'Зафиксировать бюджет'
+    : hasCfoReview
+      ? `Согласовать все доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`
+      : hasWorkflowPackage
+        ? `${workflowApproveLabel(user.role)} (${scopeLabel})`
+        : `Согласовать доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`;
   const rejectTitle = hasCfoDecision || actualWorkflowReject
     ? `Отклонить доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`
     : hasCfo
@@ -3528,9 +3532,25 @@ export function ApprovalRegister({
     if (selectionRoots.length > 0) {
       const cfoRoots = cfoGroupsForReturn(selectionRoots);
       const workflowRoots = workflowGroupsForAction(selectionRoots)
-        .filter((group) => user.role === 'employee' || groupHasWorkflowReturn(group, user.role));
-      if (cfoRoots.length) openGroupRevision(cfoRoots, 'cfo');
-      else if (workflowRoots.length) openGroupRevision(workflowRoots, 'workflow');
+        .filter((group) => user.role === 'employee'
+          || groupHasWorkflowReturn(group, user.role)
+          || (user.role === 'economist' && groupHasWorkflowActions(group, user.role)));
+      if (cfoRoots.length) {
+        void openGroupRevision(cfoRoots, 'cfo');
+        return;
+      }
+      if (workflowRoots.length) {
+        void openGroupRevision(workflowRoots, 'workflow');
+        return;
+      }
+      if (actionableRows.length) {
+        setDecisionTarget({
+          rows: actionableRows,
+          decision: user.role === 'economist' ? 'on_revision' : 'rejected',
+        });
+        return;
+      }
+      toast('Нет строк, доступных для возврата на доработку', 'info');
       return;
     }
     if (['approver', 'zgd'].includes(user.role) && actionableRows.some((row) => row.is_final_approval_actionable)) {
