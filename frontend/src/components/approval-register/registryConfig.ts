@@ -308,6 +308,12 @@ export function groupHasWorkflowRevision(group: ApprovalRegisterGroup, role?: Us
     && (group.aggregates.workflow_revision_positions || 0) > 0;
 }
 
+export function groupNeedsCfoRevisionHint(group: ApprovalRegisterGroup, role?: User['role']) {
+  return role === 'economist'
+    && (group.aggregates.revision_rows || 0) > 0
+    && (group.aggregates.actionable_positions || 0) === 0;
+}
+
 /**
  * A reviewer can return a position as a package.  This is deliberately
  * separate from `groupHasWorkflowApprove`: a reviewer may choose revision

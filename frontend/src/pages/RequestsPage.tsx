@@ -33,7 +33,7 @@ import { useAppToast } from '../components/Layout';
 import { TableColumnHeader, TableColumnResizeHandle, TableColumnTools } from '../components/TableColumnControls';
 import { RequestStatusBadge, StepStatusBadge } from '../components/StatusBadge';
 import type { BudgetItem, BudgetRequest, CatalogItem, Unit, User } from '../types';
-import { CLOSED_EXPORT_STATUSES, defaultExportSettings, exportSettingsFromRequestPage, type ExportSettingsState } from '../utils/exportSettings';
+import { CLOSED_EXPORT_STATUSES, defaultExportSettings, exportSettingsFromRequestPage, hasClosedExportRequests, type ExportSettingsState } from '../utils/exportSettings';
 import { downloadBlob } from '../utils/download';
 import { money, requestStatusLabels } from '../utils/labels';
 import { filterFieldSx } from '../utils/responsive';
@@ -439,6 +439,10 @@ function RequestsListPage({ user }: { user: User }) {
 
   const exportClosed = async () => {
     setExportError('');
+    if (!hasClosedExportRequests(visibleRequests)) {
+      setExportError('Экспорт доступен только для утверждённых и отклонённых заявок.');
+      return;
+    }
     setExporting(true);
     try {
       const response = await api.get('/requests/export/closed', {
@@ -527,6 +531,7 @@ function RequestsListPage({ user }: { user: User }) {
       ...visibleRequests.filter((request) => !packagedIds.has(request.id)),
     ];
   }, [forwardPackages, packageByRequestId, user.role, visibleRequests]);
+  const canExportClosedRequests = hasClosedExportRequests(visibleRequests);
   const requestColumnLabels: Record<RequestTableColumn, string> = {
     actions: 'Действие',
     unit: 'Объединение заявки',
@@ -754,12 +759,17 @@ function RequestsListPage({ user }: { user: User }) {
                   Добавить заявку
                 </Button>
               ) : null}
-              <Button startIcon={<TuneOutlinedIcon />} variant="outlined" onClick={() => {
+              <Button startIcon={<TuneOutlinedIcon />} variant="outlined" disabled={!canExportClosedRequests} onClick={() => {
                 setExportSettings(exportSettingsFromRequestPage({ user, filters, visibleRequests, units }));
                 setExportOpen(true);
               }}>
                 Настроить экспорт
               </Button>
+              {!canExportClosedRequests && (
+                <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>
+                  Экспорт доступен только для утверждённых и отклонённых заявок.
+                </Typography>
+              )}
             </Stack>
           </Stack>
           {user.role === 'employee' ? (
