@@ -56,6 +56,10 @@ function uniqueStatuses(values: RequestStatus[], allowed: RequestStatus[]): Requ
   return allowed.filter((status) => values.includes(status));
 }
 
+export function hasClosedExportRequests(requests: Array<Pick<BudgetRequest, 'status'>>): boolean {
+  return requests.some((request) => CLOSED_EXPORT_STATUSES.includes(request.status));
+}
+
 export function exportSettingsFromRequestPage(options: {
   user: User;
   filters: { status: string; frozen: string; flow?: '' | 'expense' | 'income' };
