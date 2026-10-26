@@ -1656,7 +1656,10 @@ class ApprovalService:
                 pending_revision_items: dict[str, list[dict]] = {}
                 for item in repo.load_all("req_items"):
                     request_id = item.get("request_id")
-                    if item["id"] in pending_revision_by_request.get(request_id, set()):
+                    if (
+                        not item.get("fixed")
+                        and item["id"] in pending_revision_by_request.get(request_id, set())
+                    ):
                         pending_revision_items.setdefault(request_id, []).append(item)
                 raise HTTPException(
                     status_code=409,
@@ -1732,7 +1735,11 @@ class ApprovalService:
                     pending = [
                         item
                         for item in items_by_request.get(request_id, [])
-                        if item["id"] not in decisions or decisions[item["id"]] == "on_revision"
+                        if not item.get("fixed")
+                        and (
+                            item["id"] not in decisions
+                            or decisions[item["id"]] == "on_revision"
+                        )
                     ]
                     if pending:
                         pending_by_request[request_id] = pending
