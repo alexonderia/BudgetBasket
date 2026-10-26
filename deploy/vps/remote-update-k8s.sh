@@ -100,6 +100,16 @@ kubectl apply -f "${ROOT}/deploy/k8s/bb-frontend/"
 # --- roll deployments onto the new tag ---
 kubectl -n "${NS}" set image deployment/bb-backend  "backend=${BB_BACKEND}"
 kubectl -n "${NS}" set image deployment/file-guard  "file-guard=${BB_FILE_GUARD}"
+# The clamd seed initContainer must roll with the same tag.  `set image`
+# above only updates the main container; leaving prod-1 there makes the pod
+# fail with ImagePullBackOff after the mutable tag disappears.
+kubectl -n "${NS}" patch deployment/file-guard --type=json \
+  -p "[{\"op\":\"replace\",\"path\":\"/spec/template/spec/initContainers/0/image\",\"value\":\"${BB_FILE_GUARD}\"}]"
+INIT_IMAGE="$(kubectl -n "${NS}" get deployment/file-guard -o jsonpath='{.spec.template.spec.initContainers[0].image}')"
+[ "${INIT_IMAGE}" = "${BB_FILE_GUARD}" ] || {
+  echo "FAIL: file-guard init image is ${INIT_IMAGE}, expected ${BB_FILE_GUARD}" >&2
+  exit 1
+}
 kubectl -n "${NS}" set image deployment/bb-frontend "frontend=${BB_FRONTEND}"
 for d in bb-backend file-guard bb-frontend; do
   kubectl -n "${NS}" rollout status "deployment/${d}" --timeout=5m

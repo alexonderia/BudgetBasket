@@ -2768,7 +2768,8 @@ function VirtualTreeRows(props: React.ComponentProps<typeof TreeRows> & { scroll
       }, { signal });
       return { ...response.data, group: { ...response.data.group, aggregates: group.aggregates } };
     },
-    enabled: visibleOwners.has(group.id),
+    enabled: visibleOwners.has(group.id)
+      || (group.type === 'category' && group.can_load_rows),
   })) });
   const byGroup = new Map(leaves.map((group, index) => [group.id, results[index]]));
   const loadedSignature = results.map((result) => result.dataUpdatedAt).join(',');
@@ -3310,16 +3311,21 @@ export function ApprovalRegister({
       setExpanded((current) => { const next = new Set(current); collectExpandableGroupIds(group).forEach((id) => next.delete(id)); return next; });
       return;
     }
+    const ids = new Set<string>([group.id]);
     try {
       const pending = [group];
-      const ids: string[] = [];
       while (pending.length) {
         const branch = await loadBranch(pending.shift()!);
-        if (branch.has_children || branch.children.length || branch.can_load_rows) ids.push(branch.id);
+        if (branch.has_children || branch.children.length || branch.can_load_rows) ids.add(branch.id);
         pending.push(...branch.children);
       }
-      setExpanded((current) => new Set([...current, ...ids]));
-    } catch (error) { toast(getApiErrorMessage(error, 'Не удалось загрузить группу'), 'error'); }
+    } catch (error) {
+      toast(getApiErrorMessage(error, 'Не удалось загрузить группу'), 'error');
+    }
+    // The clicked group must expand even when branch loading returns no
+    // explicit children.  Category rows are fetched separately and would
+    // otherwise leave the button stuck on «Раскрыть группу».
+    setExpanded((current) => new Set([...current, ...ids]));
   }, [expanded, loadBranch, toast]);
   const expandAll = useCallback(async () => {
     for (const group of data?.groups || []) {
