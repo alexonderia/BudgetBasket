@@ -2978,3 +2978,31 @@ def test_register_editability_locks_fixed_rows_but_keeps_frozen_route_rows(tmp_p
     )
     assert frozen_route["can_decide"] is True
 
+
+def test_economist_cannot_complete_a_fully_rejected_position(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    request, items = create_submitted_request(client, employee)
+    completed = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )
+    position_id = completed["affected_cfo_position_ids"][0]
+    assert client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": "Передать"},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(
+        f"/cfo-positions/{position_id}/items/{items[0]['id']}/decision",
+        json={"decision": "rejected", "comment": "Не согласовано"},
+        headers=economist,
+    ).status_code == 200
+    blocked = client.post(
+        f"/cfo-positions/{position_id}/complete-review",
+        json={"comment": "Завершить"},
+        headers=economist,
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"] == "В позиции нет строк для согласования"
+

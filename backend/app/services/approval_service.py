@@ -1995,6 +1995,11 @@ class ApprovalService:
                 raise HTTPException(status_code=404, detail="Позиция не найдена")
             self._require_economist_work(user, position, repo=repo)
             items = self._position_items(repo, position_id)
+            if items and all(row.get("status") == ItemStatus.rejected for row in items):
+                raise HTTPException(
+                    status_code=409,
+                    detail="В позиции нет строк для согласования",
+                )
             decisions = self._economist_decisions(repo, position_id)
             pending = [
                 row["id"] for row in items

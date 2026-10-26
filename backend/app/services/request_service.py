@@ -2745,7 +2745,9 @@ class RequestService:
                 return False
             items = position_items(position["id"])
             decided = economist_decided_by_position.get(position["id"], set())
-            return bool(items) and all(
+            return bool(items) and any(
+                item.get("status") != ItemStatus.rejected for item in items
+            ) and all(
                 item["id"] in decided and item.get("status") != ItemStatus.on_review
                 for item in items
             )
