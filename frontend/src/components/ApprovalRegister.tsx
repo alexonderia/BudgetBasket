@@ -2977,6 +2977,17 @@ export function ApprovalRegister({
     message: string;
     requests: ForwardBlockingRequest[];
   } | null>(null);
+  const showForwardError = useCallback((error: unknown, fallback: string) => {
+    const blockingRequests = parseForwardBlockingRequests(getApiErrorDetail(error));
+    if (blockingRequests.length) {
+      setForwardBlocked({
+        message: getApiErrorMessage(error, fallback),
+        requests: blockingRequests,
+      });
+      return;
+    }
+    toast(getApiErrorMessage(error, fallback), 'error');
+  }, [toast]);
   const [groupsToApprove, setGroupsToApprove] = useState<ApprovalRegisterGroup[]>([]);
   const [groupsToForward, setGroupsToForward] = useState<ApprovalRegisterGroup[]>([]);
   const [forwardLines, setForwardLines] = useState<ApprovalRegisterRow[]>([]);
@@ -3234,7 +3245,7 @@ export function ApprovalRegister({
       setGroupsToApprove([]);
       setSelected(new Map());
       setSelectedGroups(new Map());
-      toast(getApiErrorMessage(error, 'Не удалось согласовать группу'), 'error');
+      showForwardError(error, 'Не удалось согласовать группу');
     },
   });
   const completeCfoReviewGroups = useMutation({
@@ -3275,7 +3286,7 @@ export function ApprovalRegister({
       setSelected(new Map());
       setSelectedGroups(new Map());
     },
-    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось выполнить действие по группе'), 'error'),
+    onError: (error) => showForwardError(error, 'Не удалось выполнить действие по группе'),
   });
   const forwardApprovalGroups = useMutation({
     mutationFn: async (groups: ApprovalRegisterGroup[]) => {
