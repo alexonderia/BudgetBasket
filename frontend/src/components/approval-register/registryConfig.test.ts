@@ -13,6 +13,7 @@ import {
   groupHasWorkflowActions,
   groupHasWorkflowApprove,
   groupHasWorkflowReturn,
+  groupNeedsCfoRevisionHint,
   isGroupActionable,
   isGroupSelectable,
   isRowActionable,
@@ -86,6 +87,21 @@ describe('registry display helpers', () => {
     expect(groupHasWorkflowActions(group)).toBe(false);
     expect(isGroupActionable(group)).toBe(false);
     expect(isGroupSelectable(group)).toBe(false);
+  });
+
+  it('explains that a group with no actions waits for CFO revision', () => {
+    const group = {
+      id: 'group', type: 'article' as const, name: 'Article', label: 'Article', children: [],
+      module_id: 'module', article_id: 'article', category_id: 'category', request_ids: ['request'], can_load_rows: false,
+      aggregates: {
+        ...sampleAggregates,
+        revision_rows: 1,
+        actionable_positions: 0,
+      },
+    };
+    expect(groupNeedsCfoRevisionHint(group, 'economist')).toBe(true);
+    expect(groupNeedsCfoRevisionHint(group, 'employee')).toBe(false);
+    expect(groupNeedsCfoRevisionHint(group, 'approver')).toBe(false);
   });
 
   it('lets economist, approver and ZGD act on a group returned to their step', () => {

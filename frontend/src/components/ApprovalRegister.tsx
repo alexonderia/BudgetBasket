@@ -82,6 +82,7 @@ import {
   groupHasWorkflowApprove,
   groupHasWorkflowRevision,
   groupHasWorkflowReturn,
+  groupNeedsCfoRevisionHint,
   groupRegistryStatus,
   isGroupActionable,
   isGroupSelectable,
@@ -2575,6 +2576,11 @@ function TreeRows({
       status: (
         <Stack spacing={0.5} alignItems="flex-start">
           <RegistryGroupStatusCell status={groupRegistryStatus(group.aggregates)} aggregates={group.aggregates} />
+          {approvalMode && groupNeedsCfoRevisionHint(group, user.role) && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 10, lineHeight: 1.2 }}>
+              Ожидает доработки ЦФО
+            </Typography>
+          )}
           {approvalMode && (isGroupActionable(group, user.role) || (user.role === 'zgd' && (group.aggregates.fixed_rows || 0) === group.aggregates.total_rows)) && (
             <GroupActions
               group={group}
