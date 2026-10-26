@@ -2899,3 +2899,31 @@ def test_cfo_responsible_cannot_review_another_cfo(tmp_path):
         json={"decision": "approved", "comment": ""},
         headers=auth(client, "other-cfo-employee", "password"),
     ).status_code == 200
+
+
+def test_register_editability_locks_fixed_rows_but_keeps_frozen_route_rows(tmp_path):
+    client = make_client(tmp_path)
+    service = client.app.state.request_service
+
+    fixed = service._register_editability(
+        entry={
+            "status": "approved",
+            "is_cfo_review_actionable": True,
+            "fixed": True,
+        },
+        last_decision=None,
+        current_owner=None,
+    )
+    assert fixed["can_decide"] is False
+    assert fixed["mode"] == "locked"
+
+    frozen_route = service._register_editability(
+        entry={
+            "status": "approved",
+            "is_approval_actionable": True,
+            "frozen": True,
+        },
+        last_decision=None,
+        current_owner=None,
+    )
+    assert frozen_route["can_decide"] is True

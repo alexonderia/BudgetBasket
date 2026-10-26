@@ -436,6 +436,26 @@ describe('registry display helpers', () => {
     expect(isRowActionable({ ...economistLine, is_cfo_review_actionable: false }, 'zgd')).toBe(true);
   });
 
+  it('never exposes actions for fixed rows', () => {
+    const staleActionable = {
+      ...sampleRow,
+      status: 'on_review' as const,
+      is_cfo_review_actionable: true,
+      status_context: {
+        editability: {
+          can_decide: true,
+          can_edit_amount: true,
+          can_edit_analytics: true,
+          mode: 'editable' as const,
+          summary: 'Можно изменить',
+          detail: 'Устаревший флаг доступности',
+        },
+      },
+    };
+    expect(isRowActionable({ ...staleActionable, fixed: true }, 'employee')).toBe(false);
+    expect(isRowActionable({ ...staleActionable, frozen: true }, 'approver')).toBe(true);
+  });
+
   it('parses amounts with spaces and rejects non-numeric input', () => {
     expect(parseMoneyInput('1 250,50')).toBe(1250.5);
     expect(parseMoneyInput('12x')).toBeNull();

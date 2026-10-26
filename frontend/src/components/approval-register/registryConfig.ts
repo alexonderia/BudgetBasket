@@ -181,6 +181,7 @@ export const AGGREGATE_STATUS_LABELS: Record<RegisterAggregateStatus, string> = 
 };
 
 export function isRowActionable(item: ApprovalRegisterRow, role?: User['role']) {
+  if (item.fixed) return false;
   if (role && !canUseLineLevelWorkflowActions(role) && item.is_approval_actionable && !item.is_cfo_review_actionable) {
     return false;
   }

@@ -1997,9 +1997,14 @@ class RequestService:
             )
         )
         can_edit_decision = bool(entry.get("is_decision_editable"))
-        can_decide = bool(entry.get("is_approval_actionable")) or bool(
-            entry.get("is_cfo_review_actionable")
-        ) or can_edit_decision
+        can_decide = (
+            not entry.get("fixed")
+            and (
+                bool(entry.get("is_approval_actionable"))
+                or bool(entry.get("is_cfo_review_actionable"))
+                or can_edit_decision
+            )
+        )
         if can_decide:
             decision_detail = (
                 "Измените своё решение до передачи строки на следующий этап"
@@ -2996,16 +3001,20 @@ class RequestService:
                     is_cfo_review and cfo_review_item_allowed
                 ),
                 "is_cfo_review_actionable": (
-                    (
-                        is_cfo_review
-                        and cfo_review_item_allowed
-                        and is_cfo_review_accessible
-                        and (
-                            item["id"] not in cfo_decisions_by_request.get(request["id"], {})
-                            or item["id"] in cfo_review_reopened_by_request.get(request["id"], set())
+                    not item.get("frozen")
+                    and not item.get("fixed")
+                    and (
+                        (
+                            is_cfo_review
+                            and cfo_review_item_allowed
+                            and is_cfo_review_accessible
+                            and (
+                                item["id"] not in cfo_decisions_by_request.get(request["id"], {})
+                                or item["id"] in cfo_review_reopened_by_request.get(request["id"], set())
+                            )
                         )
+                        or is_cfo_revision_actionable
                     )
-                    or is_cfo_revision_actionable
                 ),
                 "is_decision_editable": is_decision_editable,
                 "decision_editable_stage": (
