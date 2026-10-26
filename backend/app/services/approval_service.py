@@ -1521,13 +1521,8 @@ class ApprovalService:
             self.notifications.create(user_id, notification_type, payload, repo=repo)
 
     @staticmethod
-    def _cfo_pending_revision_item_ids(repo: Repository, request_id: str) -> set[str]:
-        """Return unsent CFO revision selections for one request.
-
-        A line decision is only a saved choice until the CFO explicitly sends
-        the package to the module. Decisions from a completed, returned package
-        are historical and must not block a later handoff to the economist.
-        """
+    def _cfo_decisions_after_boundary(repo: Repository, request_id: str) -> dict[str, str]:
+        """Return the latest CFO line decisions after the last review boundary."""
         rows = sorted(
             (row for row in repo.load_all("req_logs") if row.get("req_id") == request_id),
             key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
@@ -1551,7 +1546,63 @@ class ApprovalService:
             item_id = str(log.get("entity_id") or "")
             if item_id:
                 decisions[item_id] = str(log.get("decision") or "")
+        return decisions
+
+    @staticmethod
+    def _cfo_pending_revision_item_ids(repo: Repository, request_id: str) -> set[str]:
+        """Return unsent CFO revision selections for one request.
+
+        A line decision is only a saved choice until the CFO explicitly sends
+        the package to the module. Decisions from a completed, returned package
+        are historical and must not block a later handoff to the economist.
+        """
+        decisions = ApprovalService._cfo_decisions_after_boundary(repo, request_id)
         return {item_id for item_id, decision in decisions.items() if decision == "on_revision"}
+
+    @staticmethod
+    def _blocking_request_details(
+        repo: Repository,
+        request_ids: list[str],
+        *,
+        reason: str,
+        message: str,
+        units_by_id: dict[str, dict],
+        pending_by_request: dict[str, list[dict]] | None = None,
+    ) -> list[dict]:
+        """Return one concrete blocker per request for the transfer error UI."""
+        wanted = set(request_ids)
+        requests_by_id = {
+            row["id"]: row
+            for row in repo.load_all("requests")
+            if row.get("id") in wanted
+        }
+        details: list[dict] = []
+        for request_id in sorted(wanted):
+            request = requests_by_id.get(request_id, {})
+            pending_items = (pending_by_request or {}).get(request_id, [])
+            item_details = [
+                {
+                    "id": item["id"],
+                    "name": item.get("name") or "Без названия",
+                    "status": str(item.get("status") or ""),
+                }
+                for item in pending_items[:50]
+            ]
+            request_message = (
+                f"{len(pending_items)} строк без решения"
+                if pending_items
+                else message
+            )
+            details.append({
+                "request_id": request_id,
+                "module_id": request.get("unit_id"),
+                "module_name": units_by_id.get(request.get("unit_id"), {}).get("name") or "Модуль",
+                "reason": reason,
+                "message": request_message,
+                "pending_count": len(pending_items),
+                "pending_items": item_details,
+            })
+        return details
 
     def submit_to_economist(
         self,
@@ -1588,25 +1639,43 @@ class ApprovalService:
             }:
                 raise HTTPException(status_code=409, detail="Позицию нельзя передать на этом этапе")
             cfo_modules = self.permissions.modules_for_cfos({position["cfo_unit_id"]})
+            units_by_id = {
+                row["id"]: row
+                for row in repo.load_all("units")
+            }
             pending_revision_request_ids = sorted({
                 item["request_id"]
                 for item in position_items
                 if self._cfo_pending_revision_item_ids(repo, item["request_id"])
             })
             if pending_revision_request_ids:
+                pending_revision_by_request = {
+                    request_id: self._cfo_pending_revision_item_ids(repo, request_id)
+                    for request_id in pending_revision_request_ids
+                }
+                pending_revision_items: dict[str, list[dict]] = {}
+                for item in repo.load_all("req_items"):
+                    request_id = item.get("request_id")
+                    if item["id"] in pending_revision_by_request.get(request_id, set()):
+                        pending_revision_items.setdefault(request_id, []).append(item)
                 raise HTTPException(
                     status_code=409,
                     detail={
                         "message": "Есть строки, отмеченные на доработку. Отправьте их модулю через окно «На доработку».",
+                        "reason": "pending_revision",
                         "request_ids": pending_revision_request_ids,
+                        "blocking_requests": self._blocking_request_details(
+                            repo,
+                            pending_revision_request_ids,
+                            reason="pending_revision",
+                            message="Есть строки, отмеченные на доработку",
+                            units_by_id=units_by_id,
+                            pending_by_request=pending_revision_items,
+                        ),
                     },
                 )
             incomplete_request_ids = []
             not_submitted_request_ids = []
-            units_by_id = {
-                row["id"]: row
-                for row in repo.load_all("units")
-            }
             for request in repo.load_all("requests"):
                 if (
                     request.get("unit_id") not in cfo_modules
@@ -1637,15 +1706,64 @@ class ApprovalService:
                         ),
                         "reason": "module_request_not_submitted",
                         "request_ids": sorted(not_submitted_request_ids),
+                        "blocking_requests": self._blocking_request_details(
+                            repo,
+                            sorted(not_submitted_request_ids),
+                            reason="module_request_not_submitted",
+                            message="Заявка ещё не отправлена на проверку ЦФО",
+                            units_by_id=units_by_id,
+                        ),
                     },
                 )
             if incomplete_request_ids:
+                pending_by_request: dict[str, list[dict]] = {}
+                pending_request_ids: list[str] = []
+                not_completed_request_ids: list[str] = []
+                incomplete_set = set(incomplete_request_ids)
+                items_by_request: dict[str, list[dict]] = {}
+                for item in repo.load_all("req_items"):
+                    if (
+                        item.get("request_id") in incomplete_set
+                        and item.get("status") != ItemStatus.deleted
+                    ):
+                        items_by_request.setdefault(item["request_id"], []).append(item)
+                for request_id in incomplete_request_ids:
+                    decisions = self._cfo_decisions_after_boundary(repo, request_id)
+                    pending = [
+                        item
+                        for item in items_by_request.get(request_id, [])
+                        if item["id"] not in decisions or decisions[item["id"]] == "on_revision"
+                    ]
+                    if pending:
+                        pending_by_request[request_id] = pending
+                        pending_request_ids.append(request_id)
+                    else:
+                        not_completed_request_ids.append(request_id)
+                blocking_requests: list[dict] = []
+                if pending_request_ids:
+                    blocking_requests.extend(self._blocking_request_details(
+                        repo,
+                        pending_request_ids,
+                        reason="pending_decisions",
+                        message="Есть строки без решения",
+                        units_by_id=units_by_id,
+                        pending_by_request=pending_by_request,
+                    ))
+                if not_completed_request_ids:
+                    blocking_requests.extend(self._blocking_request_details(
+                        repo,
+                        not_completed_request_ids,
+                        reason="review_not_completed",
+                        message="Все строки рассмотрены, но проверка ЦФО не завершена",
+                        units_by_id=units_by_id,
+                    ))
                 raise HTTPException(
                     status_code=409,
                     detail={
                         "message": "Передача невозможна: не все заявки ЦФО прошли проверку по строкам",
                         "reason": "cfo_review_incomplete",
                         "request_ids": sorted(incomplete_request_ids),
+                        "blocking_requests": blocking_requests,
                     },
                 )
             economist_step = self._economist_step_for_cfo(repo, position["cfo_unit_id"])
