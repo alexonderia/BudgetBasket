@@ -57,7 +57,8 @@ import { Fragment, createContext, useCallback, useContext, useDeferredValue, use
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { getApiErrorMessage, getDownloadApiErrorMessage } from '../utils/apiErrors';
+import { getApiErrorMessage, getApiErrorDetail, getDownloadApiErrorMessage } from '../utils/apiErrors';
+import { parseForwardBlockingRequests, type ForwardBlockingRequest } from '../utils/forwardErrors';
 import { downloadBlob } from '../utils/download';
 import { useAppToast, usePageChromeActions, usePageChromeLeading } from './Layout';
 import { TableRowsSkeleton } from './PageSkeleton';
@@ -932,6 +933,47 @@ function RegistryFooter({ totalRows }: { totalRows: number }) {
         </Stack>
       </Stack>
     </Paper>
+  );
+}
+
+function ForwardBlockedDialog({
+  blocked,
+  onClose,
+}: {
+  blocked: { message: string; requests: ForwardBlockingRequest[] } | null;
+  onClose: () => void;
+}) {
+  if (!blocked) return null;
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>Почему нельзя передать</DialogTitle>
+      <DialogContent>
+        <Stack spacing={1.5} sx={{ pt: 1 }}>
+          <Alert severity="warning">{blocked.message}</Alert>
+          {blocked.requests.map((request) => (
+            <Box
+              key={request.request_id}
+              sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.25 }}
+            >
+              <Typography variant="subtitle2">
+                {request.module_name} · заявка №{request.request_id.slice(0, 8)}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                {request.message || request.reason}
+              </Typography>
+              {request.pending_items.length > 0 && (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  Строки: {request.pending_items.map((item) => item.name).join(', ')}
+                </Typography>
+              )}
+            </Box>
+          ))}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Понятно</Button>
+      </DialogActions>
+    </Dialog>
   );
 }
 
@@ -2931,6 +2973,10 @@ export function ApprovalRegister({
     });
   }, []);
   const [decisionTarget, setDecisionTarget] = useState<DecisionTarget | null>(null);
+  const [forwardBlocked, setForwardBlocked] = useState<{
+    message: string;
+    requests: ForwardBlockingRequest[];
+  } | null>(null);
   const [groupsToApprove, setGroupsToApprove] = useState<ApprovalRegisterGroup[]>([]);
   const [groupsToForward, setGroupsToForward] = useState<ApprovalRegisterGroup[]>([]);
   const [forwardLines, setForwardLines] = useState<ApprovalRegisterRow[]>([]);
@@ -3295,6 +3341,14 @@ export function ApprovalRegister({
       setForwardLines([]);
       setSelected(new Map());
       setSelectedGroups(new Map());
+      const blockingRequests = parseForwardBlockingRequests(getApiErrorDetail(error));
+      if (blockingRequests.length) {
+        setForwardBlocked({
+          message: getApiErrorMessage(error, 'Передача невозможна'),
+          requests: blockingRequests,
+        });
+        return;
+      }
       toast(getApiErrorMessage(error, 'Не удалось передать данные дальше'), 'error');
     },
   });
@@ -4136,6 +4190,7 @@ export function ApprovalRegister({
     </Stack>
     <RegistryFooter totalRows={summaryAggregates?.total_rows || 0} />
     <DecisionDialog target={decisionTarget} saving={decide.isPending} onClose={() => setDecisionTarget(null)} onSave={(decision, comment, amount) => decisionTarget && decide.mutate({ target: { ...decisionTarget, decision }, comment, amount })} />
+    <ForwardBlockedDialog blocked={forwardBlocked} onClose={() => setForwardBlocked(null)} />
     <ConfirmDialog
       open={groupsToApprove.length > 0}
       title={groupsToApprove.length === 1 ? `Согласовать ${groupsToApprove[0]?.type === 'cfo' ? 'ЦФО' : 'статью'}` : 'Согласовать выбранные группы'}
