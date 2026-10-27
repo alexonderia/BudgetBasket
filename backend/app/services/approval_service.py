@@ -1522,30 +1522,56 @@ class ApprovalService:
 
     @staticmethod
     def _cfo_decisions_after_boundary(repo: Repository, request_id: str) -> dict[str, str]:
-        """Return the latest CFO line decisions after the last review boundary."""
+        """Return the latest CFO line decisions after that line's review boundary.
+
+        A return/resubmission boundary applies only to the line ids it names.
+        The same request may contain several CFO positions; returning one
+        position must not invalidate decisions already made in another one.
+        Legacy boundary rows without ``item_ids`` keep the old request-wide
+        behaviour, and ``request_restored`` always resets the whole request.
+        """
         rows = sorted(
             (row for row in repo.load_all("req_logs") if row.get("req_id") == request_id),
             key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
         )
-        boundary: tuple[str, int] | None = None
+        global_boundary: tuple[str, int] | None = None
+        item_boundaries: dict[str, tuple[str, int]] = {}
         for row in rows:
-            if (row.get("log") or {}).get("action") in {
+            log = row.get("log") or {}
+            action = log.get("action")
+            if action not in {
                 "cfo_items_returned_for_revision",
                 "request_revision_resubmitted_to_cfo",
                 "request_restored",
             }:
-                boundary = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+                continue
+            key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+            if action == "request_restored":
+                global_boundary = key
+                item_boundaries.clear()
+                continue
+            item_ids = {str(item_id) for item_id in log.get("item_ids") or []}
+            if not item_ids:
+                global_boundary = key
+                item_boundaries.clear()
+                continue
+            for item_id in item_ids:
+                item_boundaries[item_id] = key
         decisions: dict[str, str] = {}
         for row in rows:
-            key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
-            if boundary is not None and key <= boundary:
-                continue
             log = row.get("log") or {}
             if log.get("action") != "cfo_item_decided" or log.get("entity") != "req_item":
                 continue
             item_id = str(log.get("entity_id") or "")
-            if item_id:
-                decisions[item_id] = str(log.get("decision") or "")
+            if not item_id:
+                continue
+            boundary = item_boundaries.get(item_id)
+            if global_boundary is not None and (boundary is None or global_boundary > boundary):
+                boundary = global_boundary
+            key = (str(row.get("created_at") or ""), int(row.get("id") or 0))
+            if boundary is not None and key <= boundary:
+                continue
+            decisions[item_id] = str(log.get("decision") or "")
         return decisions
 
     @staticmethod
