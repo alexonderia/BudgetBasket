@@ -1,0 +1,194 @@
+# Deploy BudgetBasket TEST on acom-VPS after green CI.
+# Best practices (GitHub docs): workflow_run + environment + concurrency + smoke after deploy.
+# SE 2.0: no VPS mutate without green CI for the chosen SHA; post-deploy gate required.
+# Sync-upstream PR does not deploy; merge to main, then successful push CI may deploy.
+name: Deploy test
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Manual ref for rerun, rollback, or approved recovery"
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy-budgetbasket-test
+  cancel-in-progress: false
+
+jobs:
+  gate-ci:
+    name: Require green CI
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.conclusion == 'success'
+      )
+    runs-on: ubuntu-latest
+    env:
+      DEPLOY_REF: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.git_ref }}
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_REF }}
+          fetch-depth: 0
+
+      - name: Resolve SHA
+        id: resolve
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse HEAD)"
+          echo "sha=${SHA}" >> "${GITHUB_OUTPUT}"
+          echo "Deploy candidate SHA=${SHA} ref=${DEPLOY_REF} trigger=${{ github.event_name }}"
+
+      - name: Fail if no successful CI run for this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHA="${{ steps.resolve.outputs.sha }}"
+          # Official Actions API: require completed success for exact candidate SHA.
+          # https://docs.github.com/en/rest/actions/workflow-runs
+          # Latest completed CI for this SHA must be success (old green + newer fail must block).
+          RUN_JSON="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=100"
+          )"
+          RUN_ID="$(
+            printf '%s' "${RUN_JSON}" | jq -r --arg sha "${SHA}" '
+              [.workflow_runs[]
+                | select(.head_sha == $sha and .status == "completed")]
+              | sort_by(.created_at)
+              | reverse
+              | .[0]
+              | select(.conclusion == "success")
+              | .id // empty'
+          )"
+          if [[ -z "${RUN_ID}" ]]; then
+            LATEST="$(
+              printf '%s' "${RUN_JSON}" | jq -r --arg sha "${SHA}" '
+                [.workflow_runs[]
+                  | select(.head_sha == $sha and .status == "completed")]
+                | sort_by(.created_at)
+                | reverse
+                | .[0]
+                | "\(.id // "none") \(.conclusion // "none")"'
+            )"
+            echo "::error::Latest CI for SHA ${SHA} is not success (latest: ${LATEST}). Wait for green CI, then run Deploy test again."
+            echo "Tip: push/sync must finish workflow «CI» green first (SE 2.0 / no deploy without CI)."
+            exit 1
+          fi
+          echo "CI_GATE_PASS run_id=${RUN_ID} sha=${SHA}"
+
+  deploy:
+    name: Deploy to VPS + smoke
+    needs: gate-ci
+    if: needs.gate-ci.result == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: test
+      url: https://budgetbasket.acom-offer-desk.ru/
+    steps:
+      - name: Deploy context
+        run: |
+          echo "SHA=${{ needs.gate-ci.outputs.sha }}"
+          echo "TRIGGER=${{ github.event_name }}"
+          echo "Automatic path: successful CI workflow_run on push to main."
+          echo "Manual path: workflow_dispatch for rerun, rollback, or approved recovery."
+      - name: Prepare deploy evidence
+        run: |
+          mkdir -p deploy-evidence
+          {
+            echo "sha=${{ needs.gate-ci.outputs.sha }}"
+            echo "trigger=${{ github.event_name }}"
+            echo "run=${{ github.run_id }}"
+            echo "attempt=${{ github.run_attempt }}"
+          } > deploy-evidence/runner-context.txt
+
+      - name: SSH update + post-deploy verify
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: 22
+          command_timeout: 25m
+          script: |
+            set -euo pipefail
+            SHA="${{ needs.gate-ci.outputs.sha }}"
+            EVIDENCE_DIR="/tmp/budgetbasket-deploy-${{ github.run_id }}-${{ github.run_attempt }}"
+            mkdir -p "${EVIDENCE_DIR}"
+            exec > >(tee "${EVIDENCE_DIR}/remote-deploy.log") 2>&1
+            ROOT="${DEPLOY_PATH:-/opt/budgetbasket}"
+            export BUDGETBASKET_ENV_FILE="${BUDGETBASKET_ENV_FILE:-/etc/budgetbasket/.env}"
+            export BUDGETBASKET_FQDN="${BUDGETBASKET_FQDN:-budgetbasket.acom-offer-desk.ru}"
+
+            cd "${ROOT}"
+            origin_url="$(git remote get-url origin)"
+            # Accept HTTPS (.../BudgetBasket.git) and SSH (git@github.com:vvv-web/BudgetBasket.git).
+            case "${origin_url}" in
+              *github.com/vvv-web/BudgetBasket*|*github.com:vvv-web/BudgetBasket*) ;;
+              *)
+                echo "FAIL: origin must point to vvv-web/BudgetBasket, got ${origin_url}" >&2
+                exit 1
+                ;;
+            esac
+            if [[ -n "$(git status --porcelain)" ]]; then
+              echo "FAIL: VPS checkout is dirty; refusing to overwrite manual changes" >&2
+              git status --short
+              exit 1
+            fi
+            git fetch --prune origin
+            git cat-file -e "${SHA}^{commit}"
+            git checkout --detach "${SHA}"
+            bash deploy/vps/remote-update-k8s.sh "${SHA}"
+            bash scripts/post-deploy-verify.sh
+            if [[ -n "$(git status --porcelain)" ]]; then
+              echo "FAIL: deploy changed tracked files in checkout" >&2
+              git status --short
+              exit 1
+            fi
+            echo "DEPLOY_JOB_PASS SHA=$(git rev-parse HEAD)"
+      - name: Download deploy evidence
+        if: always()
+        continue-on-error: true
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.DEPLOY_SSH_HOST }}
+          username: ${{ secrets.DEPLOY_SSH_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: 22
+          source: /tmp/budgetbasket-deploy-${{ github.run_id }}-${{ github.run_attempt }}/remote-deploy.log
+          target: deploy-evidence/
+          overwrite: true
+      - name: Mark deploy evidence collection
+        if: always()
+        run: |
+          if find deploy-evidence -type f -name 'remote-deploy.log' -print -quit | grep -q .; then
+            echo "remote_evidence=downloaded" >> deploy-evidence/runner-context.txt
+          else
+            echo "remote_evidence=unavailable" >> deploy-evidence/runner-context.txt
+          fi
+      - name: Upload deploy test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-test-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deploy-evidence/
+          if-no-files-found: error
+          retention-days: 14

@@ -8,7 +8,14 @@ from uuid import uuid4
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 
-from app.models import APPROVED_ITEM_STATUSES, CfoPositionStatus, ItemStatus, RequestStatus, StepStatus
+from app.models import (
+    APPROVED_ITEM_STATUSES,
+    CLOSED_REQUEST_STATUSES,
+    CfoPositionStatus,
+    ItemStatus,
+    RequestStatus,
+    StepStatus,
+)
 from app.repositories.base import Repository
 from app.repositories.queries import find_rows, scoped_register_read
 from app.services.common import (
@@ -1990,9 +1997,14 @@ class RequestService:
             )
         )
         can_edit_decision = bool(entry.get("is_decision_editable"))
-        can_decide = bool(entry.get("is_approval_actionable")) or bool(
-            entry.get("is_cfo_review_actionable")
-        ) or can_edit_decision
+        can_decide = (
+            not entry.get("fixed")
+            and (
+                bool(entry.get("is_approval_actionable"))
+                or bool(entry.get("is_cfo_review_actionable"))
+                or can_edit_decision
+            )
+        )
         if can_decide:
             decision_detail = (
                 "Измените своё решение до передачи строки на следующий этап"
@@ -2688,6 +2700,11 @@ class RequestService:
             position_rows = position_items(position["id"])
             if not position_rows or all(row.get("fixed") for row in position_rows):
                 return False
+            # A fully rejected position has nothing to hand to the economist.
+            # Keep the submit action out of the register so the CFO sees the
+            # review completion action instead of a 409 on the green check.
+            if not any(row.get("status") != ItemStatus.rejected for row in position_rows):
+                return False
             # The handoff belongs to the whole CFO position, not to an
             # individual line.  A line returned to the module, or a line
             # that has not received a current CFO decision yet, must keep the
@@ -2733,7 +2750,9 @@ class RequestService:
                 return False
             items = position_items(position["id"])
             decided = economist_decided_by_position.get(position["id"], set())
-            return bool(items) and all(
+            return bool(items) and any(
+                item.get("status") != ItemStatus.rejected for item in items
+            ) and all(
                 item["id"] in decided and item.get("status") != ItemStatus.on_review
                 for item in items
             )
@@ -2843,6 +2862,7 @@ class RequestService:
                 cfo_position_current_step_id(self.repo, position) if position else None
             )
             returned_item_ids = returned_by_request.get(request["id"], set())
+            request_open = request.get("status") not in CLOSED_REQUEST_STATUSES
             cfo_review_cycle_item_ids = cfo_review_cycle_by_request.get(request["id"])
             cfo_review_item_allowed = (
                 cfo_review_cycle_item_ids is None
@@ -2851,8 +2871,8 @@ class RequestService:
             position_revision_item_ids = revision_items_by_position.get(
                 position.get("id") if position else "", set()
             )
-            is_module_revision = item["id"] in returned_item_ids
-            is_revision = (
+            is_module_revision = request_open and item["id"] in returned_item_ids
+            is_revision = request_open and (
                 is_module_revision
                 or item["id"] in position_revision_item_ids
             )
@@ -2862,7 +2882,8 @@ class RequestService:
                 and not returned_item_ids
             )
             is_cfo_revision_actionable = (
-                item["id"] in position_revision_item_ids
+                request_open
+                and item["id"] in position_revision_item_ids
                 and bool(position)
                 and position.get("status") == CfoPositionStatus.on_revision
                 and bool(position_step_id)
@@ -2890,7 +2911,8 @@ class RequestService:
                 and not returned_item_ids
             )
             is_cfo_review_decision_editable = (
-                cfo_position_is_current
+                request_open
+                and cfo_position_is_current
                 and is_cfo_review_accessible
                 and item["id"] in cfo_decisions_by_request.get(request["id"], {})
                 and item_step_decisions.get(item["id"], {}).get("cfo_item_decided", {}).get("by_id") == user.get("id")
@@ -2908,7 +2930,8 @@ class RequestService:
             # actionable.  The package action remains visible through any
             # non-fixed sibling line in the same shared position.
             is_workflow_submission_actionable = (
-                not item.get("fixed")
+                request_open
+                and not item.get("fixed")
                 and not cfo_revision_pending_by_request.get(request["id"])
                 and (
                     can_submit_position(position)
@@ -2916,11 +2939,13 @@ class RequestService:
                 )
             )
             is_workflow_revision_actionable = (
-                not item.get("fixed")
+                request_open
+                and not item.get("fixed")
                 and can_submit_workflow_revision(position)
             )
             is_workflow_return_actionable = (
-                not item.get("fixed")
+                request_open
+                and not item.get("fixed")
                 and can_return_workflow_position(position)
             )
             is_economist_completion_actionable = (
@@ -2983,16 +3008,20 @@ class RequestService:
                     is_cfo_review and cfo_review_item_allowed
                 ),
                 "is_cfo_review_actionable": (
-                    (
-                        is_cfo_review
-                        and cfo_review_item_allowed
-                        and is_cfo_review_accessible
-                        and (
-                            item["id"] not in cfo_decisions_by_request.get(request["id"], {})
-                            or item["id"] in cfo_review_reopened_by_request.get(request["id"], set())
+                    not item.get("frozen")
+                    and not item.get("fixed")
+                    and (
+                        (
+                            is_cfo_review
+                            and cfo_review_item_allowed
+                            and is_cfo_review_accessible
+                            and (
+                                item["id"] not in cfo_decisions_by_request.get(request["id"], {})
+                                or item["id"] in cfo_review_reopened_by_request.get(request["id"], set())
+                            )
                         )
+                        or is_cfo_revision_actionable
                     )
-                    or is_cfo_revision_actionable
                 ),
                 "is_decision_editable": is_decision_editable,
                 "decision_editable_stage": (
@@ -3003,11 +3032,17 @@ class RequestService:
                 # from a currently actionable repeated CFO decision.  The
                 # register uses this flag to keep the group in `on_revision`
                 # until the returned position is handed back to the economist.
-                "is_cfo_revision": item["id"] in position_revision_item_ids,
+                "is_cfo_revision": (
+                    request_open and item["id"] in position_revision_item_ids
+                ),
                 "is_module_revision": is_module_revision,
-                "is_cfo_revision_pending": item["id"] in cfo_revision_pending_by_request.get(request["id"], set()),
+                "is_cfo_revision_pending": (
+                    request_open
+                    and item["id"] in cfo_revision_pending_by_request.get(request["id"], set())
+                ),
                 "is_revision_actionable": (
-                    item["id"] in returned_item_ids
+                    request_open
+                    and item["id"] in returned_item_ids
                     and user.get("role") == "employee"
                     and request["unit_id"] in employee_module_ids
                     and not item.get("frozen")
@@ -3038,7 +3073,8 @@ class RequestService:
                 "is_workflow_revision_actionable": is_workflow_revision_actionable,
                 "is_workflow_return_actionable": is_workflow_return_actionable,
                 "is_workflow_revision_marked": (
-                    economist_decisions_by_position.get(position["id"], {}).get(item["id"]) == "on_revision"
+                    request_open
+                    and economist_decisions_by_position.get(position["id"], {}).get(item["id"]) == "on_revision"
                     if position else False
                 ),
                 "is_economist_completion_actionable": is_economist_completion_actionable,

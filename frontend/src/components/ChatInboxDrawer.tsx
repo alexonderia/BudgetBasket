@@ -90,7 +90,7 @@ export function ChatInboxDrawer({ open, onClose }: { open: boolean; onClose: () 
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['chats'] }),
   });
   const sendMessage = useMutation({
-    mutationFn: () => {
+    mutationFn: async (): Promise<unknown> => {
       const chatId = selectedChat!.id;
       if (!pendingImages.length) return api.post(`/chats/${chatId}/messages`, { text: messageText.trim(), reply_to: replyTo?.id || null });
       const form = new FormData();

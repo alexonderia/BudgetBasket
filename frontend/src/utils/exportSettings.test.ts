@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BudgetRequest, Unit, User } from '../types';
-import { exportSettingsFromRegister, exportSettingsFromRequestPage } from './exportSettings';
+import { exportSettingsFromRegister, exportSettingsFromRequestPage, hasClosedExportRequests } from './exportSettings';
 
 const user = { id: 'u1', login: 'employee', role: 'employee' } as User;
 const department: Unit = {
@@ -58,5 +58,14 @@ describe('export settings from page filters', () => {
     });
     expect(settings.department_ids).toEqual(['dept-1', 'dept-2']);
     expect(settings.module_ids).toEqual([]);
+  });
+
+  it('detects when the visible table has no closed requests to export', () => {
+    expect(hasClosedExportRequests([
+      { status: 'draft' },
+      { status: 'on_review' },
+    ])).toBe(false);
+    expect(hasClosedExportRequests([{ status: 'approved' }])).toBe(true);
+    expect(hasClosedExportRequests([{ status: 'rejected' }])).toBe(true);
   });
 });

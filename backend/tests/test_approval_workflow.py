@@ -2899,3 +2899,155 @@ def test_cfo_responsible_cannot_review_another_cfo(tmp_path):
         json={"decision": "approved", "comment": ""},
         headers=auth(client, "other-cfo-employee", "password"),
     ).status_code == 200
+
+
+def test_transfer_error_returns_concrete_blocking_request_reasons(tmp_path):
+    client = make_client(tmp_path)
+    admin = auth(client, "admin", "admin")
+    employee = auth(client, "employee", "employee")
+    ready, ready_items = create_submitted_request(client, employee)
+
+    pending_module = client.post(
+        "/units",
+        json={"name": "Pending module", "parent_id": CFO_ID, "type": "module", "uses_invest_projects": False},
+        headers=admin,
+    ).json()
+    client.app.state.repo.create(
+        "units_responsibles",
+        {"unit_id": pending_module["id"], "user_id": "00000000-0000-0000-0000-000000000003", "is_active": True},
+    )
+    pending = client.post(
+        "/requests", json={"unit_id": pending_module["id"]}, headers=employee
+    ).json()
+    pending_item = client.post(
+        f"/requests/{pending['id']}/items",
+        json={"dds_id": DDS_LICENSE_ID, "name": "Нерешенная строка", "sum_plan": 100},
+        headers=employee,
+    ).json()
+    # Keep the request in CFO review without a completed-review log. This is
+    # the state the transfer guard must explain: lines exist, but the request
+    # was not completed by the CFO.
+    client.app.state.repo.update("requests", pending["id"], {"status": "on_review"})
+
+    completed = complete_cfo(
+        client, employee, ready["id"], [(ready_items[0]["id"], "approved")]
+    )
+    position_id = completed["affected_cfo_position_ids"][0]
+    blocked = client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": "Передать"},
+        headers=employee,
+    )
+    assert blocked.status_code == 409, blocked.text
+    detail = blocked.json()["detail"]
+    assert detail["reason"] == "cfo_review_incomplete"
+    blockers = {row["request_id"]: row for row in detail["blocking_requests"]}
+    blocker = blockers[pending["id"]]
+    assert blocker["reason"] == "pending_decisions"
+    assert blocker["module_name"] == "Pending module"
+    assert blocker["pending_count"] == 1
+    assert blocker["pending_items"] == [
+        {"id": pending_item["id"], "name": "Нерешенная строка", "status": "on_review"}
+    ]
+
+
+def test_register_editability_locks_fixed_rows_but_keeps_frozen_route_rows(tmp_path):
+    client = make_client(tmp_path)
+    service = client.app.state.request_service
+
+    fixed = service._register_editability(
+        entry={
+            "status": "approved",
+            "is_cfo_review_actionable": True,
+            "fixed": True,
+        },
+        last_decision=None,
+        current_owner=None,
+    )
+    assert fixed["can_decide"] is False
+    assert fixed["mode"] == "locked"
+
+    frozen_route = service._register_editability(
+        entry={
+            "status": "approved",
+            "is_approval_actionable": True,
+            "frozen": True,
+        },
+        last_decision=None,
+        current_owner=None,
+    )
+    assert frozen_route["can_decide"] is True
+
+
+def test_economist_cannot_complete_a_fully_rejected_position(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    economist = auth(client, "economist", "economist")
+    request, items = create_submitted_request(client, employee)
+    completed = complete_cfo(
+        client, employee, request["id"], [(items[0]["id"], "approved")]
+    )
+    position_id = completed["affected_cfo_position_ids"][0]
+    assert client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": "Передать"},
+        headers=employee,
+    ).status_code == 200
+    assert client.post(
+        f"/cfo-positions/{position_id}/items/{items[0]['id']}/decision",
+        json={"decision": "rejected", "comment": "Не согласовано"},
+        headers=economist,
+    ).status_code == 200
+    blocked = client.post(
+        f"/cfo-positions/{position_id}/complete-review",
+        json={"comment": "Завершить"},
+        headers=economist,
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"] == "В позиции нет строк для согласования"
+
+
+def test_fully_rejected_cfo_position_hides_submit_and_offers_completion(tmp_path):
+    client = make_client(tmp_path)
+    employee = auth(client, "employee", "employee")
+    request, items = create_submitted_request(client, employee, item_count=1)
+
+    decided = client.post(
+        f"/items/{items[0]['id']}/cfo-decision",
+        json={"decision": "rejected", "comment": "Не согласовано"},
+        headers=employee,
+    )
+    assert decided.status_code == 200, decided.text
+
+    rows = client.get(
+        "/approval-register/rows",
+        params={"request_id": request["id"]},
+        headers=employee,
+    ).json()["items"]
+    row = next(row for row in rows if row["id"] == items[0]["id"])
+    position_id = row["position_id"]
+    assert position_id
+    assert row["status"] == "rejected"
+    # The green submit action must disappear: there is nothing to send to the
+    # economist, and the backend already rejects this handoff with 409.
+    assert row["is_position_submission_actionable"] is False, row
+    # The correct action is the CFO review completion, which closes the
+    # fully rejected request instead of masking it behind the submit action.
+    assert row["is_cfo_review_completable"] is True, row
+
+    blocked = client.post(
+        f"/cfo-positions/{position_id}/submit-to-economist",
+        json={"comment": "Передать"},
+        headers=employee,
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"] == "В позиции нет строк для согласования"
+
+    completed = client.post(
+        f"/requests/{request['id']}/complete-cfo-review",
+        headers=employee,
+    )
+    assert completed.status_code == 200, completed.text
+    updated = client.get(f"/requests/{request['id']}", headers=employee).json()
+    assert updated["status"] == "rejected"
+

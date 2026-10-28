@@ -57,7 +57,8 @@ import { Fragment, createContext, useCallback, useContext, useDeferredValue, use
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
-import { getApiErrorMessage, getDownloadApiErrorMessage } from '../utils/apiErrors';
+import { getApiErrorMessage, getApiErrorDetail, getDownloadApiErrorMessage } from '../utils/apiErrors';
+import { parseForwardBlockingRequests, type ForwardBlockingRequest } from '../utils/forwardErrors';
 import { downloadBlob } from '../utils/download';
 import { useAppToast, usePageChromeActions, usePageChromeLeading } from './Layout';
 import { TableRowsSkeleton } from './PageSkeleton';
@@ -82,6 +83,7 @@ import {
   groupHasWorkflowApprove,
   groupHasWorkflowRevision,
   groupHasWorkflowReturn,
+  groupNeedsCfoRevisionHint,
   groupRegistryStatus,
   isGroupActionable,
   isGroupSelectable,
@@ -934,6 +936,47 @@ function RegistryFooter({ totalRows }: { totalRows: number }) {
   );
 }
 
+function ForwardBlockedDialog({
+  blocked,
+  onClose,
+}: {
+  blocked: { message: string; requests: ForwardBlockingRequest[] } | null;
+  onClose: () => void;
+}) {
+  if (!blocked) return null;
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>Почему нельзя передать</DialogTitle>
+      <DialogContent>
+        <Stack spacing={1.5} sx={{ pt: 1 }}>
+          <Alert severity="warning">{blocked.message}</Alert>
+          {blocked.requests.map((request) => (
+            <Box
+              key={request.request_id}
+              sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.25 }}
+            >
+              <Typography variant="subtitle2">
+                {request.module_name} · заявка №{request.request_id.slice(0, 8)}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                {request.message || request.reason}
+              </Typography>
+              {request.pending_items.length > 0 && (
+                <Typography variant="body2" sx={{ mt: 0.5 }}>
+                  Строки: {request.pending_items.map((item) => item.name).join(', ')}
+                </Typography>
+              )}
+            </Box>
+          ))}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Понятно</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 function DecisionDialog({ target, onClose, onSave, saving }: { target: DecisionTarget | null; onClose: () => void; onSave: (decision: RowDecision, comment: string, amount?: number) => void; saving: boolean }) {
   const [decision, setDecision] = useState<RowDecision>('approved');
   const [comment, setComment] = useState('');
@@ -1250,24 +1293,28 @@ function GroupActions({
     && group.aggregates.fixed_rows === group.aggregates.total_rows;
   const hasWorkflowDecision = hasWorkflowActions && !hasWorkflowPackage && !hasWorkflowRevisionPackage;
   const actualWorkflowReject = user.role === 'economist' && hasWorkflowActions && !hasWorkflowRevisionPackage;
-  if (!hasCfo && !hasCfoDecision && !hasComplete && !hasWorkflowActions && !hasZgdUnlock) return null;
+  if (!hasCfo && !hasCfoDecision && !hasComplete && !hasWorkflowActions && !hasZgdLock && !hasZgdUnlock) return null;
 
   const scopeLabel = group.type === 'article' ? 'статью' : group.type === 'cfo' ? 'ЦФО' : 'группу';
-  const primaryApprove = hasCfoReview
-    ? () => onApproveCfo(group)
-    : hasWorkflowPackage
-      ? () => onWorkflowApprove(group)
-      : () => onWorkflowDecision(group);
+  const primaryApprove = user.role === 'zgd' && hasZgdLock
+    ? () => onWorkflowFix(group, false)
+    : hasCfoReview
+      ? () => onApproveCfo(group)
+      : hasWorkflowPackage
+        ? () => onWorkflowApprove(group)
+        : () => onWorkflowDecision(group);
   const primaryReject = hasCfoDecision
     ? () => onRejectCfo(group)
     : actualWorkflowReject
       ? () => onWorkflowReject(group)
       : () => onWorkflowReturn(group);
-  const approveTitle = hasCfoReview
-    ? `Согласовать все доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`
-    : hasWorkflowPackage
-      ? `${workflowApproveLabel(user.role)} (${scopeLabel})`
-      : `Согласовать доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`;
+  const approveTitle = user.role === 'zgd' && hasZgdLock
+    ? 'Зафиксировать бюджет'
+    : hasCfoReview
+      ? `Согласовать все доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`
+      : hasWorkflowPackage
+        ? `${workflowApproveLabel(user.role)} (${scopeLabel})`
+        : `Согласовать доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`;
   const rejectTitle = hasCfoDecision || actualWorkflowReject
     ? `Отклонить доступные строки ${scopeLabel === 'статью' ? 'статьи' : scopeLabel}`
     : hasCfo
@@ -2571,6 +2618,11 @@ function TreeRows({
       status: (
         <Stack spacing={0.5} alignItems="flex-start">
           <RegistryGroupStatusCell status={groupRegistryStatus(group.aggregates)} aggregates={group.aggregates} />
+          {approvalMode && groupNeedsCfoRevisionHint(group, user.role) && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 10, lineHeight: 1.2 }}>
+              Ожидает доработки ЦФО
+            </Typography>
+          )}
           {approvalMode && (isGroupActionable(group, user.role) || (user.role === 'zgd' && (group.aggregates.fixed_rows || 0) === group.aggregates.total_rows)) && (
             <GroupActions
               group={group}
@@ -2764,7 +2816,8 @@ function VirtualTreeRows(props: React.ComponentProps<typeof TreeRows> & { scroll
       }, { signal });
       return { ...response.data, group: { ...response.data.group, aggregates: group.aggregates } };
     },
-    enabled: visibleOwners.has(group.id),
+    enabled: visibleOwners.has(group.id)
+      || (group.type === 'category' && group.can_load_rows),
   })) });
   const byGroup = new Map(leaves.map((group, index) => [group.id, results[index]]));
   const loadedSignature = results.map((result) => result.dataUpdatedAt).join(',');
@@ -2920,6 +2973,21 @@ export function ApprovalRegister({
     });
   }, []);
   const [decisionTarget, setDecisionTarget] = useState<DecisionTarget | null>(null);
+  const [forwardBlocked, setForwardBlocked] = useState<{
+    message: string;
+    requests: ForwardBlockingRequest[];
+  } | null>(null);
+  const showForwardError = useCallback((error: unknown, fallback: string) => {
+    const blockingRequests = parseForwardBlockingRequests(getApiErrorDetail(error));
+    if (blockingRequests.length) {
+      setForwardBlocked({
+        message: getApiErrorMessage(error, fallback),
+        requests: blockingRequests,
+      });
+      return;
+    }
+    toast(getApiErrorMessage(error, fallback), 'error');
+  }, [toast]);
   const [groupsToApprove, setGroupsToApprove] = useState<ApprovalRegisterGroup[]>([]);
   const [groupsToForward, setGroupsToForward] = useState<ApprovalRegisterGroup[]>([]);
   const [forwardLines, setForwardLines] = useState<ApprovalRegisterRow[]>([]);
@@ -3131,6 +3199,16 @@ export function ApprovalRegister({
   const markPointRevision = useCallback((row: ApprovalRegisterRow) => {
     markRowForRevision.mutate(row);
   }, [markRowForRevision]);
+  // The row-level return belongs to the responsible CFO.  Open the same
+  // confirmation dialog as the group action instead of only saving a draft
+  // selection: a lone row otherwise looks like a dead button.
+  const requestPointRevision = useCallback((row: ApprovalRegisterRow) => {
+    if (user.role === 'employee') {
+      openPointRevision(row);
+      return;
+    }
+    markPointRevision(row);
+  }, [markPointRevision, openPointRevision, user.role]);
   const handleSaveRowDecision = useCallback((
     row: ApprovalRegisterRow,
     decision: RowDecision,
@@ -3167,7 +3245,7 @@ export function ApprovalRegister({
       setGroupsToApprove([]);
       setSelected(new Map());
       setSelectedGroups(new Map());
-      toast(getApiErrorMessage(error, 'Не удалось согласовать группу'), 'error');
+      showForwardError(error, 'Не удалось согласовать группу');
     },
   });
   const completeCfoReviewGroups = useMutation({
@@ -3208,7 +3286,7 @@ export function ApprovalRegister({
       setSelected(new Map());
       setSelectedGroups(new Map());
     },
-    onError: (error) => toast(getApiErrorMessage(error, 'Не удалось выполнить действие по группе'), 'error'),
+    onError: (error) => showForwardError(error, 'Не удалось выполнить действие по группе'),
   });
   const forwardApprovalGroups = useMutation({
     mutationFn: async (groups: ApprovalRegisterGroup[]) => {
@@ -3274,6 +3352,14 @@ export function ApprovalRegister({
       setForwardLines([]);
       setSelected(new Map());
       setSelectedGroups(new Map());
+      const blockingRequests = parseForwardBlockingRequests(getApiErrorDetail(error));
+      if (blockingRequests.length) {
+        setForwardBlocked({
+          message: getApiErrorMessage(error, 'Передача невозможна'),
+          requests: blockingRequests,
+        });
+        return;
+      }
       toast(getApiErrorMessage(error, 'Не удалось передать данные дальше'), 'error');
     },
   });
@@ -3296,16 +3382,21 @@ export function ApprovalRegister({
       setExpanded((current) => { const next = new Set(current); collectExpandableGroupIds(group).forEach((id) => next.delete(id)); return next; });
       return;
     }
+    const ids = new Set<string>([group.id]);
     try {
       const pending = [group];
-      const ids: string[] = [];
       while (pending.length) {
         const branch = await loadBranch(pending.shift()!);
-        if (branch.has_children || branch.children.length || branch.can_load_rows) ids.push(branch.id);
+        if (branch.has_children || branch.children.length || branch.can_load_rows) ids.add(branch.id);
         pending.push(...branch.children);
       }
-      setExpanded((current) => new Set([...current, ...ids]));
-    } catch (error) { toast(getApiErrorMessage(error, 'Не удалось загрузить группу'), 'error'); }
+    } catch (error) {
+      toast(getApiErrorMessage(error, 'Не удалось загрузить группу'), 'error');
+    }
+    // The clicked group must expand even when branch loading returns no
+    // explicit children.  Category rows are fetched separately and would
+    // otherwise leave the button stuck on «Раскрыть группу».
+    setExpanded((current) => new Set([...current, ...ids]));
   }, [expanded, loadBranch, toast]);
   const expandAll = useCallback(async () => {
     for (const group of data?.groups || []) {
@@ -3528,9 +3619,25 @@ export function ApprovalRegister({
     if (selectionRoots.length > 0) {
       const cfoRoots = cfoGroupsForReturn(selectionRoots);
       const workflowRoots = workflowGroupsForAction(selectionRoots)
-        .filter((group) => user.role === 'employee' || groupHasWorkflowReturn(group, user.role));
-      if (cfoRoots.length) openGroupRevision(cfoRoots, 'cfo');
-      else if (workflowRoots.length) openGroupRevision(workflowRoots, 'workflow');
+        .filter((group) => user.role === 'employee'
+          || groupHasWorkflowReturn(group, user.role)
+          || (user.role === 'economist' && groupHasWorkflowActions(group, user.role)));
+      if (cfoRoots.length) {
+        void openGroupRevision(cfoRoots, 'cfo');
+        return;
+      }
+      if (workflowRoots.length) {
+        void openGroupRevision(workflowRoots, 'workflow');
+        return;
+      }
+      if (actionableRows.length) {
+        setDecisionTarget({
+          rows: actionableRows,
+          decision: user.role === 'economist' ? 'on_revision' : 'rejected',
+        });
+        return;
+      }
+      toast('Нет строк, доступных для возврата на доработку', 'info');
       return;
     }
     if (['approver', 'zgd'].includes(user.role) && actionableRows.some((row) => row.is_final_approval_actionable)) {
@@ -4040,7 +4147,7 @@ export function ApprovalRegister({
           {data && (
             <RegisterQueryContext.Provider value={registerQuery}>
             <FilteredRegisterItemsContext.Provider value={filteredItemsByGroup}>
-            <PointRevisionContext.Provider value={markPointRevision}>
+            <PointRevisionContext.Provider value={requestPointRevision}>
             <RegisterViewContext.Provider value={view}>
             <VirtualTreeRows
               scrollRef={tableContainerRef}
@@ -4094,6 +4201,7 @@ export function ApprovalRegister({
     </Stack>
     <RegistryFooter totalRows={summaryAggregates?.total_rows || 0} />
     <DecisionDialog target={decisionTarget} saving={decide.isPending} onClose={() => setDecisionTarget(null)} onSave={(decision, comment, amount) => decisionTarget && decide.mutate({ target: { ...decisionTarget, decision }, comment, amount })} />
+    <ForwardBlockedDialog blocked={forwardBlocked} onClose={() => setForwardBlocked(null)} />
     <ConfirmDialog
       open={groupsToApprove.length > 0}
       title={groupsToApprove.length === 1 ? `Согласовать ${groupsToApprove[0]?.type === 'cfo' ? 'ЦФО' : 'статью'}` : 'Согласовать выбранные группы'}

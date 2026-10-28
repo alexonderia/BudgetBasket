@@ -2629,7 +2629,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
     };
   }, [chat, id, queryClient, request?.status]);
   const sendChatMessage = useMutation({
-    mutationFn: () => {
+    mutationFn: async (): Promise<unknown> => {
       if (!chatImages.length) return api.post(`/chats/${chat!.id}/messages`, { text: chatText.trim() });
       const form = new FormData();
       form.append('text', chatText.trim());
@@ -2946,6 +2946,10 @@ export default function RequestDetailsPage({ user }: { user: User }) {
   const canApproveAllItems = false;
   const isClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status);
   const isHighlightedClosed = !!request && CLOSED_REQUEST_STATUSES.includes(request.status) && request.status !== 'cancelled';
+  const isRevisionInProgress = !!request
+    && request.status === 'on_review'
+    && (request.available_actions?.includes('edit_revision') === true || revisionRequestItemIds.size > 0);
+  const requestStatusForBadge = isRevisionInProgress ? 'on_revision' as const : request?.status;
   const canDelete = !!request
     && request.status === 'draft'
     && user.role === 'employee'
@@ -3026,7 +3030,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 <Stack spacing={1.25}>
                   <Typography variant="h6">Сводка заявки</Typography>
                   <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                    <RequestStatusBadge status={request.status} />
+                    <RequestStatusBadge status={requestStatusForBadge || request.status} />
                     {request.frozen && <Chip label="Заморожена экономистом" size="small" color="warning" variant="outlined" />}
                     {request.fixed && <Chip label="Зафиксирована ЗГД" size="small" color="success" variant="outlined" />}
                   </Stack>
@@ -3140,7 +3144,7 @@ export default function RequestDetailsPage({ user }: { user: User }) {
                 </Stack>
               </Stack>
               <Alert severity={requestGuidanceSeverity} variant={userMustAct ? 'filled' : 'outlined'}>
-                <AlertTitle>{userMustAct ? 'Требуется ваше действие' : requestStatusLabels[request.status]}</AlertTitle>
+                <AlertTitle>{userMustAct ? 'Требуется ваше действие' : isRevisionInProgress ? 'На доработке' : requestStatusLabels[request.status]}</AlertTitle>
                 {requestRequirement}
                 {activeRouteStep && request.status === 'on_review' && !request.available_actions?.includes('edit_revision') && (
                   <Typography variant="caption" component="div" sx={{ mt: 0.5, opacity: 0.9 }}>

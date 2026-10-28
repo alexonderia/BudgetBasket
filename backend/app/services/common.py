@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.models import APPROVED_ITEM_STATUSES, ItemStatus, RequestStatus
+from app.models import APPROVED_ITEM_STATUSES, CfoPositionStatus, ItemStatus, RequestStatus
 from app.repositories.base import Repository
 
 
@@ -85,7 +85,7 @@ def request_cfo_review_completed(repo: Repository, request_id: str) -> bool:
 
 
 def request_returned_item_ids(repo: Repository, request_id: str) -> set[str]:
-    """Return lines currently handed back by the CFO to the module author."""
+    """Return lines currently handed back for revision to the module author."""
     relevant = []
     for row in repo.load_all("req_logs"):
         if row.get("req_id") != request_id:
@@ -93,6 +93,7 @@ def request_returned_item_ids(repo: Repository, request_id: str) -> set[str]:
         action = (row.get("log") or {}).get("action")
         if action in {
             "cfo_items_returned_for_revision",
+            "position_returned",
             "request_revision_resubmitted_to_cfo",
             "request_restored",
         }:
@@ -104,7 +105,7 @@ def request_returned_item_ids(repo: Repository, request_id: str) -> set[str]:
         key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
     )
     log = latest.get("log") or {}
-    if log.get("action") != "cfo_items_returned_for_revision":
+    if log.get("action") not in {"cfo_items_returned_for_revision", "position_returned"}:
         return set()
     return {str(item_id) for item_id in log.get("item_ids") or []}
 
@@ -127,3 +128,23 @@ def derived_request_status(items: list[dict[str, Any]]) -> RequestStatus:
     ):
         return RequestStatus.approved
     return RequestStatus.on_review
+
+
+def derived_request_status_with_positions(
+    items: list[dict[str, Any]],
+    positions: list[dict[str, Any]],
+) -> RequestStatus:
+    """Keep a request in review while any CFO position is still on revision.
+
+    Line statuses alone are not enough: every line may already be approved
+    while the position still waits for the CFO to hand the revision back to
+    the module.  Treating that request as approved hides the controls and
+    makes the backend reject the very action the register still shows.
+    """
+    status = derived_request_status(items)
+    if status == RequestStatus.approved and any(
+        position.get("status") == CfoPositionStatus.on_revision
+        for position in positions
+    ):
+        return RequestStatus.on_review
+    return status

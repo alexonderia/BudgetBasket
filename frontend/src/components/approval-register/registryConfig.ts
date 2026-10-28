@@ -181,6 +181,7 @@ export const AGGREGATE_STATUS_LABELS: Record<RegisterAggregateStatus, string> = 
 };
 
 export function isRowActionable(item: ApprovalRegisterRow, role?: User['role']) {
+  if (item.fixed) return false;
   if (role && !canUseLineLevelWorkflowActions(role) && item.is_approval_actionable && !item.is_cfo_review_actionable) {
     return false;
   }
@@ -306,6 +307,12 @@ export function groupHasWorkflowApprove(group: ApprovalRegisterGroup, role?: Use
 export function groupHasWorkflowRevision(group: ApprovalRegisterGroup, role?: User['role']) {
   return role === 'economist'
     && (group.aggregates.workflow_revision_positions || 0) > 0;
+}
+
+export function groupNeedsCfoRevisionHint(group: ApprovalRegisterGroup, role?: User['role']) {
+  return role === 'economist'
+    && (group.aggregates.revision_rows || 0) > 0
+    && (group.aggregates.actionable_positions || 0) === 0;
 }
 
 /**
